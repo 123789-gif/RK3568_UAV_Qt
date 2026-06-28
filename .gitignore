@@ -1,0 +1,52 @@
+# Qt Creator
+*.pro.user
+*.pro.user.*
+*.autosave
+
+# qmake generated
+Makefile
+Makefile.*
+.qmake.stash
+.moc/
+.obj/
+.ui/
+moc_*.cpp
+moc_*.o
+ui_*.h
+qrc_*.cpp
+
+# Compiler products
+*.o
+*.obj
+*.a
+*.so
+*.so.*
+*.out
+
+# Build and release directories
+out/
+dist/
+build/
+build_manual/
+
+# Runtime data
+logs/
+run/
+*.log
+*.pid
+
+# Deployment archives
+*.tar.gz
+*.tar.gz.sha256
+*.zip
+
+# Temporary and backup files
+*.bak
+*.bak_*
+deploy.bak_before_deploy_v2/
+*_backup_*/
+*~
+
+# IDE
+.vscode/
+.idea/

@@ -1,0 +1,81 @@
+===== SYSTEM =====
+Sat Jun 27 10:49:28 AM UTC 2026
+Linux linaro-alip 6.1.99 #1 SMP Fri Mar 21 08:36:35 UTC 2025 aarch64 GNU/Linux
+uid=0(root) gid=0(root) groups=0(root)
+uid=1000(linaro) gid=1000(linaro) groups=1000(linaro),4(adm),20(dialout),24(cdrom),27(sudo),29(audio),30(dip),44(video),46(plugdev),50(staff),100(users),999(systemd-journal),107(netdev),108(bluetooth),1001(pulse-access)
+
+===== DISPLAY MANAGER =====
+enabled
+active
+total 0
+srwxrwxrwx 1 root root 0 Jun 27 09:33 X0
+-rw------- 1 linaro linaro 227 Jun 27 09:33 /home/linaro/.Xauthority
+
+===== DISPLAY LAYOUT =====
+Screen 0: minimum 320 x 200, current 3200 x 1080, maximum 16384 x 16384
+HDMI-1 connected 1920x1080+1280+0 (normal left inverted right x axis y axis) 0mm x 0mm
+   3840x2160     60.00 +  60.00    60.00    50.00    59.94    30.00    25.00    24.00    29.97    23.98  
+   2560x1440     59.95  
+   2560x1080     60.00    59.94    50.00    30.00    29.97    24.00    23.98    25.00  
+   1920x1080     60.00*   60.00    50.00    59.94    30.00    25.00    24.00    29.97    23.98  
+   1920x1080i    60.00    50.00    59.94  
+   1600x1200     60.00  
+   1680x1050     59.88  
+   1400x1050     59.95  
+   1280x1024     75.02    60.02  
+   1440x900      59.90  
+   1280x960      60.00  
+   1152x864      75.00  
+   1280x720      60.00    60.00    50.00    59.94  
+   1440x576      50.00    50.00  
+   1024x768      75.03    70.07    60.00  
+   832x624       74.55  
+   800x600       72.19    75.00    60.32    56.25  
+   720x576       50.00    50.00  
+   720x480       60.00    60.00    59.94    59.94  
+   640x480       75.00    72.81    66.67    60.00    59.94  
+   720x400       70.08  
+DSI-1 connected primary 1280x720+0+0 right (normal left inverted right x axis y axis) 0mm x 0mm
+   720x1280      69.05*+
+
+===== INPUT DEVICES =====
+⎡ Virtual core pointer                    	id=2	[master pointer  (3)]
+⎜   ↳ Virtual core XTEST pointer              	id=4	[slave  pointer  (2)]
+⎜   ↳ goodix-ts                               	id=9	[slave  pointer  (2)]
+⎣ Virtual core keyboard                   	id=3	[master keyboard (2)]
+    ↳ Virtual core XTEST keyboard             	id=5	[slave  keyboard (3)]
+    ↳ adc-keys                                	id=6	[slave  keyboard (3)]
+    ↳ rk805 pwrkey                            	id=7	[slave  keyboard (3)]
+    ↳ hdmi_cec_key                            	id=8	[slave  keyboard (3)]
+    ↳ rk-headset                              	id=10	[slave  keyboard (3)]
+
+===== DEVICE PERMISSIONS =====
+crw-rw----+ 1 root video   226,  0 Mar  6  2025 /dev/dri/card0
+crw-r-----  1 root kmem      1,  1 Mar  6  2025 /dev/mem
+crw-------  1 root root    511,  0 Jun 27 05:51 /dev/pango_pci_driver
+crw-rw----  1 root dialout   4, 64 Jun 27 09:40 /dev/ttyS0
+crw-rw----+ 1 root video    81,  0 Mar  6  2025 /dev/video0
+
+===== PWM =====
+lrwxrwxrwx 1 root root 0 Jun 27 09:35 /sys/class/pwm/pwmchip0 -> ../../devices/platform/fdd70000.pwm/pwm/pwmchip0
+drwxr-xr-x 3 root root 0 Jun 27 09:35 /sys/class/pwm/pwmchip0/pwm0
+
+===== RUNTIME LIBRARIES =====
+/usr/lib/librknnrt.so
+	libdrm.so.2 => /usr/lib/aarch64-linux-gnu/libdrm.so.2 (0x0000007fb0f40000)
+	librga.so.2 => /usr/lib/aarch64-linux-gnu/librga.so.2 (0x0000007fb0ef0000)
+	librknnrt.so => /userdata/Projects/icore_npu_src/3rdparty/rknpu2/runtime/RK356X/Linux/librknn_api/aarch64/librknnrt.so (0x0000007fb09d0000)
+	libopencv_core.so.406 => /usr/lib/aarch64-linux-gnu/libopencv_core.so.406 (0x0000007fb0700000)
+	libopencv_imgproc.so.406 => /usr/lib/aarch64-linux-gnu/libopencv_imgproc.so.406 (0x0000007fb0370000)
+
+===== MODEL HASH =====
+1f4cf6821682a01984af93de74240f206d756e0d980f3601f24751098889dc98  /userdata/Projects/icore_npu_rk/model/ped_det.rknn
+c8f7abd3882539f25fc29589e08127a4c1f9b8241203c78ced1fe1d97a2e1700  /userdata/Projects/icore_npu_rk/model/plate_det.rknn
+cb0f5c4d5609fff3fd70bf8d6360e22c80584c5b494fb7bb326c49b9106ff6c6  /userdata/Projects/icore_npu_rk/model/plate_reco.rknn
+
+===== STORAGE =====
+/dev/mmcblk1p1 on /mnt/ssd type vfat (rw,relatime,uid=1000,gid=1000,fmask=0133,dmask=0022,codepage=936,iocharset=utf8,shortname=mixed,errors=remount-ro)
+/dev/mmcblk0p8 on /userdata type ext4 (rw,relatime)
+Filesystem      Size  Used Avail Use% Mounted on
+/dev/mmcblk0p8   23G   67M   23G   1% /userdata
+/dev/mmcblk1p1   63G  2.7M   63G   1% /mnt/ssd
