@@ -42,6 +42,7 @@ if [[ -f "$PID_FILE" ]]; then
     rm -f "$PID_FILE"
 fi
 
+"$SCRIPT_DIR/load_pcie_driver.sh"
 "$SCRIPT_DIR/check_runtime.sh"
 "$SCRIPT_DIR/setup_display.sh"
 
