@@ -1,0 +1,100 @@
+===== DATE =====
+2026年 06月 29日 星期一 16:00:33 CST
+
+===== SYSTEM =====
+Linux linux 5.15.0-139-generic #149~20.04.1-Ubuntu SMP Wed Apr 16 08:29:56 UTC 2025 x86_64 x86_64 x86_64 GNU/Linux
+NAME="Ubuntu"
+VERSION="20.04.6 LTS (Focal Fossa)"
+ID=ubuntu
+ID_LIKE=debian
+PRETTY_NAME="Ubuntu 20.04.6 LTS"
+VERSION_ID="20.04"
+HOME_URL="https://www.ubuntu.com/"
+SUPPORT_URL="https://help.ubuntu.com/"
+BUG_REPORT_URL="https://bugs.launchpad.net/ubuntu/"
+PRIVACY_POLICY_URL="https://www.ubuntu.com/legal/terms-and-policies/privacy-policy"
+VERSION_CODENAME=focal
+UBUNTU_CODENAME=focal
+
+===== GIT =====
+docs/development-workflow
+486e93a baseline: restructured project and verified RK3568 deployment
+baseline_deploy_v1
+
+===== PROJECT =====
+/home/simba/Projects/RK3568_PTZ_Qt
+
+===== BUILD DIRECTORY =====
+/home/simba/Projects/RK3568_PTZ_Qt/out/arm64-release
+
+===== QMAKE / COMPILER =====
+CC            = /usr/bin/aarch64-linux-gnu-gcc
+CXX           = /usr/bin/aarch64-linux-gnu-g++
+QMAKE         = /home/simba/Qt-5.12.9-arm64/bin/qmake
+LINK          = /usr/bin/aarch64-linux-gnu-g++
+
+===== BINARY =====
+out/arm64-release/rk_dual_screen_video: ELF 64-bit LSB shared object, ARM aarch64, version 1 (GNU/Linux), dynamically linked, interpreter /lib/ld-linux-aarch64.so.1, BuildID[sha1]=20070417abfaa0c01eab328946262d1f712d3660, for GNU/Linux 3.7.0, not stripped
+
+===== ELF DEPENDENCIES =====
+ 0x0000000000000001 (NEEDED)             共享库：[libdrm.so.2]
+ 0x0000000000000001 (NEEDED)             共享库：[librga.so.2]
+ 0x0000000000000001 (NEEDED)             共享库：[librknnrt.so]
+ 0x0000000000000001 (NEEDED)             共享库：[libopencv_core.so.406]
+ 0x0000000000000001 (NEEDED)             共享库：[libopencv_imgproc.so.406]
+ 0x0000000000000001 (NEEDED)             共享库：[libjpeg.so.62]
+ 0x0000000000000001 (NEEDED)             共享库：[libQt5Widgets.so.5]
+ 0x0000000000000001 (NEEDED)             共享库：[libQt5Gui.so.5]
+ 0x0000000000000001 (NEEDED)             共享库：[libQt5Core.so.5]
+ 0x0000000000000001 (NEEDED)             共享库：[libpthread.so.0]
+ 0x0000000000000001 (NEEDED)             共享库：[libstdc++.so.6]
+ 0x0000000000000001 (NEEDED)             共享库：[libm.so.6]
+ 0x0000000000000001 (NEEDED)             共享库：[libgcc_s.so.1]
+ 0x0000000000000001 (NEEDED)             共享库：[libc.so.6]
+ 0x0000000000000001 (NEEDED)             共享库：[ld-linux-aarch64.so.1]
+
+===== MODEL HASH =====
+1f4cf6821682a01984af93de74240f206d756e0d980f3601f24751098889dc98  assets/models/ped_det.rknn
+c8f7abd3882539f25fc29589e08127a4c1f9b8241203c78ced1fe1d97a2e1700  assets/models/plate_det.rknn
+cb0f5c4d5609fff3fd70bf8d6360e22c80584c5b494fb7bb326c49b9106ff6c6  assets/models/plate_reco.rknn
+
+===== PROJECT TREE =====
+assets/config/runtime.env
+assets/models/ped_det.rknn
+assets/models/plate_det.rknn
+assets/models/plate_reco.rknn
+assets/models/SHA256SUMS
+deploy/copy_runtime_assets.sh
+deploy/make_bundle.sh
+deploy/scripts/check_runtime.sh
+deploy/scripts/setup_display.sh
+deploy/scripts/start.sh
+deploy/scripts/stop.sh
+deploy/systemd/rk3568-ptz-qt.service
+docs/ARCHITECTURE.md
+docs/BOARD_ENVIRONMENT_20260627.txt
+docs/BUILD_ENVIRONMENT_CAPTURE.txt
+docs/BUILD.md
+docs/DEPLOY.md
+docs/RESTRUCTURE_CHANGELOG.md
+src/app/main.cpp
+src/npu/demo_types.h
+src/npu/npu_inference_worker.cpp
+src/npu/npu_inference_worker.h
+src/npu/npu_result_types.h
+src/npu/vision.cpp
+src/npu/vision.h
+src/ptz/ptz_capture_worker.cpp
+src/ptz/ptz_capture_worker.h
+src/ptz/ptz_control_worker.cpp
+src/ptz/ptz_control_worker.h
+src/ptz/visca_serial.cpp
+src/ptz/visca_serial.hpp
+src/system/fan_controller.cpp
+src/system/fan_controller.h
+src/ui/control_panel_window.cpp
+src/ui/control_panel_window.h
+src/ui/control_panel_window.ui
+src/video/drm_rga_display.cpp
+src/video/drm_rga_display.h
+tools/build_arm64.sh

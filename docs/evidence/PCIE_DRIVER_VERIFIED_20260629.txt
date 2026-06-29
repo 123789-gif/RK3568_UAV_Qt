@@ -1,0 +1,151 @@
+===== VERIFIED DRIVER =====
+DRIVER_KO=/userdata/Projects/driver_1080/pango_pci_driver.ko
+MODULE_NAME=pango_pci_driver
+DEVICE_NODE=/dev/pango_pci_driver
+LOAD_COMMAND=insmod /userdata/Projects/driver_1080/pango_pci_driver.ko
+
+===== KERNEL =====
+Linux linaro-alip 6.1.99 #1 SMP Fri Mar 21 08:36:35 UTC 2025 aarch64 GNU/Linux
+
+===== DRIVER FILE =====
+-rw-r--r-- 1 root root 125K May 11 10:05 /userdata/Projects/driver_1080/pango_pci_driver.ko
+/userdata/Projects/driver_1080/pango_pci_driver.ko: ELF 64-bit LSB relocatable, ARM aarch64, version 1 (SYSV), BuildID[sha1]=ed936e6e40c70229cb9d7ba6206697d31394738b, with debug_info, not stripped
+e00ef92e4bcb3bfe1fbb3711bbba88fdab54c266c3b6fcc51ae6cf9a4942200f  /userdata/Projects/driver_1080/pango_pci_driver.ko
+
+===== MODINFO =====
+filename:       /userdata/Projects/driver_1080/pango_pci_driver.ko
+alias:          pango pci driver
+license:        GPL v2
+description:    Pango pci driver
+author:         Pango, lxg.
+depends:
+name:           pango_pci_driver
+vermagic:       6.1.99 SMP mod_unload aarch64
+
+===== LOADED MODULE =====
+pango_pci_driver       49152  0
+
+===== DEVICE NODE =====
+crw------- 1 root root 511, 0 Jun 29 08:47 /dev/pango_pci_driver
+
+===== KERNEL LOG =====
+[Mon Jun 29 08:37:18 2026] pci 0002:21:00.0: [0755:0755] type 00 class 0x058000
+[Mon Jun 29 08:37:18 2026] pci 0002:21:00.0: reg 0x10: [mem 0x00000000-0x00001fff]
+[Mon Jun 29 08:37:18 2026] pci 0002:21:00.0: reg 0x14: [mem 0x00000000-0x00000fff]
+[Mon Jun 29 08:37:18 2026] pci 0002:21:00.0: reg 0x18: [mem 0x00000000-0x00001fff 64bit]
+[Mon Jun 29 08:37:18 2026] pci_bus 0002:21: busn_res: [bus 21-2f] end is updated to 21
+[Mon Jun 29 08:37:18 2026] pci 0002:20:00.0: BAR 8: assigned [mem 0xf0200000-0xf02fffff]
+[Mon Jun 29 08:37:18 2026] pci 0002:20:00.0: BAR 6: assigned [mem 0xf0300000-0xf030ffff pref]
+[Mon Jun 29 08:37:18 2026] pci 0002:21:00.0: BAR 0: assigned [mem 0xf0200000-0xf0201fff]
+[Mon Jun 29 08:37:18 2026] pci 0002:21:00.0: BAR 2: assigned [mem 0xf0202000-0xf0203fff 64bit]
+[Mon Jun 29 08:37:18 2026] pci 0002:21:00.0: BAR 1: assigned [mem 0xf0204000-0xf0204fff]
+[Mon Jun 29 08:37:18 2026] pci 0002:20:00.0: PCI bridge to [bus 21]
+[Mon Jun 29 08:37:18 2026] pci 0002:20:00.0:   bridge window [mem 0xf0200000-0xf02fffff]
+[Mon Jun 29 08:37:18 2026] pcieport 0002:20:00.0: PME: Signaling with IRQ 65
+[Mon Jun 29 08:37:19 2026] mcp251x spi2.0: Probe failed, err=110
+[Mon Jun 29 08:37:19 2026] mcp251x: probe of spi2.0 failed with error -110
+[Mon Jun 29 08:37:19 2026] rk_gmac-dwmac fe010000.ethernet: DMA HW capability register supported
+[Mon Jun 29 08:37:19 2026] rk_gmac-dwmac fe010000.ethernet: Using 32/32 bits DMA host/device width
+[Mon Jun 29 08:37:19 2026] rk_gmac-dwmac fe2a0000.ethernet: DMA HW capability register supported
+[Mon Jun 29 08:37:19 2026] rk_gmac-dwmac fe2a0000.ethernet: Using 32/32 bits DMA host/device width
+[Mon Jun 29 08:37:19 2026] usbcore: registered new interface driver rtl8150
+[Mon Jun 29 08:37:19 2026] usbcore: registered new device driver r8152-cfgselector
+[Mon Jun 29 08:37:19 2026] usbcore: registered new interface driver r8152
+[Mon Jun 29 08:37:19 2026] usbcore: registered new interface driver cdc_acm
+[Mon Jun 29 08:37:19 2026] cdc_acm: USB Abstract Control Model driver for USB modems and ISDN adapters
+[Mon Jun 29 08:37:19 2026] usbcore: registered new interface driver uas
+[Mon Jun 29 08:37:19 2026] usbcore: registered new interface driver usb-storage
+[Mon Jun 29 08:37:19 2026] usbcore: registered new interface driver usbserial_generic
+[Mon Jun 29 08:37:19 2026] usbcore: registered new interface driver cp210x
+[Mon Jun 29 08:37:19 2026] usbcore: registered new interface driver ftdi_sio
+[Mon Jun 29 08:37:19 2026] usbcore: registered new interface driver keyspan
+[Mon Jun 29 08:37:19 2026] usbcore: registered new interface driver option
+[Mon Jun 29 08:37:19 2026] usbcore: registered new interface driver oti6858
+[Mon Jun 29 08:37:19 2026] usbcore: registered new interface driver pl2303
+[Mon Jun 29 08:37:19 2026] usbcore: registered new interface driver qcserial
+[Mon Jun 29 08:37:19 2026] usbcore: registered new interface driver sierra
+[Mon Jun 29 08:37:19 2026] usbcore: registered new interface driver usbtouchscreen
+[Mon Jun 29 08:37:19 2026] i2c_dev: i2c /dev entries driver
+[Mon Jun 29 08:37:19 2026] rk817-battery: Failed to locate of_node [id: -1]
+[Mon Jun 29 08:37:19 2026] rk817-battery rk817-battery: Failed to find matching dt id
+[Mon Jun 29 08:37:19 2026] rk817-charger: Failed to locate of_node [id: -1]
+[Mon Jun 29 08:37:19 2026] rk817-charger rk817-charger: Failed to find matching dt id
+[Mon Jun 29 08:37:19 2026] rtc-pcf8563 5-0051: pcf8563_probe: write error
+[Mon Jun 29 08:37:19 2026] rtc-pcf8563: probe of 5-0051 failed with error -5
+[Mon Jun 29 08:37:19 2026] rkisp rkisp-vir0: rkisp driver version: v02.09.00
+[Mon Jun 29 08:37:19 2026] rkisp-vir0: update sensor failed
+[Mon Jun 29 08:37:19 2026] rkisp-vir0: Failed to register subdev notifier(-19)
+[Mon Jun 29 08:37:19 2026] rkisp-vir0: Failed to register platform subdevs:-19
+[Mon Jun 29 08:37:19 2026] usbcore: registered new interface driver uvcvideo
+[Mon Jun 29 08:37:19 2026] usbcore: registered new interface driver bfusb
+[Mon Jun 29 08:37:19 2026] sdhci: Secure Digital Host Controller Interface driver
+[Mon Jun 29 08:37:19 2026] Synopsys Designware Multimedia Card Interface Driver
+[Mon Jun 29 08:37:19 2026] sdhci-pltfm: SDHCI platform and OF driver helper
+[Mon Jun 29 08:37:19 2026] dwmmc_rockchip fe2b0000.mmc: IDMAC supports 32-bit address mode.
+[Mon Jun 29 08:37:19 2026] dwmmc_rockchip fe2b0000.mmc: Using internal DMA controller.
+[Mon Jun 29 08:37:19 2026] arm-scmi firmware:scmi: Failed. SCMI protocol 17 not active.
+[Mon Jun 29 08:37:19 2026] cryptodev: driver 1.12 loaded.
+[Mon Jun 29 08:37:19 2026] hid: raw HID events driver (C) Jiri Kosina
+[Mon Jun 29 08:37:19 2026] usbcore: registered new interface driver usbhid
+[Mon Jun 29 08:37:19 2026] usbhid: USB HID core driver
+[Mon Jun 29 08:37:19 2026] rockchip,bus bus-npu: Failed to get leakage
+[Mon Jun 29 08:37:19 2026] usbcore: registered new interface driver snd-usb-audio
+[Mon Jun 29 08:37:19 2026] mmc0: SDHCI controller on fe310000.mmc [fe310000.mmc] using ADMA
+[Mon Jun 29 08:37:20 2026] ES8388 5-0011: i2c recv Failed
+[Mon Jun 29 08:37:20 2026] ES8388: probe of 5-0011 failed with error -110
+[Mon Jun 29 08:37:20 2026] mpp_rkvenc fdf40000.rkvenc: Failed to get leakage
+[Mon Jun 29 08:37:20 2026] [drm] failed to init overlay plane Cluster0-win1
+[Mon Jun 29 08:37:20 2026] [drm] failed to init overlay plane Cluster1-win1
+[Mon Jun 29 08:37:20 2026] rockchip-vop2 fe040000.vop: error -ENODEV: _opp_set_regulators: no regulator (vop) found
+[Mon Jun 29 08:37:20 2026] rockchip-vop2 fe040000.vop: failed to set opp config
+[Mon Jun 29 08:37:20 2026] rockchip-vop2 fe040000.vop: failed to init opp info
+[Mon Jun 29 08:37:20 2026] dwhdmi-rockchip fe0a0000.hdmi: registered DesignWare HDMI I2C bus driver
+[Mon Jun 29 08:37:20 2026] dwhdmi-rockchip fe0a0000.hdmi: error -ENXIO: IRQ index 1 not found
+[Mon Jun 29 08:37:20 2026] rockchip-drm display-subsystem: [drm] run display error_event monitor
+[Mon Jun 29 08:37:20 2026] W : [File] : drivers/gpu/arm/bifrost/platform/rk/mali_kbase_config_rk.c; [Line] : 144; [Func] : kbase_platform_rk_init(); power-off-delay-ms not available.
+[Mon Jun 29 08:37:20 2026] rockchip-dmc dmc: failed to get vop pn to msch rl
+[Mon Jun 29 08:37:20 2026] mali fde60000.gpu: Error -22, no DT entry: mali-simple-power-model.static-coefficient = 1*[0]
+[Mon Jun 29 08:37:20 2026] mali fde60000.gpu: Error -22, no DT entry: mali-simple-power-model.dynamic-coefficient = 1*[0]
+[Mon Jun 29 08:37:20 2026] mali fde60000.gpu: Error -22, no DT entry: mali-simple-power-model.ts = 4*[0]
+[Mon Jun 29 08:37:20 2026] mali fde60000.gpu: Error -22, no DT entry: mali-simple-power-model.thermal-zone = ''
+[Mon Jun 29 08:37:20 2026] RKNPU fde40000.npu: error -ENXIO: IRQ npu_irq not found
+[Mon Jun 29 08:37:20 2026] platform regulatory.0: Direct firmware load for regulatory.db failed with error -2
+[Mon Jun 29 08:37:20 2026] cfg80211: failed to load regulatory.db
+[Mon Jun 29 08:37:20 2026] I : [File] : drivers/gpu/arm/mali400/mali/linux/mali_kernel_linux.c; [Line] : 407; [Func] : mali_module_init(); svn_rev_string_from_arm of this mali_ko is '', rk_ko_ver is '5', built at '08:35:52', on 'Mar 21 2025'.
+[Mon Jun 29 08:37:20 2026] Mali device driver loaded
+[Mon Jun 29 08:37:20 2026] systemd[1]: Failed to find module 'autofs4'
+[Mon Jun 29 08:37:24 2026] rk_gmac-dwmac fe010000.ethernet end1: PHY [stmmac-1:00] driver [Generic PHY] (irq=POLL)
+[Mon Jun 29 08:37:25 2026] RTW: bDriverStopped:True, bSurpriseRemoved:False, bup:0, hw_init_completed:0
+[Mon Jun 29 08:37:25 2026] usbcore: registered new interface driver rtl8723du
+[Mon Jun 29 08:37:25 2026] RTW: [HW_VAR_ENABLE_RX_BAR] 0x6A2=0x500
+[Mon Jun 29 08:37:26 2026] rk_gmac-dwmac fe2a0000.ethernet end0: PHY [stmmac-0:00] driver [Generic PHY] (irq=POLL)
+[Mon Jun 29 08:37:26 2026] rtk_btusb: Realtek Bluetooth USB driver ver 3.1.969e923.20210423-153940
+[Mon Jun 29 08:37:26 2026] usbcore: registered new interface driver rtk_btusb
+[Mon Jun 29 08:37:28 2026] RTW: usb_read_port_complete() RX Warning! bDriverStopped(False) OR bSurpriseRemoved(False)
+[Mon Jun 29 08:37:28 2026] RTW: usb_read_port_complete() RX Warning! bDriverStopped(False) OR bSurpriseRemoved(False)
+[Mon Jun 29 08:37:28 2026] RTW: usb_read_port_complete() RX Warning! bDriverStopped(False) OR bSurpriseRemoved(False)
+[Mon Jun 29 08:37:28 2026] RTW: usb_read_port_complete() RX Warning! bDriverStopped(False) OR bSurpriseRemoved(False)
+[Mon Jun 29 08:37:28 2026] RTW: usb_read_port_complete() RX Warning! bDriverStopped(False) OR bSurpriseRemoved(False)
+[Mon Jun 29 08:37:28 2026] RTW: usb_read_port_complete() RX Warning! bDriverStopped(False) OR bSurpriseRemoved(False)
+[Mon Jun 29 08:37:28 2026] RTW: usb_read_port_complete() RX Warning! bDriverStopped(False) OR bSurpriseRemoved(False)
+[Mon Jun 29 08:37:28 2026] RTW: usb_read_port_complete() RX Warning! bDriverStopped(False) OR bSurpriseRemoved(False)
+[Mon Jun 29 08:37:28 2026] RTW: [HW_VAR_ENABLE_RX_BAR] 0x6A2=0x500
+[Mon Jun 29 08:47:10 2026] init_pci_pango.
+[Mon Jun 29 08:47:10 2026] init_pango_cdev.
+[Mon Jun 29 08:47:10 2026] init pango_cdev result : 0
+[Mon Jun 29 08:47:10 2026] init_pango_pci_driver.
+[Mon Jun 29 08:47:10 2026] pci_driver_probe.
+[Mon Jun 29 08:47:10 2026] pango_pci_driver 0002:21:00.0: enabling device (0400 -> 0402)
+[Mon Jun 29 08:47:10 2026] pci_enable_device result : 0
+[Mon Jun 29 08:47:10 2026] Using 32-bit DMA mask
+[Mon Jun 29 08:47:10 2026] PCI Configuration Space:
+[Mon Jun 29 08:47:10 2026] BAR0: Addr:0xf0200000 Len:0x2000,
+[Mon Jun 29 08:47:10 2026] BAR1: Addr:0xf0204000 Len:0x1000,
+[Mon Jun 29 08:47:10 2026] BAR2: Addr:0xf0202000 Len:0x2000,
+[Mon Jun 29 08:47:10 2026] BAR3: Addr:0x0 Len:0x0,
+[Mon Jun 29 08:47:10 2026] BAR4: Addr:0x0 Len:0x0,
+[Mon Jun 29 08:47:10 2026] BAR5: Addr:0x0 Len:0x0,
+[Mon Jun 29 08:47:10 2026] pci_request_region result : 0
+[Mon Jun 29 08:47:10 2026] pci_keep_intx_enabled.
+[Mon Jun 29 08:47:10 2026] *********pci_register_driver, result : 0
+[Mon Jun 29 08:47:10 2026] init pci result : 0
