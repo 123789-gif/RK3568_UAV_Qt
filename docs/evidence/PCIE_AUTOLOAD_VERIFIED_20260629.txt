@@ -1,19 +1,23 @@
-===== DATE =====
-Mon Jun 29 11:49:47 AM UTC 2026
+===== VERIFY DATE =====
+Mon Jun 29 12:14:44 PM UTC 2026
 
 ===== KERNEL =====
 Linux linaro-alip 6.1.99 #1 SMP Fri Mar 21 08:36:35 UTC 2025 aarch64 GNU/Linux
 
-===== APP VERSION =====
+===== PACKAGE VERSION =====
 20260629T110949Z
 
-===== PCIe MODULE =====
+===== PCIe DRIVER =====
 pango_pci_driver       49152  0
-
-===== PCIe DEVICE =====
 crw------- 1 root root 511, 0 Jun 29 11:44 /dev/pango_pci_driver
 
-===== USB CAMERA =====
+===== DRIVER ASSET =====
+e00ef92e4bcb3bfe1fbb3711bbba88fdab54c266c3b6fcc51ae6cf9a4942200f  /userdata/Apps/RK3568_PTZ_Qt_pcie_autoload_test/driver/pango_pci_driver.ko
+description:    Pango pci driver
+name:           pango_pci_driver
+vermagic:       6.1.99 SMP mod_unload aarch64
+
+===== USB PTZ CAMERA =====
 crw-rw----+ 1 root video 81, 0 Mar  6  2025 /dev/video0
 
 ===== RUNTIME CHECK =====
@@ -42,7 +46,34 @@ crw-rw----+ 1 root video 81, 0 Mar  6  2025 /dev/video0
 [OK] system RKNN runtime
 Runtime check passed.
 
-===== DRIVER LOG =====
+===== AUTOLOAD RESULT =====
+Cold-start autoload: PASS
+Repeated start: PASS
+Background start/stop: PASS
+PID cleanup: PASS
+Driver remains loaded after stop: PASS
+
+===== KERNEL DRIVER LOG =====
+[Mon Jun 29 11:44:50 2026] init_pci_pango.
+[Mon Jun 29 11:44:50 2026] init_pango_cdev.
+[Mon Jun 29 11:44:50 2026] init pango_cdev result : 0
+[Mon Jun 29 11:44:50 2026] init_pango_pci_driver.
+[Mon Jun 29 11:44:50 2026] pango_pci_driver 0002:21:00.0: enabling device (0400 -> 0402)
+[Mon Jun 29 11:44:50 2026] BAR0: Addr:0xf0200000 Len:0x2000,
+[Mon Jun 29 11:44:50 2026] BAR1: Addr:0xf0204000 Len:0x1000,
+[Mon Jun 29 11:44:50 2026] BAR2: Addr:0xf0202000 Len:0x2000,
+[Mon Jun 29 11:44:50 2026] BAR3: Addr:0x0 Len:0x0,
+[Mon Jun 29 11:44:50 2026] BAR4: Addr:0x0 Len:0x0,
+[Mon Jun 29 11:44:50 2026] BAR5: Addr:0x0 Len:0x0,
+[Mon Jun 29 11:48:01 2026] pango: PCI_MAP_ADDR_CMD current_len=960(dw), offset=0x0; video frame size=4147200
+[Mon Jun 29 11:48:01 2026] pango: video_buf[0] cpu=00000000ba64a534 dma=0x000000007ea00000 size=4147200
+[Mon Jun 29 11:48:01 2026] pango: video_buf[1] cpu=000000003972c060 dma=0x000000007ee00000 size=4147200
+[Mon Jun 29 11:48:01 2026] pango: video_buf[2] cpu=000000000a7b616b dma=0x000000007f200000 size=4147200
+[Mon Jun 29 11:48:01 2026] pango: video_buf[3] cpu=000000004df2703c dma=0x0000000020c00000 size=4147200
+[Mon Jun 29 11:48:01 2026] pango video dma addrs programmed: 0x000000007ea00000 0x000000007ee00000 0x000000007f200000 0x0000000020c00000
+[Mon Jun 29 11:48:01 2026] pango video dma addrs programmed: 0x000000007ea00000 0x000000007ee00000 0x000000007f200000 0x0000000020c00000
+[Mon Jun 29 11:48:01 2026] pango: mmap video_buf[0], size=4149248, dma=0x000000007ea00000
+[Mon Jun 29 11:48:01 2026] pango: mmap video_buf[1], size=4149248, dma=0x000000007ee00000
 [Mon Jun 29 11:48:01 2026] pango: mmap video_buf[2], size=4149248, dma=0x000000007f200000
 [Mon Jun 29 11:48:01 2026] pango: mmap video_buf[3], size=4149248, dma=0x0000000020c00000
 [Mon Jun 29 11:48:02 2026] PANGO_DRV_STAT calls=62 valid=62 wait_avg_us=1 copy_avg_us=0 status_only=0 stabilize_us=0
