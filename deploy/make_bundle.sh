@@ -4,6 +4,7 @@ set -euo pipefail
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BINARY="${1:-}"
 OUTPUT_DIR="${2:-$PROJECT_ROOT/dist}"
+DRIVER_SOURCE_DIR="$PROJECT_ROOT/assets/driver/rk3568-kernel-6.1.99"
 
 if [[ -z "$BINARY" || ! -f "$BINARY" ]]; then
     echo "Usage: $0 <arm64-rk_dual_screen_video> [output-dir]" >&2
@@ -13,6 +14,21 @@ fi
 if ! file "$BINARY" | grep -q "ARM aarch64"; then
     echo "ERROR: binary is not ARM aarch64: $BINARY" >&2
     file "$BINARY" >&2
+    exit 1
+fi
+
+for file in pango_pci_driver.ko SHA256SUMS DRIVER_INFO.txt; do
+    [[ -f "$DRIVER_SOURCE_DIR/$file" ]] || {
+        echo "ERROR: missing PCIe driver asset: $DRIVER_SOURCE_DIR/$file" >&2
+        exit 1
+    }
+done
+
+if ! (
+    cd "$DRIVER_SOURCE_DIR"
+    sha256sum -c SHA256SUMS >/dev/null
+); then
+    echo "ERROR: source PCIe driver SHA256 mismatch." >&2
     exit 1
 fi
 
@@ -26,6 +42,7 @@ mkdir -p \
     "$APP_DIR/bin" \
     "$APP_DIR/models" \
     "$APP_DIR/config" \
+    "$APP_DIR/driver" \
     "$APP_DIR/scripts" \
     "$APP_DIR/logs" \
     "$APP_DIR/run"
@@ -40,17 +57,23 @@ cp -f "$PROJECT_ROOT"/assets/models/* \
 cp -f "$PROJECT_ROOT/assets/config/runtime.env" \
     "$APP_DIR/config/"
 
+cp -f "$DRIVER_SOURCE_DIR"/pango_pci_driver.ko \
+      "$DRIVER_SOURCE_DIR"/SHA256SUMS \
+      "$DRIVER_SOURCE_DIR"/DRIVER_INFO.txt \
+      "$APP_DIR/driver/"
+
 cp -f "$PROJECT_ROOT"/deploy/scripts/*.sh \
     "$APP_DIR/scripts/"
 
-chmod +x "$APP_DIR/scripts"/*.sh
+chmod 0755 "$APP_DIR/scripts"/*.sh
+chmod 0644 "$APP_DIR/driver"/*
 
 printf '%s\n' "$VERSION" > "$APP_DIR/VERSION"
 
 (
     cd "$APP_DIR"
 
-    find bin models config scripts \
+    find bin models config driver scripts \
         -type f \
         -print0 |
         sort -z |

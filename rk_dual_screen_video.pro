@@ -86,7 +86,11 @@ DISTFILES += \
     assets/models/plate_reco.rknn \
     assets/models/SHA256SUMS \
     assets/config/runtime.env \
+    assets/driver/rk3568-kernel-6.1.99/pango_pci_driver.ko \
+    assets/driver/rk3568-kernel-6.1.99/SHA256SUMS \
+    assets/driver/rk3568-kernel-6.1.99/DRIVER_INFO.txt \
     deploy/copy_runtime_assets.sh \
+    deploy/scripts/load_pcie_driver.sh \
     deploy/scripts/setup_display.sh \
     deploy/scripts/check_runtime.sh \
     deploy/scripts/start.sh \

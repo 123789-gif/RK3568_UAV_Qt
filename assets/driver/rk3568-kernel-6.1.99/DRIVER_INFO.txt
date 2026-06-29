@@ -1,0 +1,6 @@
+Module: pango_pci_driver
+Device: /dev/pango_pci_driver
+Kernel: 6.1.99
+Vermagic: 6.1.99 SMP mod_unload aarch64
+SHA256: e00ef92e4bcb3bfe1fbb3711bbba88fdab54c266c3b6fcc51ae6cf9a4942200f
+Original source: /userdata/Projects/driver_1080/pango_pci_driver.ko

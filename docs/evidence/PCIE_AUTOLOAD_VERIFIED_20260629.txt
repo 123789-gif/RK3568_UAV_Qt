@@ -1,0 +1,145 @@
+===== DATE =====
+Mon Jun 29 11:49:47 AM UTC 2026
+
+===== KERNEL =====
+Linux linaro-alip 6.1.99 #1 SMP Fri Mar 21 08:36:35 UTC 2025 aarch64 GNU/Linux
+
+===== APP VERSION =====
+20260629T110949Z
+
+===== PCIe MODULE =====
+pango_pci_driver       49152  0
+
+===== PCIe DEVICE =====
+crw------- 1 root root 511, 0 Jun 29 11:44 /dev/pango_pci_driver
+
+===== USB CAMERA =====
+crw-rw----+ 1 root video 81, 0 Mar  6  2025 /dev/video0
+
+===== RUNTIME CHECK =====
+[OK] executable: /userdata/Apps/RK3568_PTZ_Qt_pcie_autoload_test/bin/rk_dual_screen_video
+[OK] deployment MANIFEST SHA256
+[OK] executable architecture: ARM aarch64
+[OK] ELF dependency: libdrm.so.2
+[OK] ELF dependency: librga.so.2
+[OK] ELF dependency: librknnrt.so
+[OK] ELF dependency: libopencv_core.so.406
+[OK] ELF dependency: libopencv_imgproc.so.406
+[OK] model: ped_det.rknn
+[OK] model: plate_det.rknn
+[OK] model: plate_reco.rknn
+[OK] PCIe driver file: /userdata/Apps/RK3568_PTZ_Qt_pcie_autoload_test/driver/pango_pci_driver.ko
+[OK] PCIe driver architecture: ARM aarch64
+[OK] PCIe driver SHA256
+[OK] PCIe driver vermagic: 6.1.99 SMP mod_unload aarch64
+[OK] PCIe module loaded: pango_pci_driver
+[OK] PCIe character device: /dev/pango_pci_driver
+[OK] device: /dev/dri/card0
+[OK] device: /dev/video0
+[OK] device: /dev/ttyS0
+[OK] device: /dev/mem
+[OK] runtime libraries
+[OK] system RKNN runtime
+Runtime check passed.
+
+===== DRIVER LOG =====
+[Mon Jun 29 11:48:01 2026] pango: mmap video_buf[2], size=4149248, dma=0x000000007f200000
+[Mon Jun 29 11:48:01 2026] pango: mmap video_buf[3], size=4149248, dma=0x0000000020c00000
+[Mon Jun 29 11:48:02 2026] PANGO_DRV_STAT calls=62 valid=62 wait_avg_us=1 copy_avg_us=0 status_only=0 stabilize_us=0
+[Mon Jun 29 11:48:03 2026] PANGO_DRV_STAT calls=59 valid=59 wait_avg_us=1 copy_avg_us=0 status_only=0 stabilize_us=0
+[Mon Jun 29 11:48:04 2026] PANGO_DRV_STAT calls=59 valid=59 wait_avg_us=1 copy_avg_us=0 status_only=0 stabilize_us=0
+[Mon Jun 29 11:48:05 2026] PANGO_DRV_STAT calls=59 valid=59 wait_avg_us=2 copy_avg_us=0 status_only=0 stabilize_us=0
+[Mon Jun 29 11:48:06 2026] PANGO_DRV_STAT calls=61 valid=61 wait_avg_us=1 copy_avg_us=0 status_only=0 stabilize_us=0
+[Mon Jun 29 11:48:07 2026] PANGO_DRV_STAT calls=58 valid=58 wait_avg_us=1 copy_avg_us=0 status_only=0 stabilize_us=0
+[Mon Jun 29 11:48:08 2026] PANGO_DRV_STAT calls=58 valid=58 wait_avg_us=1 copy_avg_us=0 status_only=0 stabilize_us=0
+[Mon Jun 29 11:48:09 2026] PANGO_DRV_STAT calls=57 valid=57 wait_avg_us=1 copy_avg_us=0 status_only=0 stabilize_us=0
+[Mon Jun 29 11:48:10 2026] PANGO_DRV_STAT calls=57 valid=57 wait_avg_us=1 copy_avg_us=0 status_only=0 stabilize_us=0
+[Mon Jun 29 11:48:11 2026] PANGO_DRV_STAT calls=59 valid=59 wait_avg_us=3 copy_avg_us=0 status_only=0 stabilize_us=0
+[Mon Jun 29 11:48:12 2026] PANGO_DRV_STAT calls=60 valid=60 wait_avg_us=1 copy_avg_us=0 status_only=0 stabilize_us=0
+[Mon Jun 29 11:48:13 2026] PANGO_DRV_STAT calls=59 valid=59 wait_avg_us=1 copy_avg_us=0 status_only=0 stabilize_us=0
+[Mon Jun 29 11:48:14 2026] PANGO_DRV_STAT calls=61 valid=61 wait_avg_us=1 copy_avg_us=0 status_only=0 stabilize_us=0
+[Mon Jun 29 11:48:15 2026] PANGO_DRV_STAT calls=59 valid=59 wait_avg_us=1 copy_avg_us=0 status_only=0 stabilize_us=0
+[Mon Jun 29 11:48:16 2026] PANGO_DRV_STAT calls=61 valid=61 wait_avg_us=1 copy_avg_us=0 status_only=0 stabilize_us=0
+[Mon Jun 29 11:48:17 2026] PANGO_DRV_STAT calls=60 valid=60 wait_avg_us=1 copy_avg_us=0 status_only=0 stabilize_us=0
+[Mon Jun 29 11:48:18 2026] PANGO_DRV_STAT calls=61 valid=61 wait_avg_us=1 copy_avg_us=0 status_only=0 stabilize_us=0
+[Mon Jun 29 11:48:19 2026] PANGO_DRV_STAT calls=61 valid=61 wait_avg_us=1 copy_avg_us=0 status_only=0 stabilize_us=0
+[Mon Jun 29 11:48:20 2026] PANGO_DRV_STAT calls=61 valid=61 wait_avg_us=1 copy_avg_us=0 status_only=0 stabilize_us=0
+[Mon Jun 29 11:48:21 2026] PANGO_DRV_STAT calls=60 valid=60 wait_avg_us=2 copy_avg_us=0 status_only=0 stabilize_us=0
+[Mon Jun 29 11:48:22 2026] PANGO_DRV_STAT calls=61 valid=61 wait_avg_us=2 copy_avg_us=0 status_only=0 stabilize_us=0
+[Mon Jun 29 11:48:23 2026] PANGO_DRV_STAT calls=61 valid=61 wait_avg_us=1 copy_avg_us=0 status_only=0 stabilize_us=0
+[Mon Jun 29 11:48:24 2026] PANGO_DRV_STAT calls=61 valid=61 wait_avg_us=1 copy_avg_us=0 status_only=0 stabilize_us=0
+[Mon Jun 29 11:48:26 2026] PANGO_DRV_STAT calls=61 valid=61 wait_avg_us=1 copy_avg_us=0 status_only=0 stabilize_us=0
+[Mon Jun 29 11:48:27 2026] PANGO_DRV_STAT calls=60 valid=60 wait_avg_us=1 copy_avg_us=0 status_only=0 stabilize_us=0
+[Mon Jun 29 11:48:28 2026] PANGO_DRV_STAT calls=59 valid=59 wait_avg_us=1 copy_avg_us=0 status_only=0 stabilize_us=0
+[Mon Jun 29 11:48:29 2026] PANGO_DRV_STAT calls=60 valid=60 wait_avg_us=1 copy_avg_us=0 status_only=0 stabilize_us=0
+[Mon Jun 29 11:48:30 2026] PANGO_DRV_STAT calls=61 valid=61 wait_avg_us=1 copy_avg_us=0 status_only=0 stabilize_us=0
+[Mon Jun 29 11:48:31 2026] PANGO_DRV_STAT calls=60 valid=60 wait_avg_us=1 copy_avg_us=0 status_only=0 stabilize_us=0
+[Mon Jun 29 11:48:32 2026] PANGO_DRV_STAT calls=60 valid=60 wait_avg_us=1 copy_avg_us=0 status_only=0 stabilize_us=0
+[Mon Jun 29 11:48:33 2026] PANGO_DRV_STAT calls=61 valid=61 wait_avg_us=1 copy_avg_us=0 status_only=0 stabilize_us=0
+[Mon Jun 29 11:48:34 2026] PANGO_DRV_STAT calls=60 valid=60 wait_avg_us=1 copy_avg_us=0 status_only=0 stabilize_us=0
+[Mon Jun 29 11:48:35 2026] PANGO_DRV_STAT calls=61 valid=61 wait_avg_us=1 copy_avg_us=0 status_only=0 stabilize_us=0
+[Mon Jun 29 11:48:36 2026] PANGO_DRV_STAT calls=60 valid=60 wait_avg_us=1 copy_avg_us=0 status_only=0 stabilize_us=0
+[Mon Jun 29 11:48:37 2026] PANGO_DRV_STAT calls=61 valid=61 wait_avg_us=1 copy_avg_us=0 status_only=0 stabilize_us=0
+[Mon Jun 29 11:48:38 2026] PANGO_DRV_STAT calls=61 valid=61 wait_avg_us=1 copy_avg_us=0 status_only=0 stabilize_us=0
+[Mon Jun 29 11:48:39 2026] PANGO_DRV_STAT calls=61 valid=61 wait_avg_us=1 copy_avg_us=0 status_only=0 stabilize_us=0
+[Mon Jun 29 11:48:40 2026] PANGO_DRV_STAT calls=61 valid=61 wait_avg_us=1 copy_avg_us=0 status_only=0 stabilize_us=0
+[Mon Jun 29 11:48:41 2026] PANGO_DRV_STAT calls=61 valid=61 wait_avg_us=1 copy_avg_us=0 status_only=0 stabilize_us=0
+[Mon Jun 29 11:48:42 2026] PANGO_DRV_STAT calls=60 valid=60 wait_avg_us=1 copy_avg_us=0 status_only=0 stabilize_us=0
+[Mon Jun 29 11:48:43 2026] PANGO_DRV_STAT calls=61 valid=61 wait_avg_us=1 copy_avg_us=0 status_only=0 stabilize_us=0
+[Mon Jun 29 11:48:44 2026] PANGO_DRV_STAT calls=60 valid=60 wait_avg_us=1 copy_avg_us=0 status_only=0 stabilize_us=0
+[Mon Jun 29 11:48:45 2026] PANGO_DRV_STAT calls=61 valid=61 wait_avg_us=1 copy_avg_us=0 status_only=0 stabilize_us=0
+[Mon Jun 29 11:48:46 2026] PANGO_DRV_STAT calls=60 valid=60 wait_avg_us=1 copy_avg_us=0 status_only=0 stabilize_us=0
+[Mon Jun 29 11:48:47 2026] PANGO_DRV_STAT calls=59 valid=59 wait_avg_us=1 copy_avg_us=0 status_only=0 stabilize_us=0
+[Mon Jun 29 11:48:48 2026] PANGO_DRV_STAT calls=60 valid=60 wait_avg_us=1 copy_avg_us=0 status_only=0 stabilize_us=0
+[Mon Jun 29 11:48:49 2026] PANGO_DRV_STAT calls=60 valid=60 wait_avg_us=2 copy_avg_us=0 status_only=0 stabilize_us=0
+[Mon Jun 29 11:48:50 2026] PANGO_DRV_STAT calls=59 valid=59 wait_avg_us=1 copy_avg_us=0 status_only=0 stabilize_us=0
+[Mon Jun 29 11:48:51 2026] PANGO_DRV_STAT calls=60 valid=60 wait_avg_us=1 copy_avg_us=0 status_only=0 stabilize_us=0
+[Mon Jun 29 11:48:52 2026] PANGO_DRV_STAT calls=60 valid=60 wait_avg_us=1 copy_avg_us=0 status_only=0 stabilize_us=0
+[Mon Jun 29 11:48:53 2026] PANGO_DRV_STAT calls=60 valid=60 wait_avg_us=1 copy_avg_us=0 status_only=0 stabilize_us=0
+[Mon Jun 29 11:48:54 2026] PANGO_DRV_STAT calls=60 valid=60 wait_avg_us=2 copy_avg_us=0 status_only=0 stabilize_us=0
+[Mon Jun 29 11:48:55 2026] PANGO_DRV_STAT calls=60 valid=60 wait_avg_us=1 copy_avg_us=0 status_only=0 stabilize_us=0
+[Mon Jun 29 11:48:56 2026] PANGO_DRV_STAT calls=60 valid=60 wait_avg_us=1 copy_avg_us=0 status_only=0 stabilize_us=0
+[Mon Jun 29 11:48:57 2026] PANGO_DRV_STAT calls=59 valid=59 wait_avg_us=1 copy_avg_us=0 status_only=0 stabilize_us=0
+[Mon Jun 29 11:48:58 2026] PANGO_DRV_STAT calls=60 valid=60 wait_avg_us=1 copy_avg_us=0 status_only=0 stabilize_us=0
+[Mon Jun 29 11:48:59 2026] PANGO_DRV_STAT calls=59 valid=59 wait_avg_us=1 copy_avg_us=0 status_only=0 stabilize_us=0
+[Mon Jun 29 11:49:00 2026] PANGO_DRV_STAT calls=60 valid=60 wait_avg_us=1 copy_avg_us=0 status_only=0 stabilize_us=0
+[Mon Jun 29 11:49:01 2026] PANGO_DRV_STAT calls=49 valid=49 wait_avg_us=1 copy_avg_us=0 status_only=0 stabilize_us=0
+[Mon Jun 29 11:49:02 2026] PANGO_DRV_STAT calls=46 valid=46 wait_avg_us=1 copy_avg_us=0 status_only=0 stabilize_us=0
+[Mon Jun 29 11:49:03 2026] PANGO_DRV_STAT calls=43 valid=43 wait_avg_us=1 copy_avg_us=0 status_only=0 stabilize_us=0
+[Mon Jun 29 11:49:04 2026] PANGO_DRV_STAT calls=47 valid=47 wait_avg_us=1 copy_avg_us=0 status_only=0 stabilize_us=0
+[Mon Jun 29 11:49:05 2026] PANGO_DRV_STAT calls=47 valid=47 wait_avg_us=1 copy_avg_us=0 status_only=0 stabilize_us=0
+[Mon Jun 29 11:49:06 2026] PANGO_DRV_STAT calls=44 valid=44 wait_avg_us=1 copy_avg_us=0 status_only=0 stabilize_us=0
+[Mon Jun 29 11:49:07 2026] PANGO_DRV_STAT calls=46 valid=46 wait_avg_us=1 copy_avg_us=0 status_only=0 stabilize_us=0
+[Mon Jun 29 11:49:08 2026] PANGO_DRV_STAT calls=41 valid=41 wait_avg_us=1 copy_avg_us=0 status_only=0 stabilize_us=0
+[Mon Jun 29 11:49:09 2026] PANGO_DRV_STAT calls=46 valid=46 wait_avg_us=1 copy_avg_us=0 status_only=0 stabilize_us=0
+[Mon Jun 29 11:49:10 2026] PANGO_DRV_STAT calls=47 valid=47 wait_avg_us=1 copy_avg_us=0 status_only=0 stabilize_us=0
+[Mon Jun 29 11:49:11 2026] PANGO_DRV_STAT calls=44 valid=44 wait_avg_us=1 copy_avg_us=0 status_only=0 stabilize_us=0
+[Mon Jun 29 11:49:12 2026] PANGO_DRV_STAT calls=46 valid=46 wait_avg_us=1 copy_avg_us=0 status_only=0 stabilize_us=0
+[Mon Jun 29 11:49:13 2026] PANGO_DRV_STAT calls=44 valid=44 wait_avg_us=1 copy_avg_us=0 status_only=0 stabilize_us=0
+[Mon Jun 29 11:49:14 2026] PANGO_DRV_STAT calls=47 valid=47 wait_avg_us=1 copy_avg_us=0 status_only=0 stabilize_us=0
+[Mon Jun 29 11:49:15 2026] PANGO_DRV_STAT calls=47 valid=47 wait_avg_us=1 copy_avg_us=0 status_only=0 stabilize_us=0
+[Mon Jun 29 11:49:16 2026] PANGO_DRV_STAT calls=44 valid=44 wait_avg_us=1 copy_avg_us=0 status_only=0 stabilize_us=0
+[Mon Jun 29 11:49:17 2026] PANGO_DRV_STAT calls=46 valid=46 wait_avg_us=1 copy_avg_us=0 status_only=0 stabilize_us=0
+[Mon Jun 29 11:49:18 2026] PANGO_DRV_STAT calls=47 valid=47 wait_avg_us=1 copy_avg_us=0 status_only=0 stabilize_us=0
+[Mon Jun 29 11:49:19 2026] PANGO_DRV_STAT calls=44 valid=44 wait_avg_us=1 copy_avg_us=0 status_only=0 stabilize_us=0
+[Mon Jun 29 11:49:20 2026] PANGO_DRV_STAT calls=47 valid=47 wait_avg_us=1 copy_avg_us=0 status_only=0 stabilize_us=0
+[Mon Jun 29 11:49:21 2026] PANGO_DRV_STAT calls=46 valid=46 wait_avg_us=1 copy_avg_us=0 status_only=0 stabilize_us=0
+[Mon Jun 29 11:49:22 2026] PANGO_DRV_STAT calls=44 valid=44 wait_avg_us=1 copy_avg_us=0 status_only=0 stabilize_us=0
+[Mon Jun 29 11:49:23 2026] PANGO_DRV_STAT calls=47 valid=47 wait_avg_us=1 copy_avg_us=0 status_only=0 stabilize_us=0
+[Mon Jun 29 11:49:24 2026] PANGO_DRV_STAT calls=44 valid=44 wait_avg_us=1 copy_avg_us=0 status_only=0 stabilize_us=0
+[Mon Jun 29 11:49:25 2026] PANGO_DRV_STAT calls=47 valid=47 wait_avg_us=1 copy_avg_us=0 status_only=0 stabilize_us=0
+[Mon Jun 29 11:49:26 2026] PANGO_DRV_STAT calls=47 valid=47 wait_avg_us=1 copy_avg_us=0 status_only=0 stabilize_us=0
+[Mon Jun 29 11:49:27 2026] PANGO_DRV_STAT calls=44 valid=44 wait_avg_us=1 copy_avg_us=0 status_only=0 stabilize_us=0
+[Mon Jun 29 11:49:28 2026] PANGO_DRV_STAT calls=47 valid=47 wait_avg_us=1 copy_avg_us=0 status_only=0 stabilize_us=0
+[Mon Jun 29 11:49:29 2026] PANGO_DRV_STAT calls=47 valid=47 wait_avg_us=1 copy_avg_us=0 status_only=0 stabilize_us=0
+[Mon Jun 29 11:49:30 2026] PANGO_DRV_STAT calls=44 valid=44 wait_avg_us=1 copy_avg_us=0 status_only=0 stabilize_us=0
+[Mon Jun 29 11:49:31 2026] PANGO_DRV_STAT calls=47 valid=47 wait_avg_us=1 copy_avg_us=0 status_only=0 stabilize_us=0
+[Mon Jun 29 11:49:32 2026] PANGO_DRV_STAT calls=47 valid=47 wait_avg_us=1 copy_avg_us=0 status_only=0 stabilize_us=0
+[Mon Jun 29 11:49:33 2026] PANGO_DRV_STAT calls=44 valid=44 wait_avg_us=1 copy_avg_us=0 status_only=0 stabilize_us=0
+[Mon Jun 29 11:49:34 2026] PANGO_DRV_STAT calls=47 valid=47 wait_avg_us=1 copy_avg_us=0 status_only=0 stabilize_us=0
+[Mon Jun 29 11:49:35 2026] PANGO_DRV_STAT calls=47 valid=47 wait_avg_us=1 copy_avg_us=0 status_only=0 stabilize_us=0
+[Mon Jun 29 11:49:36 2026] PANGO_DRV_STAT calls=44 valid=44 wait_avg_us=1 copy_avg_us=0 status_only=0 stabilize_us=0
+[Mon Jun 29 11:49:37 2026] PANGO_DRV_STAT calls=47 valid=47 wait_avg_us=1 copy_avg_us=0 status_only=0 stabilize_us=0
+[Mon Jun 29 11:49:38 2026] PANGO_DRV_STAT calls=46 valid=46 wait_avg_us=1 copy_avg_us=0 status_only=0 stabilize_us=0
+[Mon Jun 29 11:49:39 2026] PANGO_DRV_STAT calls=44 valid=44 wait_avg_us=1 copy_avg_us=0 status_only=0 stabilize_us=0
+[Mon Jun 29 11:49:40 2026] pango_cdev_release.

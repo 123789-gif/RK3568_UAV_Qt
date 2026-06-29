@@ -3,7 +3,15 @@ set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+# shellcheck disable=SC1091
+source "$APP_ROOT/config/runtime.env"
+
 BIN="$APP_ROOT/bin/rk_dual_screen_video"
+DRIVER_DIR="$APP_ROOT/driver"
+DRIVER_FILE="${PCIE_DRIVER_FILE:-pango_pci_driver.ko}"
+DRIVER_KO="$DRIVER_DIR/$DRIVER_FILE"
+MODULE_NAME="${PCIE_DRIVER_MODULE:-pango_pci_driver}"
+DEVICE_NODE="${PCIE_DRIVER_DEVICE:-/dev/pango_pci_driver}"
 FAIL=0
 
 ok() {
@@ -75,8 +83,51 @@ for model in ped_det.rknn plate_det.rknn plate_reco.rknn; do
     fi
 done
 
+if [[ -f "$DRIVER_KO" ]]; then
+    ok "PCIe driver file: $DRIVER_KO"
+
+    DRIVER_INFO="$(file "$DRIVER_KO" 2>&1 || true)"
+    if grep -q "ARM aarch64" <<<"$DRIVER_INFO"; then
+        ok "PCIe driver architecture: ARM aarch64"
+    else
+        err "invalid PCIe driver architecture: $DRIVER_INFO"
+    fi
+
+    if [[ -f "$DRIVER_DIR/SHA256SUMS" ]] && (
+        cd "$DRIVER_DIR"
+        sha256sum -c SHA256SUMS >/dev/null
+    ); then
+        ok "PCIe driver SHA256"
+    else
+        err "PCIe driver SHA256 mismatch or missing SHA256SUMS"
+    fi
+
+    DRIVER_VERMAGIC="$(modinfo -F vermagic "$DRIVER_KO" 2>/dev/null || true)"
+    DRIVER_KERNEL="${DRIVER_VERMAGIC%% *}"
+    RUNNING_KERNEL="$(uname -r)"
+
+    if [[ -n "$DRIVER_KERNEL" && "$DRIVER_KERNEL" == "$RUNNING_KERNEL" ]]; then
+        ok "PCIe driver vermagic: $DRIVER_VERMAGIC"
+    else
+        err "PCIe driver kernel mismatch: driver=${DRIVER_KERNEL:-unknown} running=$RUNNING_KERNEL"
+    fi
+else
+    err "missing PCIe driver file: $DRIVER_KO"
+fi
+
+if grep -q "^${MODULE_NAME} " /proc/modules; then
+    ok "PCIe module loaded: $MODULE_NAME"
+else
+    err "PCIe module not loaded: $MODULE_NAME"
+fi
+
+if [[ -c "$DEVICE_NODE" ]]; then
+    ok "PCIe character device: $DEVICE_NODE"
+else
+    err "missing PCIe character device: $DEVICE_NODE"
+fi
+
 for dev in \
-    /dev/pango_pci_driver \
     /dev/dri/card0 \
     /dev/video0 \
     /dev/ttyS0 \
