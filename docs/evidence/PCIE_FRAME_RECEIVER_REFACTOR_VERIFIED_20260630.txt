@@ -1,0 +1,50 @@
+===== VERIFY DATE =====
+Tue Jun 30 11:54:19 AM UTC 2026
+
+===== VERSION =====
+20260630T111507Z
+
+===== KERNEL =====
+Linux linaro-alip 6.1.99 #1 SMP Fri Mar 21 08:36:35 UTC 2025 aarch64 GNU/Linux
+
+===== RUNTIME CHECK =====
+[OK] executable: /userdata/Apps/RK3568_PTZ_Qt_pcie_refactor_test/bin/rk_dual_screen_video
+[OK] deployment MANIFEST SHA256
+[OK] executable architecture: ARM aarch64
+[OK] ELF dependency: libdrm.so.2
+[OK] ELF dependency: librga.so.2
+[OK] ELF dependency: librknnrt.so
+[OK] ELF dependency: libopencv_core.so.406
+[OK] ELF dependency: libopencv_imgproc.so.406
+[OK] model: ped_det.rknn
+[OK] model: plate_det.rknn
+[OK] model: plate_reco.rknn
+[OK] PCIe driver file: /userdata/Apps/RK3568_PTZ_Qt_pcie_refactor_test/driver/pango_pci_driver.ko
+[OK] PCIe driver architecture: ARM aarch64
+[OK] PCIe driver SHA256
+[OK] PCIe driver vermagic: 6.1.99 SMP mod_unload aarch64
+[OK] PCIe module loaded: pango_pci_driver
+[OK] PCIe character device: /dev/pango_pci_driver
+[OK] device: /dev/dri/card0
+[OK] device: /dev/video0
+[OK] device: /dev/ttyS0
+[OK] device: /dev/mem
+[OK] runtime libraries
+[OK] system RKNN runtime
+Runtime check passed.
+
+===== FUNCTION RESULT =====
+Qt startup: PASS
+PCIe input: PASS
+HDMI display: PASS
+DSI and touch: PASS
+NPU inference: PASS
+PTZ USB video: PASS
+VISCA control: PASS
+Foreground stop: PASS
+
+===== PCIe MODULE =====
+pango_pci_driver       49152  0
+crw------- 1 root root 511, 0 Jun 30 11:24 /dev/pango_pci_driver
+
+===== APPLICATION LOG =====

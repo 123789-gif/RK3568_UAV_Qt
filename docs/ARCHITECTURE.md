@@ -5,11 +5,13 @@
 ```text
 FPGA
   └─ PCIe DMA / 四缓冲
-        └─ DrmRgaDisplay
-             ├─ RGA 缩放/格式处理
-             ├─ DRM/KMS → HDMI 1920×1080
-             ├─ OSD 系统状态与 AI 结果
-             └─ 最新帧拷贝 → NpuInferenceWorker
+       └─ PcieFrameReceiver
+            └─ 借用 DMA mmap 帧指针
+                 └─ DrmRgaDisplay
+                      ├─ RGA 缩放/格式处理
+                      ├─ DRM/KMS → HDMI 1920×1080
+                      ├─ OSD 系统状态与 AI 结果
+                      └─ 最新帧拷贝 → NpuInferenceWorker
 
 PTZ USB 采集
   └─ PtzCaptureWorker
@@ -52,21 +54,30 @@ Goodix 触摸仅映射到 `DSI-1`。
 - 系统状态显示；
 - 模块信号连接的一部分。
 
+### `src/pcie`
+
+`PcieFrameReceiver` 负责：
+
+- `/dev/pango_pci_driver` 打开与关闭；
+- PCIe ioctl ABI 定义；
+- DMA 四缓冲配置、mmap 与 unmap；
+- BAR0 `/dev/mem` 映射；
+- FPGA 启停寄存器写入；
+- 阻塞等待下一帧并返回借用帧视图；
+- PCIe 链路信息和错误状态。
+
+该模块不创建新线程、不复制整帧，仍由显示工作线程同步调用。
+
 ### `src/video`
 
-当前 `DrmRgaDisplay` 同时承担：
+`DrmRgaDisplay` 负责：
 
-- `/dev/pango_pci_driver`；
-- PCIe DMA 四缓冲 mmap；
-- BAR0 `/dev/mem` 映射；
-- FPGA 控制；
+- 调用 `PcieFrameReceiver` 获取最新 DMA 帧；
 - RGA；
 - DRM/KMS；
 - OSD；
 - NPU 帧提交；
 - 状态统计。
-
-这是当前最大的耦合点，但不应在 NPU 页面修改期间同时大拆。
 
 ### `src/npu`
 
@@ -96,20 +107,20 @@ Goodix 触摸仅映射到 `DSI-1`。
 2. 不同模型共用 FPS 和置信度；
 3. 全帧预处理和数据复制尚未按多任务调度复用；
 4. HDMI 左上角系统 OSD 与 AI OSD 重叠；
-5. PCIe、显示和 OSD 集中在一个类中；
-6. PCIe 驱动仍需人工加载。
+5. DRM/RGA、OSD 和 NPU 帧提交仍集中在 `DrmRgaDisplay`；
+6. PCIe 驱动由部署脚本条件自动加载，用户态接收逻辑已剥离到 `src/pcie`。
 
 ## 5. 推荐后续顺序
 
 ```text
 1. 固化文档与部署基线
 2. PCIe 驱动条件自动加载
-3. NPU 任务配置结构
-4. 单线程多任务调度与单帧邮箱
-5. 统一 NPU 结果快照和结果过期机制
-6. AI 推理页面
-7. OverlayComposer 统一 OSD
-8. 最后拆分 PcieFrameReceiver 与 DrmRgaDisplay
+3. PcieFrameReceiver 与 DrmRgaDisplay 解耦
+4. NPU 任务配置结构
+5. 单线程多任务调度与单帧邮箱
+6. 统一 NPU 结果快照和结果过期机制
+7. AI 推理页面
+8. OverlayComposer 统一 OSD
 ```
 
 ## 6. NPU 推荐目标数据流

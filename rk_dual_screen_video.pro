@@ -10,6 +10,7 @@ SOURCES += \
     src/app/main.cpp \
     src/ui/control_panel_window.cpp \
     src/video/drm_rga_display.cpp \
+    src/pcie/pcie_frame_receiver.cpp \
     src/npu/npu_inference_worker.cpp \
     src/npu/vision.cpp \
     src/ptz/ptz_capture_worker.cpp \
@@ -20,6 +21,8 @@ SOURCES += \
 HEADERS += \
     src/ui/control_panel_window.h \
     src/video/drm_rga_display.h \
+    src/pcie/pcie_frame_receiver.h \
+    src/pcie/pango_pci_uapi.h \
     src/npu/npu_inference_worker.h \
     src/npu/npu_result_types.h \
     src/npu/demo_types.h \

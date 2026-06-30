@@ -1,5 +1,6 @@
 #include "video/drm_rga_display.h"
 #include "npu/npu_inference_worker.h"
+#include "pcie/pcie_frame_receiver.h"
 
 #include <QDebug>
 
@@ -34,48 +35,6 @@
 #define RK_FORMAT_RGB_565 0x4
 #endif
 
-#define TYPE 'S'
-#define PCI_READ_DATA_CMD             _IOWR(TYPE, 0, int)
-#define PCI_MAP_ADDR_CMD              _IOWR(TYPE, 2, int)
-#define PCI_UMAP_ADDR_CMD             _IOWR(TYPE, 7, int)
-#define PCI_MAP_BAR0_CMD              _IOWR(TYPE, 10, int)
-#define PCI_SET_CONFIG                _IOWR(TYPE, 11, int)
-
-#define DMA_MAX_PACKET_SIZE           4096
-#define MAX_BLOCK_SIZE                1024
-
-#define PCIE_FRAME_W                  1920
-#define PCIE_FRAME_H                  1080
-#define PCIE_BPP                      2
-#define PCIE_FRAME_SIZE               (PCIE_FRAME_W * PCIE_FRAME_H * PCIE_BPP)
-#define PCIE_FRAME_MAP_SIZE           (((PCIE_FRAME_SIZE + 4095) / 4096) * 4096)
-#define PCIE_DMA_BUF_NUM              4
-
-#define PIO_START_STOP_OFFSET         0x000
-#define PIO_START_VALUE               0xffffffe5u
-#define PIO_STOP_VALUE                0xffffff00u
-
-struct BAR_BASE_INFO { unsigned long bar_base; unsigned long bar_len; };
-struct CAP_INFO { unsigned char flag; unsigned char id; unsigned char addr_offset; unsigned char next_offset; };
-struct CAP_LIST { unsigned char cap_status; unsigned char cap_error; CAP_INFO cap_buf[256]; };
-struct PCI_DEVICE_INFO {
-    unsigned int vendor_id, device_id, cmd_reg, status_reg, revision_id, class_prog, class_device;
-    BAR_BASE_INFO bar[6];
-    unsigned int min_gnt, max_lat, link_speed, link_width, mps, mrrs;
-    unsigned int data[1024];
-};
-struct LOAD_DATA_INFO { unsigned int num_words; unsigned int block_words[MAX_BLOCK_SIZE]; };
-struct PCI_LOAD_INFO {
-    unsigned char link_status; unsigned int crc; unsigned char axi_direction; unsigned char load_status;
-    unsigned int total_num_words; LOAD_DATA_INFO data_block;
-};
-struct COMMAND_OPERATION {
-    unsigned char w_r; unsigned char step; unsigned int addr; unsigned int data; unsigned int cnt; unsigned int delay;
-    PCI_DEVICE_INFO get_pci_dev_info; CAP_LIST cap_info; PCI_LOAD_INFO load_info;
-};
-struct DMA_DATA { unsigned char read_buf[DMA_MAX_PACKET_SIZE]; unsigned char write_buf[DMA_MAX_PACKET_SIZE]; };
-struct DMA_OPERATION { unsigned int current_len; unsigned int offset_addr; unsigned int cmd; DMA_DATA data; };
-
 static uint64_t now_ns()
 {
     struct timespec ts {};
@@ -83,119 +42,12 @@ static uint64_t now_ns()
     return uint64_t(ts.tv_sec) * 1000000000ULL + uint64_t(ts.tv_nsec);
 }
 
-class Bar0Pio
-{
-public:
-    bool openFromDriver(int devFd)
-    {
-        COMMAND_OPERATION cmd {};
-        if (ioctl(devFd, PCI_MAP_BAR0_CMD, &cmd) < 0) {
-            perror("ioctl PCI_MAP_BAR0_CMD");
-            return false;
-        }
+static constexpr int PCIE_FRAME_W = PcieFrameReceiver::kFrameWidth;
+static constexpr int PCIE_FRAME_H = PcieFrameReceiver::kFrameHeight;
+static constexpr int PCIE_BPP = PcieFrameReceiver::kBytesPerPixel;
+static constexpr std::size_t PCIE_FRAME_SIZE = PcieFrameReceiver::kFrameBytes;
 
-        unsigned long barBase = cmd.get_pci_dev_info.bar[0].bar_base;
-        unsigned long barLen  = cmd.get_pci_dev_info.bar[0].bar_len;
-
-        if (!barBase || !barLen) {
-            fprintf(stderr, "invalid BAR0 base/len: base=0x%lx len=0x%lx\n", barBase, barLen);
-            return false;
-        }
-
-        long pageSize = sysconf(_SC_PAGESIZE);
-        unsigned long pageMask = static_cast<unsigned long>(pageSize) - 1;
-        unsigned long pageBase = barBase & ~pageMask;
-        unsigned long pageOff  = barBase - pageBase;
-        unsigned long mapLen   = barLen + pageOff;
-
-        m_memFd = ::open("/dev/mem", O_RDWR | O_SYNC);
-        if (m_memFd < 0) {
-            perror("open /dev/mem");
-            return false;
-        }
-
-        void *p = mmap(nullptr, mapLen, PROT_READ | PROT_WRITE, MAP_SHARED, m_memFd, pageBase);
-        if (p == MAP_FAILED) {
-            perror("mmap /dev/mem BAR0");
-            ::close(m_memFd);
-            m_memFd = -1;
-            return false;
-        }
-
-        m_mapBase = p;
-        m_mapLen = mapLen;
-        m_regs = static_cast<volatile uint8_t *>(p) + pageOff;
-
-        qDebug() << "BAR0 mapped:"
-                 << "phys=0x" + QString::number(barBase, 16)
-                 << "len=0x" + QString::number(barLen, 16)
-                 << "virt=" << reinterpret_cast<void *>(const_cast<uint8_t *>(reinterpret_cast<volatile uint8_t *>(m_regs)));
-
-        return true;
-    }
-
-    void write32(uint32_t offset, uint32_t value)
-    {
-        if (!m_regs) return;
-        volatile uint32_t *addr = reinterpret_cast<volatile uint32_t *>(
-                    const_cast<uint8_t *>(reinterpret_cast<volatile uint8_t *>(m_regs) + offset));
-        *addr = value;
-    }
-
-    void close()
-    {
-        if (m_mapBase && m_mapBase != MAP_FAILED) munmap(m_mapBase, m_mapLen);
-        m_mapBase = nullptr;
-        m_mapLen = 0;
-        m_regs = nullptr;
-        if (m_memFd >= 0) {
-            ::close(m_memFd);
-            m_memFd = -1;
-        }
-    }
-
-    ~Bar0Pio() { close(); }
-
-private:
-    int m_memFd = -1;
-    void *m_mapBase = nullptr;
-    size_t m_mapLen = 0;
-    volatile uint8_t *m_regs = nullptr;
-};
-
-static int configure_dma_buffers(int devFd)
-{
-    DMA_OPERATION dma {};
-    dma.current_len = (PCIE_FRAME_W * PCIE_BPP) >> 2;
-    dma.offset_addr = 0;
-    dma.cmd = 0;
-
-    if (ioctl(devFd, PCI_MAP_ADDR_CMD, &dma) < 0) {
-        perror("ioctl PCI_MAP_ADDR_CMD");
-        return -1;
-    }
-
-    if (ioctl(devFd, PCI_SET_CONFIG, &dma) < 0) {
-        perror("ioctl PCI_SET_CONFIG");
-        return -1;
-    }
-
-    return 0;
-}
-
-static void *map_video_buffer(int devFd, int index)
-{
-    off_t off = off_t(index) * off_t(PCIE_FRAME_MAP_SIZE);
-    void *p = mmap(nullptr, PCIE_FRAME_MAP_SIZE, PROT_READ, MAP_SHARED, devFd, off);
-    if (p == MAP_FAILED) {
-        fprintf(stderr, "mmap video buffer[%d] failed: errno=%d (%s)\n", index, errno, strerror(errno));
-        return nullptr;
-    }
-    qDebug() << "mmap video buffer" << index << "at" << p;
-    return p;
-}
-
-static int rga_scale_rgb565(void *srcPtr, void *dstPtr, int dstW, int dstH, int dstStrideW, int dstStrideH)
+static int rga_scale_rgb565(const void *srcPtr, void *dstPtr, int dstW, int dstH, int dstStrideW, int dstStrideH)
 {
     rga_info_t src;
     rga_info_t dst;
@@ -204,7 +56,7 @@ static int rga_scale_rgb565(void *srcPtr, void *dstPtr, int dstW, int dstH, int 
 
     src.fd = -1;
     src.mmuFlag = 1;
-    src.virAddr = srcPtr;
+    src.virAddr = const_cast<void *>(srcPtr);
     src.rotation = 0;
     rga_set_rect(&src.rect, 0, 0, PCIE_FRAME_W, PCIE_FRAME_H, PCIE_FRAME_W, PCIE_FRAME_H, RK_FORMAT_RGB_565);
 
@@ -865,52 +717,44 @@ void DrmRgaDisplay::workerMain()
     const int reqW = m_reqWidth.load();
     const int reqH = m_reqHeight.load();
 
-    int devFd = -1;
-    void *inBuf[PCIE_DMA_BUF_NUM] {};
-    Bar0Pio pio;
+    PcieFrameReceiver pcie;
     DrmState drm;
-    bool pioOpened = false;
     bool drmInited = false;
 
     emit stateChanged("Opening PCIe driver");
-    devFd = ::open(devPath, O_RDWR);
-    if (devFd < 0) {
-        setLastError(QString("open %1 failed: %2").arg(devPath).arg(strerror(errno)));
+    if (!pcie.open(devPath)) {
+        setLastError(QString::fromStdString(pcie.lastError()));
         goto cleanup;
     }
 
     {
-        COMMAND_OPERATION pciInfo {};
-        if (ioctl(devFd, PCI_READ_DATA_CMD, &pciInfo) == 0) {
+        const PcieFrameReceiver::LinkInfo &info = pcie.linkInfo();
+        if (info.valid) {
             qDebug() << "PCI"
-                     << "vendor=0x" + QString::number(pciInfo.get_pci_dev_info.vendor_id, 16)
-                     << "device=0x" + QString::number(pciInfo.get_pci_dev_info.device_id, 16)
-                     << "link=gen" << pciInfo.get_pci_dev_info.link_speed
-                     << "x" << pciInfo.get_pci_dev_info.link_width
-                     << "mps=" << pciInfo.get_pci_dev_info.mps
-                     << "mrrs=" << pciInfo.get_pci_dev_info.mrrs;
+                     << "vendor=0x" + QString::number(info.vendorId, 16)
+                     << "device=0x" + QString::number(info.deviceId, 16)
+                     << "link=gen" << info.linkSpeed
+                     << "x" << info.linkWidth
+                     << "mps=" << info.mps
+                     << "mrrs=" << info.mrrs;
+        } else if (!pcie.lastWarning().empty()) {
+            emit stateChanged(QString("Warning: %1")
+                              .arg(QString::fromStdString(pcie.lastWarning())));
         }
     }
 
-    if (configure_dma_buffers(devFd) != 0) {
-        setLastError("configure_dma_buffers failed");
+    if (!pcie.startStream()) {
+        setLastError(QString::fromStdString(pcie.lastError()));
         goto cleanup;
     }
 
-    for (int i = 0; i < PCIE_DMA_BUF_NUM; ++i) {
-        inBuf[i] = map_video_buffer(devFd, i);
-        if (!inBuf[i]) {
-            setLastError(QString("mmap video buffer %1 failed").arg(i));
-            goto cleanup;
-        }
-    }
-
-    if (pio.openFromDriver(devFd)) {
-        pioOpened = true;
-        pio.write32(PIO_START_STOP_OFFSET, PIO_START_VALUE);
+    if (pcie.pioControlActive()) {
         emit stateChanged("PCIe PIO start written");
     } else {
-        emit stateChanged("Warning: BAR0 PIO map failed, continue");
+        const QString warning = pcie.lastWarning().empty()
+                ? QStringLiteral("BAR0 PIO map failed, continue")
+                : QString::fromStdString(pcie.lastWarning());
+        emit stateChanged(QString("Warning: %1").arg(warning));
     }
 
     emit stateChanged("Initializing DRM");
@@ -937,25 +781,30 @@ void DrmRgaDisplay::workerMain()
         OsdStats osdStats {};
 
         while (!m_stopReq.load()) {
-            char dummy = 0;
-            ssize_t rd = read(devFd, &dummy, sizeof(dummy));
+            PcieFrameReceiver::FrameView frame;
+            const PcieFrameReceiver::WaitResult waitResult = pcie.waitNextFrame(frame);
             readCnt++;
-            if (rd <= 0 || ((rd & 0x1) == 0)) continue;
+            if (waitResult == PcieFrameReceiver::WaitResult::Error) {
+                setLastError(QString::fromStdString(pcie.lastError()));
+                break;
+            }
+            if (waitResult != PcieFrameReceiver::WaitResult::FrameReady) {
+                continue;
+            }
 
-            int index = int((rd >> 1) & 0x3);
-            if (index < 0 || index >= PCIE_DMA_BUF_NUM) continue;
+            const int index = frame.bufferIndex;
             validCnt++;
             if (m_npuWorker) {
                 m_npuWorker->submitFrame(validCnt,
-                                         static_cast<const uint8_t *>(inBuf[index]),
-                                         PCIE_FRAME_SIZE,
+                                         frame.data,
+                                         frame.bytes,
                                          PCIE_FRAME_W,
                                          PCIE_FRAME_H);
             }
 
             int back = front ^ 1;
             uint64_t r0 = now_ns();
-            int r = rga_scale_rgb565(inBuf[index], drm.fb[back].map,
+            int r = rga_scale_rgb565(frame.data, drm.fb[back].map,
                                      drm.modeW, drm.modeH,
                                      drm.fb[back].pitch / PCIE_BPP, drm.modeH);
             uint64_t r1 = now_ns();
@@ -1045,21 +894,7 @@ void DrmRgaDisplay::workerMain()
 
 cleanup:
     emit stateChanged("RGA/DRM cleanup");
-    if (pioOpened) {
-        pio.write32(PIO_START_STOP_OFFSET, PIO_STOP_VALUE);
-        pio.close();
-    }
-    for (int i = 0; i < PCIE_DMA_BUF_NUM; ++i) {
-        if (inBuf[i]) {
-            munmap(inBuf[i], PCIE_FRAME_MAP_SIZE);
-            inBuf[i] = nullptr;
-        }
-    }
-    if (devFd >= 0) ioctl(devFd, PCI_UMAP_ADDR_CMD, 0);
-    if (devFd >= 0) {
-        ::close(devFd);
-        devFd = -1;
-    }
+    pcie.close();
     if (drmInited) drm_cleanup(drm);
     if (m_npuWorker) m_npuWorker->stop();
 
