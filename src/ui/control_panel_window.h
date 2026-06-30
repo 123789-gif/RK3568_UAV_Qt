@@ -2,6 +2,7 @@
 #define CONTROL_PANEL_WINDOW_H
 
 #include "video/drm_rga_display.h"
+#include "npu/npu_task_config.h"
 
 #include <QImage>
 #include <QMainWindow>
@@ -16,6 +17,7 @@ class QCheckBox;
 class QSlider;
 class QSpinBox;
 class QDoubleSpinBox;
+class QTableWidget;
 class FanController;
 class PtzCaptureWorker;
 class PtzControlWorker;
@@ -43,6 +45,7 @@ private slots:
     void onApplyFpgaConfigClicked();
     void onApplyAiConfigClicked();
     void onStatusTimer();
+    void onAiUiTimer();
 
     void onDisplayStateChanged(QString state);
     void onDisplayError(QString msg);
@@ -90,6 +93,11 @@ private:
     void setCurrentPage(int index);
     void updateFanUi();
     void updateStatusText();
+    void updateAiPanel(const NpuFrameResult &result);
+    void appendAiResultRows(const NpuFrameResult &result);
+    void clearAiResultTable();
+    void loadAiSettings();
+    void saveAiSettings(const NpuTaskConfig &config);
     void applyStyle();
 
 private:
@@ -102,6 +110,7 @@ private:
 
     QTimer *m_statusTimer = nullptr;
     QTimer *m_ptzFrameTimer = nullptr;
+    QTimer *m_aiUiTimer = nullptr;
 
     QStackedWidget *m_stack = nullptr;
     QLabel *m_bottomStatus = nullptr;
@@ -134,8 +143,13 @@ private:
     QComboBox *m_ch3PreprocCombo = nullptr;
     QComboBox *m_ch4PreprocCombo = nullptr;
     QCheckBox *m_npuEnableCheck = nullptr;
+    QComboBox *m_npuTaskCombo = nullptr;
     QSpinBox *m_npuFpsSpin = nullptr;
     QDoubleSpinBox *m_confSpin = nullptr;
+    QDoubleSpinBox *m_nmsSpin = nullptr;
+    QLabel *m_aiConfigSummaryLabel = nullptr;
+    QLabel *m_aiRuntimeLabel = nullptr;
+    QTableWidget *m_aiResultTable = nullptr;
 
     bool m_displayRunning = false;
     bool m_osdEnabled = true;
@@ -165,6 +179,13 @@ private:
     int m_aiPlateCount = 0;
     int m_aiPedestrianCount = 0;
     QString m_aiStatus = "off";
+    NpuTaskType m_aiTask = NpuTaskType::Pedestrian;
+    double m_aiLastMs = 0.0;
+    double m_aiPreMs = 0.0;
+    int m_aiProcessed = 0;
+    int m_aiDropped = 0;
+    uint64_t m_lastAiResultFrameId = 0;
+    int m_aiHistoryDepth = 50;
 
     double m_ptzCaptureFps = 0.0;
     double m_ptzDecodeFps = 0.0;

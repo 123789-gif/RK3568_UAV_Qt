@@ -24,6 +24,7 @@ HEADERS += \
     src/pcie/pcie_frame_receiver.h \
     src/pcie/pango_pci_uapi.h \
     src/npu/npu_inference_worker.h \
+    src/npu/npu_task_config.h \
     src/npu/npu_result_types.h \
     src/npu/demo_types.h \
     src/npu/vision.h \

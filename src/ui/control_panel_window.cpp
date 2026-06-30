@@ -18,6 +18,13 @@
 #include <QCheckBox>
 #include <QSpinBox>
 #include <QDoubleSpinBox>
+#include <QAbstractSpinBox>
+#include <QTableWidget>
+#include <QScrollArea>
+#include <QHeaderView>
+#include <QAbstractItemView>
+#include <QSettings>
+#include <QCoreApplication>
 #include <QFrame>
 #include <QButtonGroup>
 #include <QPixmap>
@@ -34,12 +41,15 @@
 #include <QTemporaryFile>
 #include <QFileInfoList>
 #include <QSet>
+#include <QList>
 
 #include <cstdio>
 #include <csetjmp>
 #include <algorithm>
 #include <cerrno>
 #include <cstring>
+#include <vector>
+#include <functional>
 #include <sys/statvfs.h>
 
 extern "C" {
@@ -457,6 +467,29 @@ QFileInfoList collectManualSnapshotFiles(const QString &manualDirectory,
     return result;
 }
 
+QString aiTaskDisplayName(NpuTaskType task)
+{
+    return task == NpuTaskType::PlateCascade
+            ? QStringLiteral("车牌识别")
+            : QStringLiteral("行人检测");
+}
+
+QString aiSettingsPath()
+{
+    QDir binDir(QCoreApplication::applicationDirPath());
+    const QString configDir = QDir::cleanPath(binDir.filePath(QStringLiteral("../config")));
+    QDir().mkpath(configDir);
+    return QDir(configDir).filePath(QStringLiteral("ai_panel.ini"));
+}
+
+QString aiBoxText(const NpuBox &box)
+{
+    return QStringLiteral("%1,%2,%3,%4")
+            .arg(qRound(box.x))
+            .arg(qRound(box.y))
+            .arg(qRound(box.w))
+            .arg(qRound(box.h));
+}
 
 } // namespace
 
@@ -507,11 +540,20 @@ ControlPanelWindow::ControlPanelWindow(QWidget *parent)
 
     setupControlUi();
     applyStyle();
+    loadAiSettings();
+    onApplyAiConfigClicked();
 
     m_statusTimer = new QTimer(this);
     connect(m_statusTimer, &QTimer::timeout,
             this, &ControlPanelWindow::onStatusTimer);
     m_statusTimer->start(1000);
+
+    // AI结果只轮询最新快照，不从推理线程向UI排队。5 Hz足以更新状态和结果表，
+    // 同时避免DSI界面频繁重绘影响主显示链路。
+    m_aiUiTimer = new QTimer(this);
+    connect(m_aiUiTimer, &QTimer::timeout,
+            this, &ControlPanelWindow::onAiUiTimer);
+    m_aiUiTimer->start(200);
 
     // Qt按20 fps取最新帧。当前低CPU版本的PTZ采集同样为20 fps，
     // 不向主线程排队，也不影响PCIe HDMI显示链路。
@@ -543,6 +585,10 @@ ControlPanelWindow::ControlPanelWindow(QWidget *parent)
 
 ControlPanelWindow::~ControlPanelWindow()
 {
+    if (m_aiUiTimer) {
+        m_aiUiTimer->stop();
+    }
+
     if (m_ptzFrameTimer) {
         m_ptzFrameTimer->stop();
     }
@@ -1058,42 +1104,198 @@ QWidget *ControlPanelWindow::createCpuPage()
 QWidget *ControlPanelWindow::createAiPage()
 {
     QWidget *page = new QWidget(this);
-    QVBoxLayout *layout = new QVBoxLayout(page);
-    layout->setContentsMargins(12, 8, 12, 8);
-    layout->setSpacing(12);
+    QHBoxLayout *pageLayout = new QHBoxLayout(page);
+    pageLayout->setContentsMargins(6, 4, 6, 4);
+    pageLayout->setSpacing(8);
 
-    QGroupBox *group = new QGroupBox("AI / NPU 推理配置", page);
-    QGridLayout *grid = new QGridLayout(group);
-    grid->setContentsMargins(18, 22, 18, 16);
-    grid->setHorizontalSpacing(14);
-    grid->setVerticalSpacing(12);
+    QWidget *leftPanel = new QWidget(page);
+    leftPanel->setFixedWidth(400);
+    QVBoxLayout *leftLayout = new QVBoxLayout(leftPanel);
+    leftLayout->setContentsMargins(0, 0, 0, 0);
+    leftLayout->setSpacing(8);
 
-    m_npuEnableCheck = new QCheckBox("启用 NPU 推理", group);
+    QGroupBox *configGroup = new QGroupBox("AI / NPU 单任务配置", leftPanel);
+    QGridLayout *grid = new QGridLayout(configGroup);
+    grid->setContentsMargins(12, 18, 12, 10);
+    grid->setHorizontalSpacing(8);
+    grid->setVerticalSpacing(7);
+    grid->setColumnStretch(1, 1);
 
-    m_npuFpsSpin = new QSpinBox(group);
-    m_npuFpsSpin->setRange(1, 30);
-    m_npuFpsSpin->setValue(8);
+    m_npuEnableCheck = new QCheckBox("启用 NPU 推理", configGroup);
+    m_npuEnableCheck->setMinimumHeight(42);
+
+    m_npuTaskCombo = new QComboBox(configGroup);
+    m_npuTaskCombo->addItem("行人检测", static_cast<int>(NpuTaskType::Pedestrian));
+    m_npuTaskCombo->addItem("车牌识别（检测→识别）",
+                            static_cast<int>(NpuTaskType::PlateCascade));
+    m_npuTaskCombo->setMinimumHeight(46);
+
+    QLabel *sourceValue = new QLabel("PCIe 主视频（固定）", configGroup);
+    sourceValue->setObjectName("ptzState");
+    sourceValue->setMinimumHeight(38);
+
+    auto makeTouchButton = [configGroup](const QString &text) {
+        QPushButton *button = new QPushButton(text, configGroup);
+        button->setObjectName("touchAdjustButton");
+        button->setFixedSize(54, 46);
+        button->setAutoRepeat(true);
+        button->setAutoRepeatDelay(350);
+        button->setAutoRepeatInterval(120);
+        return button;
+    };
+
+    auto configureTouchSpin = [](QAbstractSpinBox *spin) {
+        spin->setButtonSymbols(QAbstractSpinBox::NoButtons);
+        spin->setReadOnly(true);
+        spin->setAlignment(Qt::AlignCenter);
+        spin->setObjectName("touchValueSpin");
+        spin->setMinimumSize(104, 46);
+        spin->setFocusPolicy(Qt::NoFocus);
+    };
+
+    m_npuFpsSpin = new QSpinBox(configGroup);
+    m_npuFpsSpin->setRange(1, 15);
+    m_npuFpsSpin->setSingleStep(1);
+    m_npuFpsSpin->setValue(5);
     m_npuFpsSpin->setSuffix(" fps");
+    configureTouchSpin(m_npuFpsSpin);
 
-    m_confSpin = new QDoubleSpinBox(group);
-    m_confSpin->setRange(0.05, 0.95);
+    m_confSpin = new QDoubleSpinBox(configGroup);
+    m_confSpin->setRange(0.10, 0.95);
     m_confSpin->setSingleStep(0.05);
-    m_confSpin->setValue(0.35);
+    m_confSpin->setDecimals(2);
+    m_confSpin->setValue(0.50);
+    configureTouchSpin(m_confSpin);
 
-    QPushButton *apply = new QPushButton("应用 AI 配置", group);
+    m_nmsSpin = new QDoubleSpinBox(configGroup);
+    m_nmsSpin->setRange(0.10, 0.90);
+    m_nmsSpin->setSingleStep(0.05);
+    m_nmsSpin->setDecimals(2);
+    m_nmsSpin->setValue(0.45);
+    configureTouchSpin(m_nmsSpin);
+
+    auto addTouchAdjustRow = [&](int row,
+                                 const QString &labelText,
+                                 QAbstractSpinBox *spin,
+                                 const std::function<void()> &decrease,
+                                 const std::function<void()> &increase) {
+        QLabel *label = new QLabel(labelText, configGroup);
+        QPushButton *minusButton = makeTouchButton(QStringLiteral("−"));
+        QPushButton *plusButton = makeTouchButton(QStringLiteral("+"));
+
+        QWidget *adjustWidget = new QWidget(configGroup);
+        QHBoxLayout *adjustLayout = new QHBoxLayout(adjustWidget);
+        adjustLayout->setContentsMargins(0, 0, 0, 0);
+        adjustLayout->setSpacing(6);
+        adjustLayout->addWidget(minusButton);
+        adjustLayout->addWidget(spin, 1);
+        adjustLayout->addWidget(plusButton);
+
+        grid->addWidget(label, row, 0);
+        grid->addWidget(adjustWidget, row, 1);
+
+        connect(minusButton, &QPushButton::clicked, this, decrease);
+        connect(plusButton, &QPushButton::clicked, this, increase);
+    };
+
+    QPushButton *apply = new QPushButton("应用 AI 配置", configGroup);
+    apply->setMinimumHeight(50);
 
     grid->addWidget(m_npuEnableCheck, 0, 0, 1, 2);
-    grid->addWidget(new QLabel("推理频率", group), 1, 0);
-    grid->addWidget(m_npuFpsSpin, 1, 1);
-    grid->addWidget(new QLabel("置信度阈值", group), 2, 0);
-    grid->addWidget(m_confSpin, 2, 1);
-    grid->addWidget(apply, 3, 0, 1, 2);
+    grid->addWidget(new QLabel("推理任务", configGroup), 1, 0);
+    grid->addWidget(m_npuTaskCombo, 1, 1);
+    grid->addWidget(new QLabel("输入源", configGroup), 2, 0);
+    grid->addWidget(sourceValue, 2, 1);
 
-    layout->addWidget(group);
-    layout->addStretch(1);
+    addTouchAdjustRow(3,
+                      QStringLiteral("目标推理帧率"),
+                      m_npuFpsSpin,
+                      [this]() { m_npuFpsSpin->stepDown(); },
+                      [this]() { m_npuFpsSpin->stepUp(); });
+    addTouchAdjustRow(4,
+                      QStringLiteral("检测置信度"),
+                      m_confSpin,
+                      [this]() { m_confSpin->stepDown(); },
+                      [this]() { m_confSpin->stepUp(); });
+    addTouchAdjustRow(5,
+                      QStringLiteral("NMS阈值"),
+                      m_nmsSpin,
+                      [this]() { m_nmsSpin->stepDown(); },
+                      [this]() { m_nmsSpin->stepUp(); });
+
+    grid->addWidget(apply, 6, 0, 1, 2);
+
+    m_aiConfigSummaryLabel = new QLabel(configGroup);
+    m_aiConfigSummaryLabel->setWordWrap(true);
+    m_aiConfigSummaryLabel->setObjectName("ptzState");
+    m_aiConfigSummaryLabel->setMaximumHeight(52);
+    grid->addWidget(m_aiConfigSummaryLabel, 7, 0, 1, 2);
+
+    QLabel *touchHint = new QLabel("参数使用大号 − / + 调节，支持长按连续调整。", configGroup);
+    touchHint->setObjectName("navHint");
+    touchHint->setWordWrap(true);
+    grid->addWidget(touchHint, 8, 0, 1, 2);
+
+    leftLayout->addWidget(configGroup);
+    leftLayout->addStretch(1);
+    pageLayout->addWidget(leftPanel, 0);
+
+    QWidget *rightPanel = new QWidget(page);
+    QVBoxLayout *rightLayout = new QVBoxLayout(rightPanel);
+    rightLayout->setContentsMargins(0, 0, 0, 0);
+    rightLayout->setSpacing(8);
+
+    QGroupBox *runtimeGroup = new QGroupBox("运行状态", rightPanel);
+    runtimeGroup->setMaximumHeight(156);
+    QVBoxLayout *runtimeLayout = new QVBoxLayout(runtimeGroup);
+    runtimeLayout->setContentsMargins(10, 18, 10, 8);
+    m_aiRuntimeLabel = new QLabel("AI未启用", runtimeGroup);
+    m_aiRuntimeLabel->setObjectName("aiRuntimeStatus");
+    m_aiRuntimeLabel->setWordWrap(true);
+    m_aiRuntimeLabel->setAlignment(Qt::AlignLeft | Qt::AlignTop);
+    m_aiRuntimeLabel->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
+    runtimeLayout->addWidget(m_aiRuntimeLabel);
+    rightLayout->addWidget(runtimeGroup, 0);
+
+    QGroupBox *resultGroup = new QGroupBox("最近识别结果（最多50条）", rightPanel);
+    QVBoxLayout *resultLayout = new QVBoxLayout(resultGroup);
+    resultLayout->setContentsMargins(8, 18, 8, 8);
+    resultLayout->setSpacing(5);
+
+    m_aiResultTable = new QTableWidget(0, 7, resultGroup);
+    m_aiResultTable->setObjectName("aiResultTable");
+    m_aiResultTable->setHorizontalHeaderLabels(
+                QStringList() << "时间" << "帧号" << "任务" << "结果"
+                              << "置信度" << "目标框 x,y,w,h" << "耗时/ms");
+    m_aiResultTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    m_aiResultTable->setSelectionBehavior(QAbstractItemView::SelectRows);
+    m_aiResultTable->setSelectionMode(QAbstractItemView::SingleSelection);
+    m_aiResultTable->setAlternatingRowColors(true);
+    m_aiResultTable->verticalHeader()->setVisible(false);
+    m_aiResultTable->verticalHeader()->setDefaultSectionSize(34);
+    m_aiResultTable->horizontalHeader()->setStretchLastSection(false);
+    m_aiResultTable->horizontalHeader()->setMinimumSectionSize(54);
+    m_aiResultTable->horizontalHeader()->setSectionResizeMode(0, QHeaderView::ResizeToContents);
+    m_aiResultTable->horizontalHeader()->setSectionResizeMode(1, QHeaderView::ResizeToContents);
+    m_aiResultTable->horizontalHeader()->setSectionResizeMode(2, QHeaderView::ResizeToContents);
+    m_aiResultTable->horizontalHeader()->setSectionResizeMode(3, QHeaderView::Stretch);
+    m_aiResultTable->horizontalHeader()->setSectionResizeMode(4, QHeaderView::ResizeToContents);
+    m_aiResultTable->horizontalHeader()->setSectionResizeMode(5, QHeaderView::ResizeToContents);
+    m_aiResultTable->horizontalHeader()->setSectionResizeMode(6, QHeaderView::ResizeToContents);
+    resultLayout->addWidget(m_aiResultTable, 1);
+
+    QPushButton *clear = new QPushButton("清空结果", resultGroup);
+    clear->setObjectName("compactActionButton");
+    clear->setMinimumWidth(130);
+    resultLayout->addWidget(clear, 0, Qt::AlignRight);
+    rightLayout->addWidget(resultGroup, 1);
+
+    pageLayout->addWidget(rightPanel, 1);
 
     connect(apply, &QPushButton::clicked,
             this, &ControlPanelWindow::onApplyAiConfigClicked);
+    connect(clear, &QPushButton::clicked,
+            this, &ControlPanelWindow::clearAiResultTable);
 
     return page;
 }
@@ -1102,18 +1304,35 @@ QWidget *ControlPanelWindow::createStatusPage()
 {
     QWidget *page = new QWidget(this);
     QVBoxLayout *layout = new QVBoxLayout(page);
-    layout->setContentsMargins(12, 8, 12, 8);
-    layout->setSpacing(12);
+    layout->setContentsMargins(8, 4, 8, 4);
+    layout->setSpacing(6);
 
     QGroupBox *group = new QGroupBox("详细状态", page);
     QVBoxLayout *v = new QVBoxLayout(group);
+    v->setContentsMargins(8, 18, 8, 8);
 
-    m_statusDetail = new QLabel(group);
+    QScrollArea *scrollArea = new QScrollArea(group);
+    scrollArea->setObjectName("statusScrollArea");
+    scrollArea->setWidgetResizable(true);
+    scrollArea->setFrameShape(QFrame::NoFrame);
+    scrollArea->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+    scrollArea->setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+
+    QWidget *scrollContent = new QWidget(scrollArea);
+    QVBoxLayout *contentLayout = new QVBoxLayout(scrollContent);
+    contentLayout->setContentsMargins(0, 0, 0, 0);
+
+    m_statusDetail = new QLabel(scrollContent);
     m_statusDetail->setObjectName("statusDetail");
     m_statusDetail->setAlignment(Qt::AlignLeft | Qt::AlignTop);
-    m_statusDetail->setMinimumHeight(420);
-    v->addWidget(m_statusDetail);
+    m_statusDetail->setWordWrap(true);
+    m_statusDetail->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    m_statusDetail->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Minimum);
+    contentLayout->addWidget(m_statusDetail);
+    contentLayout->addStretch(1);
 
+    scrollArea->setWidget(scrollContent);
+    v->addWidget(scrollArea, 1);
     layout->addWidget(group, 1);
     return page;
 }
@@ -1195,30 +1414,54 @@ void ControlPanelWindow::onApplyFpgaConfigClicked()
 
 void ControlPanelWindow::onApplyAiConfigClicked()
 {
-    if (!m_display || !m_npuEnableCheck || !m_npuFpsSpin || !m_confSpin) {
+    if (!m_display || !m_npuEnableCheck || !m_npuTaskCombo ||
+        !m_npuFpsSpin || !m_confSpin || !m_nmsSpin) {
         return;
     }
 
-    const bool enabled = m_npuEnableCheck->isChecked();
-    const int fps = m_npuFpsSpin->value();
-    const double conf = m_confSpin->value();
+    NpuTaskConfig config;
+    config.enabled = m_npuEnableCheck->isChecked();
+    config.task = static_cast<NpuTaskType>(m_npuTaskCombo->currentData().toInt());
+    config.targetFps = m_npuFpsSpin->value();
+    config.confidence = static_cast<float>(m_confSpin->value());
+    config.nmsThreshold = static_cast<float>(m_nmsSpin->value());
+    config.resultHistoryDepth = 50;
+    config = sanitizeNpuTaskConfig(config);
 
-    m_display->setNpuTargetFps(fps);
-    m_display->setNpuConfidence(static_cast<float>(conf));
-    m_display->setNpuEnabled(enabled);
+    m_display->setNpuConfig(config);
+    saveAiSettings(config);
 
-    m_aiEnabled = enabled;
-    m_aiStatus = enabled ? "pending" : "off";
-    if (!enabled) {
+    m_aiEnabled = config.enabled;
+    m_aiTask = config.task;
+    m_aiStatus = config.enabled ? "pending" : "off";
+    m_aiHistoryDepth = config.resultHistoryDepth;
+    m_lastAiResultFrameId = 0;
+    clearAiResultTable();
+
+    if (!config.enabled) {
         m_aiReady = false;
         m_aiFps = 0.0;
         m_aiPlateCount = 0;
         m_aiPedestrianCount = 0;
+        m_aiLastMs = 0.0;
+        m_aiPreMs = 0.0;
     }
-    m_lastAction = QString("AI配置: enable=%1 fps=%2 conf=%3")
-            .arg(enabled ? "ON" : "OFF")
-            .arg(fps)
-            .arg(conf, 0, 'f', 2);
+
+    if (m_aiConfigSummaryLabel) {
+        m_aiConfigSummaryLabel->setText(
+                    QStringLiteral("当前：%1｜%2 fps｜conf=%3｜NMS=%4")
+                    .arg(aiTaskDisplayName(config.task))
+                    .arg(config.targetFps)
+                    .arg(config.confidence, 0, 'f', 2)
+                    .arg(config.nmsThreshold, 0, 'f', 2));
+    }
+
+    m_lastAction = QStringLiteral("AI配置：%1，task=%2，fps=%3，conf=%4，nms=%5")
+            .arg(config.enabled ? QStringLiteral("ON") : QStringLiteral("OFF"))
+            .arg(aiTaskDisplayName(config.task))
+            .arg(config.targetFps)
+            .arg(config.confidence, 0, 'f', 2)
+            .arg(config.nmsThreshold, 0, 'f', 2);
     updateStatusText();
 }
 
@@ -1295,6 +1538,192 @@ void ControlPanelWindow::onStatusTimer()
     }
 
     updateStatusText();
+}
+
+void ControlPanelWindow::onAiUiTimer()
+{
+    if (!m_display) {
+        return;
+    }
+
+    const NpuFrameResult result = m_display->latestNpuResult();
+    updateAiPanel(result);
+
+    const std::vector<NpuFrameResult> newResults =
+            m_display->npuResultsAfter(m_lastAiResultFrameId, 64);
+    for (const NpuFrameResult &item : newResults) {
+        if (item.frameId > m_lastAiResultFrameId) {
+            m_lastAiResultFrameId = item.frameId;
+        }
+        if (item.ready) {
+            appendAiResultRows(item);
+        }
+    }
+}
+
+void ControlPanelWindow::updateAiPanel(const NpuFrameResult &result)
+{
+    m_aiEnabled = result.enabled;
+    m_aiReady = result.ready;
+    m_aiTask = result.task;
+    m_aiFps = result.fps;
+    m_aiPlateCount = static_cast<int>(result.plates.size());
+    m_aiPedestrianCount = static_cast<int>(result.pedestrians.size());
+    m_aiLastMs = result.lastMs;
+    m_aiPreMs = result.preMs;
+    m_aiProcessed = result.processed;
+    m_aiDropped = result.dropped;
+
+    if (!result.enabled) {
+        m_aiStatus = QStringLiteral("off");
+    } else if (!result.error.empty()) {
+        m_aiStatus = QString::fromStdString(result.error);
+    } else if (result.ready) {
+        m_aiStatus = QStringLiteral("ready");
+    } else if (!result.modelsReady) {
+        m_aiStatus = QStringLiteral("loading model");
+    } else {
+        m_aiStatus = QStringLiteral("pending");
+    }
+
+    if (m_aiRuntimeLabel) {
+        const int resultCount = m_aiPlateCount + m_aiPedestrianCount;
+        m_aiRuntimeLabel->setText(
+                    QStringLiteral("状态：%1｜任务：%2｜实际FPS：%3 / 目标%4\n"
+                                   "耗时：%5 ms｜预处理：%6 ms｜本帧结果：%7\n"
+                                   "已处理：%8｜覆盖丢帧：%9\n"
+                                   "最近错误：%10")
+                    .arg(m_aiStatus)
+                    .arg(aiTaskDisplayName(result.task))
+                    .arg(result.fps, 0, 'f', 1)
+                    .arg(result.targetFps)
+                    .arg(result.lastMs, 0, 'f', 1)
+                    .arg(result.preMs, 0, 'f', 1)
+                    .arg(resultCount)
+                    .arg(result.processed)
+                    .arg(result.dropped)
+                    .arg(result.error.empty()
+                         ? QStringLiteral("none")
+                         : QString::fromStdString(result.error)));
+    }
+}
+
+void ControlPanelWindow::appendAiResultRows(const NpuFrameResult &result)
+{
+    if (!m_aiResultTable) {
+        return;
+    }
+
+    struct RowData
+    {
+        QString resultText;
+        QString confidenceText;
+        QString boxText;
+    };
+
+    QList<RowData> rows;
+    if (result.task == NpuTaskType::PlateCascade) {
+        for (const NpuBox &box : result.plates) {
+            const QString plate = !box.text.empty()
+                    ? QString::fromStdString(box.text)
+                    : QString::fromStdString(box.label);
+            RowData row;
+            row.resultText = plate.isEmpty() ? QStringLiteral("车牌") : plate;
+            row.confidenceText = box.score >= 0.0f
+                    ? QString::number(box.score, 'f', 2)
+                    : QStringLiteral("--");
+            row.boxText = aiBoxText(box);
+            rows.push_back(row);
+        }
+    } else {
+        for (const NpuBox &box : result.pedestrians) {
+            RowData row;
+            row.resultText = QStringLiteral("person");
+            row.confidenceText = QString::number(box.score, 'f', 2);
+            row.boxText = aiBoxText(box);
+            rows.push_back(row);
+        }
+    }
+
+    // 无目标帧不写入历史表，避免5~15 fps下用“无目标”快速淹没有效记录。
+    if (rows.isEmpty()) {
+        return;
+    }
+
+    const QString timeText = QDateTime::currentDateTime().toString(QStringLiteral("HH:mm:ss.zzz"));
+    const QString frameText = QString::number(result.frameId);
+    const QString taskText = aiTaskDisplayName(result.task);
+    const QString latencyText = QString::number(result.lastMs, 'f', 1);
+
+    for (const RowData &row : rows) {
+        m_aiResultTable->insertRow(0);
+        const QStringList values {
+            timeText,
+            frameText,
+            taskText,
+            row.resultText,
+            row.confidenceText,
+            row.boxText,
+            latencyText
+        };
+        for (int column = 0; column < values.size(); ++column) {
+            QTableWidgetItem *item = new QTableWidgetItem(values[column]);
+            const int alignment = column == 3
+                    ? static_cast<int>(Qt::AlignLeft | Qt::AlignVCenter)
+                    : static_cast<int>(Qt::AlignCenter);
+            item->setTextAlignment(alignment);
+            m_aiResultTable->setItem(0, column, item);
+        }
+    }
+
+    while (m_aiResultTable->rowCount() > m_aiHistoryDepth) {
+        m_aiResultTable->removeRow(m_aiResultTable->rowCount() - 1);
+    }
+}
+
+void ControlPanelWindow::clearAiResultTable()
+{
+    if (m_aiResultTable) {
+        m_aiResultTable->setRowCount(0);
+    }
+}
+
+void ControlPanelWindow::loadAiSettings()
+{
+    if (!m_npuEnableCheck || !m_npuTaskCombo || !m_npuFpsSpin ||
+        !m_confSpin || !m_nmsSpin) {
+        return;
+    }
+
+    QSettings settings(aiSettingsPath(), QSettings::IniFormat);
+    const bool enabled = settings.value(QStringLiteral("ai/enabled"), false).toBool();
+    const int taskValue = settings.value(
+                QStringLiteral("ai/task"),
+                static_cast<int>(NpuTaskType::Pedestrian)).toInt();
+    const int fps = settings.value(QStringLiteral("ai/target_fps"), 5).toInt();
+    const double confidence = settings.value(QStringLiteral("ai/confidence"), 0.50).toDouble();
+    const double nms = settings.value(QStringLiteral("ai/nms"), 0.45).toDouble();
+
+    m_npuEnableCheck->setChecked(enabled);
+    int taskIndex = m_npuTaskCombo->findData(taskValue);
+    if (taskIndex < 0) {
+        taskIndex = 0;
+    }
+    m_npuTaskCombo->setCurrentIndex(taskIndex);
+    m_npuFpsSpin->setValue(qBound(1, fps, 15));
+    m_confSpin->setValue(qBound(0.10, confidence, 0.95));
+    m_nmsSpin->setValue(qBound(0.10, nms, 0.90));
+}
+
+void ControlPanelWindow::saveAiSettings(const NpuTaskConfig &config)
+{
+    QSettings settings(aiSettingsPath(), QSettings::IniFormat);
+    settings.setValue(QStringLiteral("ai/enabled"), config.enabled);
+    settings.setValue(QStringLiteral("ai/task"), static_cast<int>(config.task));
+    settings.setValue(QStringLiteral("ai/target_fps"), config.targetFps);
+    settings.setValue(QStringLiteral("ai/confidence"), config.confidence);
+    settings.setValue(QStringLiteral("ai/nms"), config.nmsThreshold);
+    settings.sync();
 }
 
 void ControlPanelWindow::onDisplayStateChanged(QString state)
@@ -1710,8 +2139,9 @@ void ControlPanelWindow::updateStatusText()
     }
 
     const QString aiShort = m_aiEnabled ? (m_aiReady ? "ON" : "WAIT") : "OFF";
+    const QString aiTaskShort = m_aiTask == NpuTaskType::PlateCascade ? "PLATE" : "PED";
 
-    QString bottom = QString("HDMI:%1  PTZ-V:%2  PTZ-C:%3  FAN:%4  RX:%5  FLIP:%6  PTZ:%7  AI:%8 P:%9 D:%10  TEMP:%11  FAIL:%12")
+    QString bottom = QString("HDMI:%1  PTZ-V:%2  PTZ-C:%3  FAN:%4  RX:%5  FLIP:%6  PTZ:%7  AI:%8/%9 P:%10 D:%11  TEMP:%12  FAIL:%13")
             .arg(m_displayRunning ? "ON" : "OFF")
             .arg(m_ptzCaptureRunning ? "ON" : "OFF")
             .arg(m_ptzControlReady ? "ON" : "OFF")
@@ -1720,6 +2150,7 @@ void ControlPanelWindow::updateStatusText()
             .arg(m_flipFps, 0, 'f', 1)
             .arg(m_ptzDecodeFps, 0, 'f', 1)
             .arg(aiShort)
+            .arg(aiTaskShort)
             .arg(m_aiPlateCount)
             .arg(m_aiPedestrianCount)
             .arg(tempText)
@@ -1794,6 +2225,9 @@ void ControlPanelWindow::applyStyle()
         "QGroupBox::title { subcontrol-origin: margin; left: 16px; padding: 0 6px; color: #85C7FF; }"
         "QPushButton { background: #26384B; color: #FFFFFF; border: 1px solid #3F5871; border-radius: 12px; min-height: 54px; font-size: 19px; font-weight: 600; }"
         "QPushButton:pressed { background: #0A84FF; }"
+        "#touchAdjustButton { min-width: 54px; max-width: 54px; min-height: 46px; max-height: 46px; border-radius: 10px; font-size: 28px; font-weight: 700; padding: 0px; }"
+        "#touchValueSpin { min-height: 46px; font-size: 20px; font-weight: 700; padding: 0px 4px; }"
+        "#compactActionButton { min-height: 40px; max-height: 42px; font-size: 17px; padding: 0 12px; }"
         "#ptzButton { min-height: 44px; font-size: 18px; }"
         "QComboBox, QSpinBox, QDoubleSpinBox { background: #0F151C; color: #FFFFFF; border: 1px solid #3F5871; border-radius: 8px; min-height: 42px; padding-left: 8px; }"
         "QSlider::groove:horizontal { height: 10px; background: #0F151C; border: 1px solid #3F5871; border-radius: 5px; }"
@@ -1805,6 +2239,10 @@ void ControlPanelWindow::applyStyle()
         "#ptzState { background: #0F151C; color: #85C7FF; border-radius: 6px; padding: 5px; font-size: 15px; }"
         "#ptzStats { background: #06111C; color: #00FF66; border-radius: 6px; padding: 5px; font-family: 'Monospace'; font-size: 15px; }"
         "#bottomStatus { background: #06111C; color: #00FF66; border: 1px solid #17482A; border-radius: 10px; padding-left: 12px; font-size: 16px; font-weight: 700; }"
-        "#statusDetail { background: #06111C; color: #00FF66; border-radius: 10px; padding: 12px; font-family: 'Monospace'; font-size: 16px; }"
+        "#aiRuntimeStatus { background: #06111C; color: #DCEEFF; border-radius: 8px; padding: 6px 8px; font-size: 15px; }"
+        "#aiResultTable { font-size: 14px; }"
+        "#statusScrollArea { background: #06111C; border-radius: 10px; }"
+        "#statusScrollArea QWidget { background: #06111C; }"
+        "#statusDetail { background: #06111C; color: #00FF66; border-radius: 10px; padding: 8px; font-family: 'Monospace'; font-size: 14px; }"
     );
 }

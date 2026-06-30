@@ -319,8 +319,9 @@ static void draw_npu_overlay(void *fb, int pitchBytes, int fbW, int fbH, const N
     const uint16_t white = rgb565(255, 255, 255);
 
     char line[96];
-    snprintf(line, sizeof(line), "%s FPS %.1F P %d D %d",
+    snprintf(line, sizeof(line), "%s %s FPS %.1F P %d D %d",
              npu_status_text(result),
+             npuTaskShortName(result.task),
              result.fps,
              static_cast<int>(result.plates.size()),
              static_cast<int>(result.pedestrians.size()));
@@ -675,6 +676,18 @@ bool DrmRgaDisplay::setOutputResolution(int width, int height)
 int DrmRgaDisplay::outputWidth() const { return m_reqWidth.load(); }
 int DrmRgaDisplay::outputHeight() const { return m_reqHeight.load(); }
 
+void DrmRgaDisplay::setNpuConfig(const NpuTaskConfig &config)
+{
+    if (m_npuWorker) {
+        m_npuWorker->setConfig(config);
+    }
+}
+
+NpuTaskConfig DrmRgaDisplay::npuConfig() const
+{
+    return m_npuWorker ? m_npuWorker->config() : NpuTaskConfig();
+}
+
 void DrmRgaDisplay::setNpuEnabled(bool enable)
 {
     if (m_npuWorker) {
@@ -696,9 +709,31 @@ void DrmRgaDisplay::setNpuConfidence(float confidence)
     }
 }
 
+void DrmRgaDisplay::setNpuNmsThreshold(float threshold)
+{
+    if (m_npuWorker) {
+        m_npuWorker->setNmsThreshold(threshold);
+    }
+}
+
+void DrmRgaDisplay::setNpuTask(NpuTaskType task)
+{
+    if (m_npuWorker) {
+        m_npuWorker->setTask(task);
+    }
+}
+
 NpuFrameResult DrmRgaDisplay::latestNpuResult() const
 {
     return m_npuWorker ? m_npuWorker->latestResult() : NpuFrameResult();
+}
+
+std::vector<NpuFrameResult> DrmRgaDisplay::npuResultsAfter(uint64_t frameId,
+                                                          std::size_t maxResults) const
+{
+    return m_npuWorker
+            ? m_npuWorker->resultsAfter(frameId, maxResults)
+            : std::vector<NpuFrameResult>();
 }
 
 QString DrmRgaDisplay::lastErrorString() const { return m_lastError; }
@@ -874,7 +909,9 @@ void DrmRgaDisplay::workerMain()
                     } else if (!ai.error.empty()) {
                         aiStatus = QString::fromStdString(ai.error);
                     } else if (ai.ready) {
-                        aiStatus = QString("ok %1ms").arg(ai.lastMs, 0, 'f', 1);
+                        aiStatus = QString("%1 ok %2ms")
+                                .arg(QString::fromLatin1(npuTaskKey(ai.task)))
+                                .arg(ai.lastMs, 0, 'f', 1);
                     } else {
                         aiStatus = "loading";
                     }
