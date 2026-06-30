@@ -2,6 +2,7 @@
 #define DRM_RGA_DISPLAY_H
 
 #include "npu/npu_result_types.h"
+#include "npu/npu_task_config.h"
 
 #include <QObject>
 #include <QString>
@@ -9,6 +10,7 @@
 #include <atomic>
 #include <memory>
 #include <thread>
+#include <vector>
 
 class NpuInferenceWorker;
 
@@ -35,10 +37,16 @@ public:
     int outputWidth() const;
     int outputHeight() const;
 
+    void setNpuConfig(const NpuTaskConfig &config);
+    NpuTaskConfig npuConfig() const;
+
     void setNpuEnabled(bool enable);
     void setNpuTargetFps(int fps);
     void setNpuConfidence(float confidence);
+    void setNpuNmsThreshold(float threshold);
+    void setNpuTask(NpuTaskType task);
     NpuFrameResult latestNpuResult() const;
+    std::vector<NpuFrameResult> npuResultsAfter(uint64_t frameId, std::size_t maxResults = 64) const;
 
     QString lastErrorString() const;
 

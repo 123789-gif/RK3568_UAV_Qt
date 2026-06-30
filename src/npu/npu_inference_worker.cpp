@@ -9,6 +9,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <deque>
 #include <limits.h>
 #include <mutex>
 #include <string>
@@ -239,13 +240,16 @@ struct NpuInferenceWorker::Impl
 {
     std::atomic<bool> running {false};
     std::atomic<bool> stopReq {false};
-    std::atomic<bool> enableReq {false};
-    std::atomic<int> fpsReq {8};
-    std::atomic<int> confidencePermille {350};
     std::atomic<int64_t> lastSubmitMs {0};
     std::atomic<int> droppedFrames {0};
+    std::atomic<int> processed {0};
+    std::atomic<bool> modelsLoaded {false};
 
     std::thread thread;
+
+    mutable std::mutex configMutex;
+    NpuTaskConfig requestedConfig;
+
     mutable std::mutex pendingMutex;
     std::condition_variable pendingCv;
     bool pendingValid = false;
@@ -253,23 +257,78 @@ struct NpuInferenceWorker::Impl
 
     mutable std::mutex resultMutex;
     NpuFrameResult latest;
+    std::deque<NpuFrameResult> resultHistory;
 
     demo::RknnModel plateDet;
     demo::RknnModel plateReco;
     demo::RknnModel ped;
-    std::atomic<bool> modelsLoaded {false};
+    std::atomic<int> loadedTaskValue {-1};
     std::string modelError;
-    std::atomic<int> processed {0};
+
     int64_t fpsWindowMs = 0;
     int fpsWindowCount = 0;
     double currentFps = 0.0;
 
+    Impl()
+    {
+        requestedConfig = sanitizeNpuTaskConfig(requestedConfig);
+    }
+
     ~Impl()
     {
         stop();
+        releaseAllModels();
+    }
+
+    void releaseAllModels()
+    {
         releaseModel(plateDet);
         releaseModel(plateReco);
         releaseModel(ped);
+        loadedTaskValue.store(-1);
+        modelsLoaded.store(false);
+    }
+
+    NpuTaskConfig configSnapshot() const
+    {
+        std::lock_guard<std::mutex> lk(configMutex);
+        return requestedConfig;
+    }
+
+    void updateConfig(const NpuTaskConfig& requested)
+    {
+        NpuTaskConfig next = sanitizeNpuTaskConfig(requested);
+        {
+            std::lock_guard<std::mutex> lk(configMutex);
+            next.revision = requestedConfig.revision + 1;
+            requestedConfig = next;
+        }
+
+        lastSubmitMs.store(0);
+
+        if (!next.enabled) {
+            std::lock_guard<std::mutex> lk(pendingMutex);
+            pending = FrameCopy();
+            pendingValid = false;
+        }
+
+        NpuFrameResult state;
+        state.enabled = next.enabled;
+        state.task = next.task;
+        state.targetFps = next.targetFps;
+        state.confidence = next.confidence;
+        state.nmsThreshold = next.nmsThreshold;
+        state.configRevision = next.revision;
+        state.modelsReady = modelsLoaded.load() &&
+                loadedTaskValue.load() == static_cast<int>(next.task);
+        state.status = next.enabled ? "pending" : "off";
+        state.processed = processed.load();
+        state.dropped = droppedFrames.load();
+        {
+            std::lock_guard<std::mutex> lk(resultMutex);
+            latest = std::move(state);
+            resultHistory.clear();
+        }
     }
 
     void start()
@@ -294,48 +353,61 @@ struct NpuInferenceWorker::Impl
         running.store(false);
     }
 
-    bool ensureModels()
+    bool ensureModels(NpuTaskType task)
     {
-        if (modelsLoaded.load()) {
+        if (modelsLoaded.load() &&
+            loadedTaskValue.load() == static_cast<int>(task)) {
             return true;
         }
 
-        const std::string plateDetPath = findModelPath(kPlateDetModel);
-        const std::string plateRecoPath = findModelPath(kPlateRecoModel);
-        const std::string pedPath = findModelPath(kPedModel);
+        // 模型只由推理线程装载和释放。切换任务时释放旧任务模型，
+        // 避免行人和车牌三级模型长期同时占用NPU运行时与内存。
+        releaseAllModels();
 
         std::string error;
-        if (!loadModel(plateDetPath, &plateDet, &error) ||
-            !loadModel(plateRecoPath, &plateReco, &error) ||
-            !loadModel(pedPath, &ped, &error)) {
+        bool ok = false;
+        if (task == NpuTaskType::PlateCascade) {
+            const std::string plateDetPath = findModelPath(kPlateDetModel);
+            const std::string plateRecoPath = findModelPath(kPlateRecoModel);
+            ok = loadModel(plateDetPath, &plateDet, &error) &&
+                 loadModel(plateRecoPath, &plateReco, &error);
+        } else {
+            const std::string pedPath = findModelPath(kPedModel);
+            ok = loadModel(pedPath, &ped, &error);
+        }
+
+        if (!ok) {
             modelError = error;
-            releaseModel(plateDet);
-            releaseModel(plateReco);
-            releaseModel(ped);
+            releaseAllModels();
             return false;
         }
 
+        loadedTaskValue.store(static_cast<int>(task));
         modelsLoaded.store(true);
+        fpsWindowMs = 0;
+        fpsWindowCount = 0;
+        currentFps = 0.0;
         modelError.clear();
         return true;
     }
 
     void submit(uint64_t frameId, const uint8_t* rgb565, std::size_t bytes, int width, int height)
     {
-        if (!enableReq.load() || !running.load() || !rgb565 || width <= 0 || height <= 0) {
+        const NpuTaskConfig cfg = configSnapshot();
+        if (!cfg.enabled || !running.load() || !rgb565 || width <= 0 || height <= 0) {
             return;
         }
 
-        const int targetFps = std::max(1, fpsReq.load());
         const int64_t now = steadyMs();
         const int64_t last = lastSubmitMs.load();
-        const int64_t minInterval = 1000 / targetFps;
+        const int64_t minInterval = std::max<int64_t>(1, 1000 / cfg.targetFps);
         if (now - last < minInterval) {
             return;
         }
         lastSubmitMs.store(now);
 
-        const std::size_t need = static_cast<std::size_t>(width) * static_cast<std::size_t>(height) * 2u;
+        const std::size_t need = static_cast<std::size_t>(width) *
+                                 static_cast<std::size_t>(height) * 2u;
         if (bytes < need) {
             return;
         }
@@ -375,26 +447,62 @@ struct NpuInferenceWorker::Impl
         }
     }
 
-    void publish(NpuFrameResult result)
+    void publish(NpuFrameResult result, const NpuTaskConfig& cfg)
     {
-        result.enabled = enableReq.load();
-        result.modelsReady = modelsLoaded.load();
+        const NpuTaskConfig current = configSnapshot();
+        if (current.revision != cfg.revision) {
+            return;
+        }
+        result.enabled = current.enabled;
+        result.task = cfg.task;
+        result.targetFps = cfg.targetFps;
+        result.confidence = cfg.confidence;
+        result.nmsThreshold = cfg.nmsThreshold;
+        result.configRevision = cfg.revision;
+        result.modelsReady = modelsLoaded.load() &&
+                loadedTaskValue.load() == static_cast<int>(cfg.task);
         result.processed = processed.load();
         result.dropped = droppedFrames.load();
+
+        if (!current.enabled) {
+            result.ready = false;
+            result.fps = 0.0;
+            result.status = "off";
+            result.error.clear();
+            result.plates.clear();
+            result.pedestrians.clear();
+        }
+
         std::lock_guard<std::mutex> lk(resultMutex);
-        latest = std::move(result);
+        latest = result;
+        if (result.frameId != 0) {
+            resultHistory.push_back(std::move(result));
+            while (resultHistory.size() > 64) {
+                resultHistory.pop_front();
+            }
+        }
     }
 
     void process(const FrameCopy& frame)
     {
+        const NpuTaskConfig cfg = configSnapshot();
+        if (!cfg.enabled) {
+            return;
+        }
+
         NpuFrameResult result;
         result.frameId = frame.id;
+        result.task = cfg.task;
+        result.targetFps = cfg.targetFps;
+        result.confidence = cfg.confidence;
+        result.nmsThreshold = cfg.nmsThreshold;
+        result.configRevision = cfg.revision;
 
-        if (!ensureModels()) {
+        if (!ensureModels(cfg.task)) {
             result.ready = false;
             result.error = modelError;
             result.status = "model error";
-            publish(std::move(result));
+            publish(std::move(result), cfg);
             return;
         }
 
@@ -412,76 +520,82 @@ struct NpuInferenceWorker::Impl
             result.ready = false;
             result.error = "preprocess failed";
             result.status = "preprocess failed";
-            publish(std::move(result));
+            publish(std::move(result), cfg);
             return;
         }
 
-        const float conf = std::max(0.01f, confidencePermille.load() / 1000.0f);
+        if (cfg.task == NpuTaskType::PlateCascade) {
+            std::vector<demo::Mat> crops;
+            std::vector<demo::Rect2f> plateBoxesIn;
+            std::vector<int> plateColorIds;
+            demo::vision::RknnStageTiming plateTiming;
+            demo::vision::detect_plate_candidates(input,
+                                                  plateDet,
+                                                  cfg.confidence,
+                                                  cfg.nmsThreshold,
+                                                  crops,
+                                                  plateBoxesIn,
+                                                  plateColorIds,
+                                                  true,
+                                                  &result.plateMs,
+                                                  &plateTiming);
 
-        std::vector<demo::Mat> crops;
-        std::vector<demo::Rect2f> plateBoxesIn;
-        std::vector<int> plateColorIds;
-        demo::vision::RknnStageTiming plateTiming;
-        demo::vision::detect_plate_candidates(input,
-                                              plateDet,
-                                              conf,
-                                              demo::DEFAULT_PLATE_IOU,
-                                              crops,
-                                              plateBoxesIn,
-                                              plateColorIds,
-                                              true,
-                                              &result.plateMs,
-                                              &plateTiming);
+            std::vector<std::string> plateTexts;
+            std::vector<std::string> platePinyins;
+            std::vector<demo::Rect2f> plateBoxesOut;
+            std::vector<int> plateColorsOut;
+            if (!crops.empty()) {
+                double ocrMs = 0.0;
+                demo::vision::RknnStageTiming ocrTiming;
+                demo::vision::recognize_plate_crops(crops,
+                                                    plateBoxesIn,
+                                                    plateColorIds,
+                                                    plateReco,
+                                                    plateTexts,
+                                                    platePinyins,
+                                                    plateBoxesOut,
+                                                    plateColorsOut,
+                                                    &ocrMs,
+                                                    &ocrTiming);
+                result.plateMs += ocrMs;
+            }
 
-        std::vector<std::string> plateTexts;
-        std::vector<std::string> platePinyins;
-        std::vector<demo::Rect2f> plateBoxesOut;
-        std::vector<int> plateColorsOut;
-        if (!crops.empty()) {
-            double ocrMs = 0.0;
-            demo::vision::RknnStageTiming ocrTiming;
-            demo::vision::recognize_plate_crops(crops,
-                                                plateBoxesIn,
-                                                plateColorIds,
-                                                plateReco,
-                                                plateTexts,
-                                                platePinyins,
-                                                plateBoxesOut,
-                                                plateColorsOut,
-                                                &ocrMs,
-                                                &ocrTiming);
-            result.plateMs += ocrMs;
-        }
-
-        const std::size_t plateCount = std::min(plateBoxesOut.size(), plateTexts.size());
-        for (std::size_t i = 0; i < plateCount; ++i) {
-            demo::Rect2f orig;
-            demo::vision::convert_input_box_to_orig(plateBoxesOut[i], orig, frame.width, frame.height);
-            const std::string label = (i < platePinyins.size()) ? platePinyins[i] : plateTexts[i];
-            const int colorId = (i < plateColorsOut.size()) ? plateColorsOut[i] : 0;
-            result.plates.push_back(makeBox(orig, 1.0f, colorId, plateTexts[i], label));
-        }
-
-        std::vector<demo::Rect2f> pedBoxesIn;
-        std::vector<float> pedScores;
-        demo::vision::RknnStageTiming pedTiming;
-        demo::vision::detect_pedestrian(input,
-                                        ped,
-                                        1,
-                                        conf,
-                                        demo::DEFAULT_PED_IOU,
-                                        pedBoxesIn,
-                                        pedScores,
-                                        true,
-                                        demo::DEFAULT_PED_TOPK_DECODE,
-                                        demo::DEFAULT_PED_TOPK_NMS,
-                                        &result.pedMs,
-                                        &pedTiming);
-        for (std::size_t i = 0; i < pedBoxesIn.size(); ++i) {
-            demo::Rect2f orig;
-            demo::vision::convert_input_box_to_orig(pedBoxesIn[i], orig, frame.width, frame.height);
-            const float score = (i < pedScores.size()) ? pedScores[i] : 0.0f;
-            result.pedestrians.push_back(makeBox(orig, score, 0, std::string(), "person"));
+            const std::size_t plateCount = std::min(plateBoxesOut.size(), plateTexts.size());
+            for (std::size_t i = 0; i < plateCount; ++i) {
+                demo::Rect2f orig;
+                demo::vision::convert_input_box_to_orig(plateBoxesOut[i], orig,
+                                                        frame.width, frame.height);
+                const std::string label = (i < platePinyins.size())
+                        ? platePinyins[i] : plateTexts[i];
+                const int colorId = (i < plateColorsOut.size()) ? plateColorsOut[i] : 0;
+                // 当前plate接口未返回检测分数，使用负值明确表示“不可用”，
+                // UI显示为“--”，避免伪造1.0置信度。
+                result.plates.push_back(makeBox(orig, -1.0f, colorId, plateTexts[i], label));
+            }
+        } else {
+            std::vector<demo::Rect2f> pedBoxesIn;
+            std::vector<float> pedScores;
+            demo::vision::RknnStageTiming pedTiming;
+            demo::vision::detect_pedestrian(input,
+                                            ped,
+                                            1,
+                                            cfg.confidence,
+                                            cfg.nmsThreshold,
+                                            pedBoxesIn,
+                                            pedScores,
+                                            true,
+                                            demo::DEFAULT_PED_TOPK_DECODE,
+                                            demo::DEFAULT_PED_TOPK_NMS,
+                                            &result.pedMs,
+                                            &pedTiming);
+            for (std::size_t i = 0; i < pedBoxesIn.size(); ++i) {
+                demo::Rect2f orig;
+                demo::vision::convert_input_box_to_orig(pedBoxesIn[i], orig,
+                                                        frame.width, frame.height);
+                const float score = (i < pedScores.size()) ? pedScores[i] : 0.0f;
+                result.pedestrians.push_back(
+                            makeBox(orig, score, 0, std::string(), "person"));
+            }
         }
 
         processed.fetch_add(1);
@@ -500,8 +614,8 @@ struct NpuInferenceWorker::Impl
         result.ready = true;
         result.fps = currentFps;
         result.lastMs = elapsedMs(totalBegin);
-        result.status = "ok";
-        publish(std::move(result));
+        result.status = npuTaskKey(cfg.task);
+        publish(std::move(result), cfg);
     }
 };
 
@@ -522,35 +636,74 @@ void NpuInferenceWorker::stop()
     m_impl->stop();
 }
 
+void NpuInferenceWorker::setConfig(const NpuTaskConfig& config)
+{
+    m_impl->updateConfig(config);
+}
+
+NpuTaskConfig NpuInferenceWorker::config() const
+{
+    return m_impl->configSnapshot();
+}
+
 void NpuInferenceWorker::setEnabled(bool enabled)
 {
-    m_impl->enableReq.store(enabled);
+    NpuTaskConfig cfg = config();
+    cfg.enabled = enabled;
+    setConfig(cfg);
 }
 
 bool NpuInferenceWorker::enabled() const
 {
-    return m_impl->enableReq.load();
+    return config().enabled;
+}
+
+void NpuInferenceWorker::setTask(NpuTaskType task)
+{
+    NpuTaskConfig cfg = config();
+    cfg.task = task;
+    setConfig(cfg);
+}
+
+NpuTaskType NpuInferenceWorker::task() const
+{
+    return config().task;
 }
 
 void NpuInferenceWorker::setTargetFps(int fps)
 {
-    m_impl->fpsReq.store(std::max(1, std::min(30, fps)));
+    NpuTaskConfig cfg = config();
+    cfg.targetFps = fps;
+    setConfig(cfg);
 }
 
 int NpuInferenceWorker::targetFps() const
 {
-    return m_impl->fpsReq.load();
+    return config().targetFps;
 }
 
 void NpuInferenceWorker::setConfidence(float confidence)
 {
-    const float clamped = std::max(0.01f, std::min(0.99f, confidence));
-    m_impl->confidencePermille.store(static_cast<int>(clamped * 1000.0f));
+    NpuTaskConfig cfg = config();
+    cfg.confidence = confidence;
+    setConfig(cfg);
 }
 
 float NpuInferenceWorker::confidence() const
 {
-    return m_impl->confidencePermille.load() / 1000.0f;
+    return config().confidence;
+}
+
+void NpuInferenceWorker::setNmsThreshold(float threshold)
+{
+    NpuTaskConfig cfg = config();
+    cfg.nmsThreshold = threshold;
+    setConfig(cfg);
+}
+
+float NpuInferenceWorker::nmsThreshold() const
+{
+    return config().nmsThreshold;
 }
 
 void NpuInferenceWorker::submitFrame(uint64_t frameId,
@@ -564,10 +717,17 @@ void NpuInferenceWorker::submitFrame(uint64_t frameId,
 
 NpuFrameResult NpuInferenceWorker::latestResult() const
 {
+    const NpuTaskConfig cfg = m_impl->configSnapshot();
     std::lock_guard<std::mutex> lk(m_impl->resultMutex);
     NpuFrameResult result = m_impl->latest;
-    result.enabled = m_impl->enableReq.load();
-    result.modelsReady = m_impl->modelsLoaded.load();
+    result.enabled = cfg.enabled;
+    result.task = cfg.task;
+    result.targetFps = cfg.targetFps;
+    result.confidence = cfg.confidence;
+    result.nmsThreshold = cfg.nmsThreshold;
+    result.configRevision = cfg.revision;
+    result.modelsReady = m_impl->modelsLoaded.load() &&
+                         m_impl->loadedTaskValue.load() == static_cast<int>(cfg.task);
     result.processed = m_impl->processed.load();
     result.dropped = m_impl->droppedFrames.load();
     if (!result.enabled) {
@@ -579,4 +739,25 @@ NpuFrameResult NpuInferenceWorker::latestResult() const
         result.pedestrians.clear();
     }
     return result;
+}
+
+
+std::vector<NpuFrameResult> NpuInferenceWorker::resultsAfter(uint64_t frameId,
+                                                              std::size_t maxResults) const
+{
+    std::vector<NpuFrameResult> results;
+    if (maxResults == 0) {
+        return results;
+    }
+
+    std::lock_guard<std::mutex> lk(m_impl->resultMutex);
+    for (const NpuFrameResult& item : m_impl->resultHistory) {
+        if (item.frameId > frameId) {
+            results.push_back(item);
+            if (results.size() >= maxResults) {
+                break;
+            }
+        }
+    }
+    return results;
 }

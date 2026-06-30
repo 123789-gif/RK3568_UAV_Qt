@@ -1,0 +1,64 @@
+===== VERIFY DATE =====
+Tue Jun 30 02:12:30 PM UTC 2026
+
+===== VERSION =====
+20260630T140914Z
+
+===== KERNEL =====
+Linux linaro-alip 6.1.99 #1 SMP Fri Mar 21 08:36:35 UTC 2025 aarch64 GNU/Linux
+
+===== RUNTIME CHECK =====
+[OK] executable: /userdata/Apps/RK3568_PTZ_Qt_ai_panel_v2_test/bin/rk_dual_screen_video
+[OK] deployment MANIFEST SHA256
+[OK] executable architecture: ARM aarch64
+[OK] ELF dependency: libdrm.so.2
+[OK] ELF dependency: librga.so.2
+[OK] ELF dependency: librknnrt.so
+[OK] ELF dependency: libopencv_core.so.406
+[OK] ELF dependency: libopencv_imgproc.so.406
+[OK] model: ped_det.rknn
+[OK] model: plate_det.rknn
+[OK] model: plate_reco.rknn
+[OK] PCIe driver file: /userdata/Apps/RK3568_PTZ_Qt_ai_panel_v2_test/driver/pango_pci_driver.ko
+[OK] PCIe driver architecture: ARM aarch64
+[OK] PCIe driver SHA256
+[OK] PCIe driver vermagic: 6.1.99 SMP mod_unload aarch64
+[OK] PCIe module loaded: pango_pci_driver
+[OK] PCIe character device: /dev/pango_pci_driver
+[OK] device: /dev/dri/card0
+[OK] device: /dev/video0
+[OK] device: /dev/ttyS0
+[OK] device: /dev/mem
+[OK] runtime libraries
+[OK] system RKNN runtime
+Runtime check passed.
+
+===== AI INFERENCE =====
+Pedestrian single-task inference: PASS
+Plate cascade inference: PASS
+Task switching: PASS
+Inference enable/disable: PASS
+Target FPS control: PASS
+Confidence control: PASS
+NMS control: PASS
+
+===== TOUCH AND LAYOUT =====
+Touch-friendly parameter controls: PASS
+AI runtime status layout: PASS
+Recognition result layout: PASS
+System status scrolling: PASS
+No bottom-screen overflow: PASS
+
+===== SYSTEM REGRESSION =====
+PCIe input: PASS
+HDMI output: PASS
+DSI display and touch: PASS
+PTZ USB video: PASS
+VISCA control: PASS
+Fan control: PASS
+
+===== PCIe DRIVER =====
+pango_pci_driver       49152  0
+crw------- 1 root root 511, 0 Jun 30 13:33 /dev/pango_pci_driver
+
+===== APPLICATION LOG =====
