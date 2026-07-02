@@ -1,6 +1,8 @@
 #ifndef PTZ_CONTROL_WORKER_H
 #define PTZ_CONTROL_WORKER_H
 
+#include "ptz/ptz_camera_profile.h"
+
 #include <QObject>
 #include <QString>
 
@@ -21,6 +23,11 @@ public:
 
     bool isRunning() const;
     bool isReady() const;
+
+    // 仅在控制线程停止时应用。
+    bool setCameraProfile(const PtzCameraProfile &profile,
+                          QString *errorMessage = nullptr);
+    PtzCameraProfile cameraProfile() const;
 
 public slots:
     void startControl();
@@ -75,6 +82,9 @@ private:
     std::atomic<bool> m_running {false};
     std::atomic<bool> m_ready {false};
     std::atomic<bool> m_stopReq {false};
+
+    mutable std::mutex m_configMutex;
+    PtzCameraProfile m_profile;
 
     std::mutex m_queueMutex;
     std::condition_variable m_queueCv;

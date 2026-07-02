@@ -3,6 +3,7 @@
 
 #include "npu/npu_result_types.h"
 #include "npu/npu_task_config.h"
+#include "video/video_route_config.h"
 
 #include <QObject>
 #include <QString>
@@ -31,6 +32,9 @@ public:
 
     void setDisplayMode(int mode);
     int displayMode() const;
+
+    void setVideoRoute(VideoRoute route);
+    VideoRoute videoRoute() const;
 
     // 仅影响下一次 startDisplay。运行中修改分辨率需要先停止显示。
     bool setOutputResolution(int width, int height);
@@ -80,6 +84,8 @@ private:
 
     std::atomic<bool> m_osdEnabled {true};
     std::atomic<int>  m_displayMode {0};
+    // [63:8] route revision, [7:0] VideoRoute value.
+    std::atomic<uint64_t> m_videoRouteState {(1ULL << 8)};
 
     std::atomic<int> m_reqWidth {1920};
     std::atomic<int> m_reqHeight {1080};

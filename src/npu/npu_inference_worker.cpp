@@ -26,6 +26,8 @@ constexpr const char* kPedModel = "ped_det.rknn";
 struct FrameCopy
 {
     uint64_t id = 0;
+    uint64_t sourceRevision = 0;
+    int sourceChannel = 0;
     int width = 0;
     int height = 0;
     std::vector<uint8_t> data;
@@ -244,6 +246,8 @@ struct NpuInferenceWorker::Impl
     std::atomic<int> droppedFrames {0};
     std::atomic<int> processed {0};
     std::atomic<bool> modelsLoaded {false};
+    std::atomic<int> inputSourceChannel {0};
+    std::atomic<uint64_t> inputSourceRevision {1};
 
     std::thread thread;
 
@@ -353,6 +357,53 @@ struct NpuInferenceWorker::Impl
         running.store(false);
     }
 
+    void updateInputSource(int sourceChannel, uint64_t sourceRevision)
+    {
+        sourceChannel = std::max(0, std::min(9, sourceChannel));
+        inputSourceChannel.store(sourceChannel);
+        inputSourceRevision.store(sourceRevision);
+        lastSubmitMs.store(0);
+
+        {
+            std::lock_guard<std::mutex> lk(pendingMutex);
+            pending = FrameCopy();
+            pendingValid = false;
+        }
+
+        const NpuTaskConfig cfg = configSnapshot();
+        NpuFrameResult state;
+        state.enabled = cfg.enabled;
+        state.task = cfg.task;
+        state.targetFps = cfg.targetFps;
+        state.confidence = cfg.confidence;
+        state.nmsThreshold = cfg.nmsThreshold;
+        state.configRevision = cfg.revision;
+        state.sourceChannel = sourceChannel;
+        state.sourceRevision = sourceRevision;
+        state.modelsReady = modelsLoaded.load() &&
+                loadedTaskValue.load() == static_cast<int>(cfg.task);
+        state.status = sourceChannel == 0 ? "paused_overview"
+                                         : (cfg.enabled ? "pending" : "off");
+        state.processed = processed.load();
+        state.dropped = droppedFrames.load();
+
+        std::lock_guard<std::mutex> lk(resultMutex);
+        latest = std::move(state);
+        resultHistory.clear();
+    }
+
+    bool wantsFrame() const
+    {
+        const NpuTaskConfig cfg = configSnapshot();
+        if (!cfg.enabled || !running.load() || inputSourceChannel.load() == 0) {
+            return false;
+        }
+        const int64_t now = steadyMs();
+        const int64_t last = lastSubmitMs.load();
+        const int64_t minInterval = std::max<int64_t>(1, 1000 / cfg.targetFps);
+        return now - last >= minInterval;
+    }
+
     bool ensureModels(NpuTaskType task)
     {
         if (modelsLoaded.load() &&
@@ -391,10 +442,20 @@ struct NpuInferenceWorker::Impl
         return true;
     }
 
-    void submit(uint64_t frameId, const uint8_t* rgb565, std::size_t bytes, int width, int height)
+    void submit(uint64_t frameId,
+                const uint8_t* rgb565,
+                std::size_t bytes,
+                int width,
+                int height,
+                int sourceChannel,
+                uint64_t sourceRevision)
     {
         const NpuTaskConfig cfg = configSnapshot();
         if (!cfg.enabled || !running.load() || !rgb565 || width <= 0 || height <= 0) {
+            return;
+        }
+        if (sourceChannel <= 0 || sourceChannel != inputSourceChannel.load() ||
+            sourceRevision != inputSourceRevision.load()) {
             return;
         }
 
@@ -414,6 +475,8 @@ struct NpuInferenceWorker::Impl
 
         FrameCopy copy;
         copy.id = frameId;
+        copy.sourceChannel = sourceChannel;
+        copy.sourceRevision = sourceRevision;
         copy.width = width;
         copy.height = height;
         copy.data.assign(rgb565, rgb565 + need);
@@ -450,7 +513,9 @@ struct NpuInferenceWorker::Impl
     void publish(NpuFrameResult result, const NpuTaskConfig& cfg)
     {
         const NpuTaskConfig current = configSnapshot();
-        if (current.revision != cfg.revision) {
+        if (current.revision != cfg.revision ||
+            result.sourceRevision != inputSourceRevision.load() ||
+            result.sourceChannel != inputSourceChannel.load()) {
             return;
         }
         result.enabled = current.enabled;
@@ -486,12 +551,16 @@ struct NpuInferenceWorker::Impl
     void process(const FrameCopy& frame)
     {
         const NpuTaskConfig cfg = configSnapshot();
-        if (!cfg.enabled) {
+        if (!cfg.enabled || frame.sourceChannel <= 0 ||
+            frame.sourceChannel != inputSourceChannel.load() ||
+            frame.sourceRevision != inputSourceRevision.load()) {
             return;
         }
 
         NpuFrameResult result;
         result.frameId = frame.id;
+        result.sourceChannel = frame.sourceChannel;
+        result.sourceRevision = frame.sourceRevision;
         result.task = cfg.task;
         result.targetFps = cfg.targetFps;
         result.confidence = cfg.confidence;
@@ -706,13 +775,26 @@ float NpuInferenceWorker::nmsThreshold() const
     return config().nmsThreshold;
 }
 
+void NpuInferenceWorker::setInputSource(int sourceChannel, uint64_t sourceRevision)
+{
+    m_impl->updateInputSource(sourceChannel, sourceRevision);
+}
+
+bool NpuInferenceWorker::wantsFrame() const
+{
+    return m_impl->wantsFrame();
+}
+
 void NpuInferenceWorker::submitFrame(uint64_t frameId,
                                      const uint8_t* rgb565,
                                      std::size_t bytes,
                                      int width,
-                                     int height)
+                                     int height,
+                                     int sourceChannel,
+                                     uint64_t sourceRevision)
 {
-    m_impl->submit(frameId, rgb565, bytes, width, height);
+    m_impl->submit(frameId, rgb565, bytes, width, height,
+                   sourceChannel, sourceRevision);
 }
 
 NpuFrameResult NpuInferenceWorker::latestResult() const
@@ -726,6 +808,8 @@ NpuFrameResult NpuInferenceWorker::latestResult() const
     result.confidence = cfg.confidence;
     result.nmsThreshold = cfg.nmsThreshold;
     result.configRevision = cfg.revision;
+    result.sourceChannel = m_impl->inputSourceChannel.load();
+    result.sourceRevision = m_impl->inputSourceRevision.load();
     result.modelsReady = m_impl->modelsLoaded.load() &&
                          m_impl->loadedTaskValue.load() == static_cast<int>(cfg.task);
     result.processed = m_impl->processed.load();

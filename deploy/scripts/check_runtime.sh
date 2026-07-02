@@ -23,6 +23,10 @@ err() {
     FAIL=1
 }
 
+warn() {
+    printf '[WARN] %s\n' "$*" >&2
+}
+
 if [[ -x "$BIN" ]]; then
     ok "executable: $BIN"
 else
@@ -129,7 +133,6 @@ fi
 
 for dev in \
     /dev/dri/card0 \
-    /dev/video0 \
     /dev/ttyS0 \
     /dev/mem
 do
@@ -139,6 +142,20 @@ do
         err "missing device: $dev"
     fi
 done
+
+VIDEO_NODES=()
+for node in /dev/video[0-9]*; do
+    [[ -c "$node" ]] || continue
+    [[ ${node##*/} =~ ^video[0-9]+$ ]] || continue
+    VIDEO_NODES+=("$node")
+done
+
+if [[ ${#VIDEO_NODES[@]} -gt 0 ]]; then
+    ok "V4L2 candidate nodes: ${VIDEO_NODES[*]}"
+else
+    # PTZ热插拔版本允许无相机启动，Qt进入等待态并在设备接入后自动恢复。
+    warn "no V4L2 /dev/videoN candidate node; PTZ hotplug monitor will wait"
+fi
 
 if [[ -x "$BIN" ]]; then
     LDD_OUTPUT="$(

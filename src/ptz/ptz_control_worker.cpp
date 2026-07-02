@@ -2,6 +2,7 @@
 #include "ptz/visca_serial.hpp"
 
 #include <QDebug>
+#include <QFile>
 
 #include <algorithm>
 #include <chrono>
@@ -27,8 +28,53 @@ bool PtzControlWorker::isReady() const
     return m_ready.load();
 }
 
+bool PtzControlWorker::setCameraProfile(const PtzCameraProfile &profile,
+                                        QString *errorMessage)
+{
+    if (m_running.load()) {
+        if (errorMessage) {
+            *errorMessage = QStringLiteral("VISCA控制运行中，必须先停止再切换配置");
+        }
+        return false;
+    }
+    if (profile.id.isEmpty() || profile.serialDevice.isEmpty()
+            || !profile.viscaEnabled) {
+        if (errorMessage) {
+            *errorMessage = QStringLiteral("无效的VISCA相机配置");
+        }
+        return false;
+    }
+    if (profile.serialBaudRate != 9600) {
+        if (errorMessage) {
+            *errorMessage = QStringLiteral("当前VISCA后端仅支持9600 8N1");
+        }
+        return false;
+    }
+
+    std::lock_guard<std::mutex> lock(m_configMutex);
+    m_profile = profile;
+    if (errorMessage) {
+        errorMessage->clear();
+    }
+    return true;
+}
+
+PtzCameraProfile PtzControlWorker::cameraProfile() const
+{
+    std::lock_guard<std::mutex> lock(m_configMutex);
+    return m_profile;
+}
+
 void PtzControlWorker::startControl()
 {
+    {
+        std::lock_guard<std::mutex> lock(m_configMutex);
+        if (m_profile.id.isEmpty()) {
+            emit stateChanged(false, QStringLiteral("PTZ控制未配置，请先应用相机配置"));
+            return;
+        }
+    }
+
     if (m_running.load()) {
         emit stateChanged(m_ready.load(),
                           m_ready.load() ? "RS232 VISCA已连接" : "RS232 VISCA正在连接");
@@ -107,8 +153,15 @@ void PtzControlWorker::enqueue(Command command)
 
 void PtzControlWorker::workerMain()
 {
+    PtzCameraProfile profile;
+    {
+        std::lock_guard<std::mutex> lock(m_configMutex);
+        profile = m_profile;
+    }
+
     ViscaSerial visca;
-    const char *device = "/dev/ttyS0";
+    const QByteArray encodedDevice = QFile::encodeName(profile.serialDevice);
+    const char *device = encodedDevice.constData();
 
     if (!visca.openPort(device)) {
         m_running.store(false);
@@ -141,7 +194,9 @@ void PtzControlWorker::workerMain()
     }
 
     m_ready.store(true);
-    emit stateChanged(true, "RS232 VISCA：/dev/ttyS0，9600 8N1");
+    emit stateChanged(true,
+                      QStringLiteral("%1：RS232 VISCA %2，9600 8N1")
+                      .arg(profile.displayName, profile.serialDevice));
 
     while (!m_stopReq.load()) {
         Command command;

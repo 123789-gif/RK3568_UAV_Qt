@@ -47,7 +47,15 @@ static constexpr int PCIE_FRAME_H = PcieFrameReceiver::kFrameHeight;
 static constexpr int PCIE_BPP = PcieFrameReceiver::kBytesPerPixel;
 static constexpr std::size_t PCIE_FRAME_SIZE = PcieFrameReceiver::kFrameBytes;
 
-static int rga_scale_rgb565(const void *srcPtr, void *dstPtr, int dstW, int dstH, int dstStrideW, int dstStrideH)
+static int rga_crop_scale_rgb565(const void *srcPtr,
+                                  int srcW,
+                                  int srcH,
+                                  const VideoTileRoi &crop,
+                                  void *dstPtr,
+                                  int dstW,
+                                  int dstH,
+                                  int dstStrideW,
+                                  int dstStrideH)
 {
     rga_info_t src;
     rga_info_t dst;
@@ -58,15 +66,27 @@ static int rga_scale_rgb565(const void *srcPtr, void *dstPtr, int dstW, int dstH
     src.mmuFlag = 1;
     src.virAddr = const_cast<void *>(srcPtr);
     src.rotation = 0;
-    rga_set_rect(&src.rect, 0, 0, PCIE_FRAME_W, PCIE_FRAME_H, PCIE_FRAME_W, PCIE_FRAME_H, RK_FORMAT_RGB_565);
+    rga_set_rect(&src.rect, crop.x, crop.y, crop.width, crop.height,
+                 srcW, srcH, RK_FORMAT_RGB_565);
 
     dst.fd = -1;
     dst.mmuFlag = 1;
     dst.virAddr = dstPtr;
     dst.rotation = 0;
-    rga_set_rect(&dst.rect, 0, 0, dstW, dstH, dstStrideW, dstStrideH, RK_FORMAT_RGB_565);
+    rga_set_rect(&dst.rect, 0, 0, dstW, dstH,
+                 dstStrideW, dstStrideH, RK_FORMAT_RGB_565);
 
     return c_RkRgaBlit(&src, &dst, nullptr);
+}
+
+static VideoRoute decodeVideoRoute(uint64_t state)
+{
+    return sanitizeVideoRoute(static_cast<int>(state & 0xffu));
+}
+
+static uint64_t decodeVideoRouteRevision(uint64_t state)
+{
+    return state >> 8;
 }
 
 static uint16_t rgb565(uint8_t r, uint8_t g, uint8_t b)
@@ -273,14 +293,14 @@ static void draw_osd(void *fb, int pitchBytes, int fbW, int fbH, const OsdStats 
                             st.failTotal ? red : white, shadow);
 }
 
-static int scale_capture_x(float x, int fbW)
+static int scale_capture_x(float x, int fbW, int sourceW)
 {
-    return static_cast<int>(x * static_cast<float>(fbW) / static_cast<float>(PCIE_FRAME_W) + 0.5f);
+    return static_cast<int>(x * static_cast<float>(fbW) / static_cast<float>(sourceW) + 0.5f);
 }
 
-static int scale_capture_y(float y, int fbH)
+static int scale_capture_y(float y, int fbH, int sourceH)
 {
-    return static_cast<int>(y * static_cast<float>(fbH) / static_cast<float>(PCIE_FRAME_H) + 0.5f);
+    return static_cast<int>(y * static_cast<float>(fbH) / static_cast<float>(sourceH) + 0.5f);
 }
 
 static const char* npu_status_text(const NpuFrameResult& result)
@@ -306,7 +326,9 @@ static std::string osd_ascii_label(const std::string& label, const char* fallbac
     return out.empty() ? fallback : out;
 }
 
-static void draw_npu_overlay(void *fb, int pitchBytes, int fbW, int fbH, const NpuFrameResult &result)
+static void draw_npu_overlay(void *fb, int pitchBytes, int fbW, int fbH,
+                             int sourceW, int sourceH,
+                             const NpuFrameResult &result)
 {
     const int scale = (fbW >= 1600) ? 2 : 1;
     const int lineH = 9 * scale;
@@ -339,10 +361,10 @@ static void draw_npu_overlay(void *fb, int pitchBytes, int fbW, int fbH, const N
     }
 
     for (const NpuBox& box : result.plates) {
-        const int x = scale_capture_x(box.x, fbW);
-        const int y = scale_capture_y(box.y, fbH);
-        const int w = std::max(2, scale_capture_x(box.w, fbW));
-        const int h = std::max(2, scale_capture_y(box.h, fbH));
+        const int x = scale_capture_x(box.x, fbW, sourceW);
+        const int y = scale_capture_y(box.y, fbH, sourceH);
+        const int w = std::max(2, scale_capture_x(box.w, fbW, sourceW));
+        const int h = std::max(2, scale_capture_y(box.h, fbH, sourceH));
         draw_rect_outline_rgb565(fb, pitchBytes, fbW, fbH, x, y, w, h, 3, yellow);
 
         std::string label = "PLATE " + osd_ascii_label(box.label.empty() ? box.text : box.label, "PLATE");
@@ -351,10 +373,10 @@ static void draw_npu_overlay(void *fb, int pitchBytes, int fbW, int fbH, const N
     }
 
     for (const NpuBox& box : result.pedestrians) {
-        const int x = scale_capture_x(box.x, fbW);
-        const int y = scale_capture_y(box.y, fbH);
-        const int w = std::max(2, scale_capture_x(box.w, fbW));
-        const int h = std::max(2, scale_capture_y(box.h, fbH));
+        const int x = scale_capture_x(box.x, fbW, sourceW);
+        const int y = scale_capture_y(box.y, fbH, sourceH);
+        const int w = std::max(2, scale_capture_x(box.w, fbW, sourceW));
+        const int h = std::max(2, scale_capture_y(box.h, fbH, sourceH));
         draw_rect_outline_rgb565(fb, pitchBytes, fbW, fbH, x, y, w, h, 3, red);
 
         char label[48];
@@ -612,6 +634,7 @@ DrmRgaDisplay::DrmRgaDisplay(QObject *parent)
     : QObject(parent)
     , m_npuWorker(new NpuInferenceWorker)
 {
+    m_npuWorker->setInputSource(0, 1);
 }
 
 DrmRgaDisplay::~DrmRgaDisplay()
@@ -657,6 +680,30 @@ void DrmRgaDisplay::setOsdEnabled(bool enable) { m_osdEnabled.store(enable); }
 bool DrmRgaDisplay::osdEnabled() const { return m_osdEnabled.load(); }
 void DrmRgaDisplay::setDisplayMode(int mode) { m_displayMode.store(mode); }
 int DrmRgaDisplay::displayMode() const { return m_displayMode.load(); }
+
+void DrmRgaDisplay::setVideoRoute(VideoRoute route)
+{
+    route = sanitizeVideoRoute(static_cast<int>(route));
+    const uint64_t oldState = m_videoRouteState.load();
+    if (decodeVideoRoute(oldState) == route) {
+        return;
+    }
+
+    const uint64_t revision = decodeVideoRouteRevision(oldState) + 1;
+    const uint64_t newState = (revision << 8) |
+            static_cast<uint64_t>(static_cast<std::uint8_t>(route));
+    m_videoRouteState.store(newState);
+
+    if (m_npuWorker) {
+        m_npuWorker->setInputSource(videoRouteChannel(route), revision);
+    }
+    emit stateChanged(QString("Video route: %1").arg(videoRouteKey(route)));
+}
+
+VideoRoute DrmRgaDisplay::videoRoute() const
+{
+    return decodeVideoRoute(m_videoRouteState.load());
+}
 
 bool DrmRgaDisplay::setOutputResolution(int width, int height)
 {
@@ -813,7 +860,9 @@ void DrmRgaDisplay::workerMain()
         uint64_t lastSensorNs = 0;
         uint64_t readCnt = 0, validCnt = 0, rgaCnt = 0, flipCnt = 0, failCnt = 0, rgaNsSum = 0;
         uint64_t failTotal = 0;
+        uint64_t npuCropFailTotal = 0;
         OsdStats osdStats {};
+        std::vector<uint8_t> npuTileBuffer(640u * 360u * PCIE_BPP);
 
         while (!m_stopReq.load()) {
             PcieFrameReceiver::FrameView frame;
@@ -829,19 +878,45 @@ void DrmRgaDisplay::workerMain()
 
             const int index = frame.bufferIndex;
             validCnt++;
-            if (m_npuWorker) {
-                m_npuWorker->submitFrame(validCnt,
-                                         frame.data,
-                                         frame.bytes,
-                                         PCIE_FRAME_W,
-                                         PCIE_FRAME_H);
+
+            const uint64_t routeState = m_videoRouteState.load();
+            const VideoRoute route = decodeVideoRoute(routeState);
+            const uint64_t routeRevision = decodeVideoRouteRevision(routeState);
+            const VideoTileRoi sourceRoi = videoRouteRoi(route);
+            const int sourceChannel = videoRouteChannel(route);
+
+            if (sourceChannel > 0 && m_npuWorker && m_npuWorker->wantsFrame()) {
+                const int cropRet = rga_crop_scale_rgb565(
+                            frame.data, PCIE_FRAME_W, PCIE_FRAME_H, sourceRoi,
+                            npuTileBuffer.data(), 640, 360, 640, 360);
+                if (cropRet == 0) {
+                    m_npuWorker->submitFrame(validCnt,
+                                             npuTileBuffer.data(),
+                                             npuTileBuffer.size(),
+                                             640,
+                                             360,
+                                             sourceChannel,
+                                             routeRevision);
+                } else {
+                    ++npuCropFailTotal;
+                    if (npuCropFailTotal <= 10) {
+                        qDebug() << "RGA crop for NPU failed ret=" << cropRet
+                                 << "route=" << videoRouteKey(route);
+                    }
+                }
             }
 
             int back = front ^ 1;
             uint64_t r0 = now_ns();
-            int r = rga_scale_rgb565(frame.data, drm.fb[back].map,
-                                     drm.modeW, drm.modeH,
-                                     drm.fb[back].pitch / PCIE_BPP, drm.modeH);
+            int r = rga_crop_scale_rgb565(frame.data,
+                                          PCIE_FRAME_W,
+                                          PCIE_FRAME_H,
+                                          sourceRoi,
+                                          drm.fb[back].map,
+                                          drm.modeW,
+                                          drm.modeH,
+                                          drm.fb[back].pitch / PCIE_BPP,
+                                          drm.modeH);
             uint64_t r1 = now_ns();
             if (r) {
                 failCnt++;
@@ -860,8 +935,28 @@ void DrmRgaDisplay::workerMain()
                     lastSensorNs = sensorNow;
                 }
                 draw_osd(drm.fb[back].map, drm.fb[back].pitch, drm.modeW, drm.modeH, osdStats);
-                draw_npu_overlay(drm.fb[back].map, drm.fb[back].pitch, drm.modeW, drm.modeH,
-                                 latestNpuResult());
+
+                char routeLabel[16];
+                if (sourceChannel > 0) {
+                    snprintf(routeLabel, sizeof(routeLabel), "CAM %d", sourceChannel);
+                } else {
+                    snprintf(routeLabel, sizeof(routeLabel), "ALL");
+                }
+                const int routeScale = drm.modeW >= 1600 ? 2 : 1;
+                draw_text_shadow_rgb565(drm.fb[back].map, drm.fb[back].pitch,
+                                        drm.modeW, drm.modeH,
+                                        drm.modeW - 110 * routeScale, 24,
+                                        routeLabel, routeScale,
+                                        rgb565(0, 255, 0), rgb565(0, 0, 0));
+
+                if (sourceChannel > 0) {
+                    const NpuFrameResult ai = latestNpuResult();
+                    if (ai.sourceChannel == sourceChannel &&
+                        ai.sourceRevision == routeRevision) {
+                        draw_npu_overlay(drm.fb[back].map, drm.fb[back].pitch,
+                                         drm.modeW, drm.modeH, 640, 360, ai);
+                    }
+                }
 
                 if (m_displayMode.load() == 1) {
                     const uint16_t green = rgb565(0, 255, 0);
@@ -904,22 +999,33 @@ void DrmRgaDisplay::workerMain()
                 {
                     const NpuFrameResult ai = latestNpuResult();
                     QString aiStatus;
+                    bool aiReady = ai.ready;
+                    double aiFps = ai.fps;
+                    int plateCount = static_cast<int>(ai.plates.size());
+                    int pedestrianCount = static_cast<int>(ai.pedestrians.size());
                     if (!ai.enabled) {
                         aiStatus = "off";
+                    } else if (sourceChannel == 0) {
+                        aiStatus = "paused: overview";
+                        aiReady = false;
+                        aiFps = 0.0;
+                        plateCount = 0;
+                        pedestrianCount = 0;
                     } else if (!ai.error.empty()) {
                         aiStatus = QString::fromStdString(ai.error);
                     } else if (ai.ready) {
-                        aiStatus = QString("%1 ok %2ms")
+                        aiStatus = QString("CH%1 %2 ok %3ms")
+                                .arg(sourceChannel)
                                 .arg(QString::fromLatin1(npuTaskKey(ai.task)))
                                 .arg(ai.lastMs, 0, 'f', 1);
                     } else {
                         aiStatus = "loading";
                     }
                     emit aiStatsUpdated(ai.enabled,
-                                        ai.ready,
-                                        ai.fps,
-                                        static_cast<int>(ai.plates.size()),
-                                        static_cast<int>(ai.pedestrians.size()),
+                                        aiReady,
+                                        aiFps,
+                                        plateCount,
+                                        pedestrianCount,
                                         aiStatus);
                 }
 

@@ -1,6 +1,7 @@
 #include "ptz/ptz_capture_worker.h"
 
 #include <QDebug>
+#include <QFile>
 
 #include <cerrno>
 #include <cinttypes>
@@ -21,9 +22,6 @@
 
 namespace {
 
-constexpr int kCaptureWidth = 960;
-constexpr int kCaptureHeight = 540;
-constexpr int kCaptureFps = 20;
 constexpr int kRequestBuffers = 4;
 
 uint64_t nowNs()
@@ -72,9 +70,12 @@ void cleanupCapture(CaptureState &state)
     }
 }
 
-bool initCapture(CaptureState &state, QString *error)
+bool initCapture(CaptureState &state,
+                 const PtzResolvedDevice &config,
+                 QString *error)
 {
-    const char *device = "/dev/video0";
+    const QByteArray encodedDevice = QFile::encodeName(config.videoDevice);
+    const char *device = encodedDevice.constData();
     state.fd = open(device, O_RDWR | O_NONBLOCK | O_CLOEXEC);
     if (state.fd < 0) {
         *error = QString("open %1 failed: %2")
@@ -98,9 +99,9 @@ bool initCapture(CaptureState &state, QString *error)
 
     v4l2_format fmt {};
     fmt.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-    fmt.fmt.pix.width = kCaptureWidth;
-    fmt.fmt.pix.height = kCaptureHeight;
-    fmt.fmt.pix.pixelformat = V4L2_PIX_FMT_MJPEG;
+    fmt.fmt.pix.width = static_cast<uint32_t>(config.profile.captureWidth);
+    fmt.fmt.pix.height = static_cast<uint32_t>(config.profile.captureHeight);
+    fmt.fmt.pix.pixelformat = config.profile.pixelFormat;
     fmt.fmt.pix.field = V4L2_FIELD_ANY;
 
     if (!xioctl(state.fd, VIDIOC_S_FMT, &fmt)) {
@@ -108,21 +109,37 @@ bool initCapture(CaptureState &state, QString *error)
         return false;
     }
 
-    if (fmt.fmt.pix.pixelformat != V4L2_PIX_FMT_MJPEG ||
-        int(fmt.fmt.pix.width) != kCaptureWidth ||
-        int(fmt.fmt.pix.height) != kCaptureHeight) {
-        *error = QString("camera rejected MJPEG %1x%2, actual=%3x%4")
-                .arg(kCaptureWidth).arg(kCaptureHeight)
-                .arg(fmt.fmt.pix.width).arg(fmt.fmt.pix.height);
+    if (fmt.fmt.pix.pixelformat != config.profile.pixelFormat ||
+        int(fmt.fmt.pix.width) != config.profile.captureWidth ||
+        int(fmt.fmt.pix.height) != config.profile.captureHeight) {
+        *error = QString("%1 rejected %2 %3x%4, actual=%5 %6x%7")
+                .arg(config.videoDevice,
+                     v4l2PixelFormatName(config.profile.pixelFormat))
+                .arg(config.profile.captureWidth)
+                .arg(config.profile.captureHeight)
+                .arg(v4l2PixelFormatName(fmt.fmt.pix.pixelformat))
+                .arg(fmt.fmt.pix.width)
+                .arg(fmt.fmt.pix.height);
         return false;
     }
 
     v4l2_streamparm parm {};
     parm.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
     parm.parm.capture.timeperframe.numerator = 1;
-    parm.parm.capture.timeperframe.denominator = kCaptureFps;
+    parm.parm.capture.timeperframe.denominator = config.profile.captureFps;
     if (!xioctl(state.fd, VIDIOC_S_PARM, &parm)) {
         *error = QString("VIDIOC_S_PARM failed: %1").arg(strerror(errno));
+        return false;
+    }
+    const uint32_t fpsNumerator = parm.parm.capture.timeperframe.numerator;
+    const uint32_t fpsDenominator = parm.parm.capture.timeperframe.denominator;
+    if (fpsNumerator > 0
+            && fpsDenominator != static_cast<uint32_t>(config.profile.captureFps) * fpsNumerator) {
+        *error = QString("%1 rejected %2 fps, actual=%3/%4")
+                .arg(config.videoDevice)
+                .arg(config.profile.captureFps)
+                .arg(fpsDenominator)
+                .arg(fpsNumerator);
         return false;
     }
 
@@ -227,7 +244,7 @@ bool decodeJpegPreview(const uint8_t *data,
         return false;
     }
 
-    // 相机直接输出960x540，按原尺寸解码；避免1080P采集与1/2缩放带来的额外CPU开销。
+    // 两套PTZ均直接按Profile指定尺寸解码，不在采集线程中做二次缩放。
     cinfo.scale_num = 1;
     cinfo.scale_denom = 1;
     cinfo.out_color_space = JCS_RGB;
@@ -298,6 +315,36 @@ bool PtzCaptureWorker::isRunning() const
     return m_running.load();
 }
 
+bool PtzCaptureWorker::setCaptureConfig(const PtzResolvedDevice &config,
+                                        QString *errorMessage)
+{
+    if (m_running.load()) {
+        if (errorMessage) {
+            *errorMessage = QStringLiteral("采集运行中，必须先停止再切换相机配置");
+        }
+        return false;
+    }
+    if (!config.valid || config.videoDevice.isEmpty() || config.profile.id.isEmpty()) {
+        if (errorMessage) {
+            *errorMessage = QStringLiteral("无效的PTZ视频配置");
+        }
+        return false;
+    }
+
+    std::lock_guard<std::mutex> lock(m_configMutex);
+    m_config = config;
+    if (errorMessage) {
+        errorMessage->clear();
+    }
+    return true;
+}
+
+PtzResolvedDevice PtzCaptureWorker::captureConfig() const
+{
+    std::lock_guard<std::mutex> lock(m_configMutex);
+    return m_config;
+}
+
 bool PtzCaptureWorker::takeLatestFrame(QImage *frame)
 {
     if (!frame) {
@@ -314,8 +361,23 @@ bool PtzCaptureWorker::takeLatestFrame(QImage *frame)
     return true;
 }
 
+void PtzCaptureWorker::clearLatestFrame()
+{
+    std::lock_guard<std::mutex> lock(m_frameMutex);
+    m_latestFrame = QImage();
+    m_framePending = false;
+}
+
 void PtzCaptureWorker::startCapture()
 {
+    {
+        std::lock_guard<std::mutex> lock(m_configMutex);
+        if (!m_config.valid) {
+            emit stateChanged(false, QStringLiteral("PTZ视频未配置，请先应用相机配置"));
+            return;
+        }
+    }
+
     if (m_running.load()) {
         emit stateChanged(true, "PTZ视频已在运行");
         return;
@@ -343,22 +405,37 @@ void PtzCaptureWorker::stopCapture()
         m_thread.join();
     }
     m_running.store(false);
+    clearLatestFrame();
 }
 
 void PtzCaptureWorker::workerMain()
 {
+    PtzResolvedDevice config;
+    {
+        std::lock_guard<std::mutex> lock(m_configMutex);
+        config = m_config;
+    }
+
     CaptureState capture;
     QString initError;
-    if (!initCapture(capture, &initError)) {
+    if (!initCapture(capture, config, &initError)) {
         cleanupCapture(capture);
         m_running.store(false);
         emit stateChanged(false, initError);
         return;
     }
 
-    emit stateChanged(true, "PTZ视频：MJPEG 960x540@20，预览输出960x540");
+    emit stateChanged(true,
+                      QStringLiteral("%1：%2，%3 %4x%5@%6")
+                      .arg(config.profile.displayName,
+                           config.videoDevice,
+                           v4l2PixelFormatName(config.profile.pixelFormat))
+                      .arg(config.profile.captureWidth)
+                      .arg(config.profile.captureHeight)
+                      .arg(config.profile.captureFps));
 
     QString finalMessage = "PTZ视频已停止";
+    bool lostDevice = false;
     uint64_t statStart = nowNs();
     uint64_t captureCount = 0;
     uint64_t decodeCount = 0;
@@ -375,12 +452,31 @@ void PtzCaptureWorker::workerMain()
             if (errno == EINTR) {
                 continue;
             }
-            finalMessage = QString("poll /dev/video0 failed: %1")
-                    .arg(QString::fromLocal8Bit(strerror(errno)));
+            finalMessage = QString("poll %1 failed: %2")
+                    .arg(config.videoDevice,
+                         QString::fromLocal8Bit(strerror(errno)));
             break;
         }
         if (pollResult == 0) {
+            const QByteArray encodedPath = QFile::encodeName(config.videoDevice);
+            if (::access(encodedPath.constData(), F_OK) != 0) {
+                finalMessage = QStringLiteral("PTZ视频设备已拔出：%1")
+                        .arg(config.videoDevice);
+                lostDevice = true;
+                break;
+            }
             continue;
+        }
+
+        const bool hardPollFailure = pfd.revents & (POLLHUP | POLLNVAL);
+        const bool pollErrorWithoutData = (pfd.revents & POLLERR)
+                && !(pfd.revents & POLLIN);
+        if (hardPollFailure || pollErrorWithoutData) {
+            finalMessage = QStringLiteral("PTZ视频设备失效：%1，poll revents=0x%2")
+                    .arg(config.videoDevice)
+                    .arg(static_cast<unsigned int>(pfd.revents), 0, 16);
+            lostDevice = true;
+            break;
         }
 
         v4l2_buffer buffer {};
@@ -391,8 +487,10 @@ void PtzCaptureWorker::workerMain()
             if (errno == EAGAIN) {
                 continue;
             }
-            finalMessage = QString("VIDIOC_DQBUF failed: %1")
-                    .arg(QString::fromLocal8Bit(strerror(errno)));
+            finalMessage = QString("VIDIOC_DQBUF failed on %1: %2")
+                    .arg(config.videoDevice,
+                         QString::fromLocal8Bit(strerror(errno)));
+            lostDevice = (errno == ENODEV || errno == EIO || errno == EPIPE);
             break;
         }
 
@@ -424,8 +522,10 @@ void PtzCaptureWorker::workerMain()
         }
 
         if (!xioctl(capture.fd, VIDIOC_QBUF, &buffer)) {
-            finalMessage = QString("VIDIOC_QBUF failed: %1")
-                    .arg(QString::fromLocal8Bit(strerror(errno)));
+            finalMessage = QString("VIDIOC_QBUF failed on %1: %2")
+                    .arg(config.videoDevice,
+                         QString::fromLocal8Bit(strerror(errno)));
+            lostDevice = (errno == ENODEV || errno == EIO || errno == EPIPE);
             break;
         }
 
@@ -453,6 +553,12 @@ void PtzCaptureWorker::workerMain()
 
     cleanupCapture(capture);
     m_running.store(false);
+    if (lostDevice) {
+        clearLatestFrame();
+    }
     emit stateChanged(false, finalMessage);
+    if (lostDevice && !m_stopReq.load()) {
+        emit deviceLost(config.videoDevice, finalMessage);
+    }
 }
 

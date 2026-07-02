@@ -482,6 +482,34 @@ QString aiSettingsPath()
     return QDir(configDir).filePath(QStringLiteral("ai_panel.ini"));
 }
 
+QString ptzSettingsPath()
+{
+    QDir binDir(QCoreApplication::applicationDirPath());
+    const QString configDir = QDir::cleanPath(binDir.filePath(QStringLiteral("../config")));
+    QDir().mkpath(configDir);
+    return QDir(configDir).filePath(QStringLiteral("ptz_camera.ini"));
+}
+
+bool samePtzEndpoint(const PtzResolvedDevice &a, const PtzResolvedDevice &b)
+{
+    return a.valid && b.valid
+            && a.profile.id == b.profile.id
+            && a.videoDevice == b.videoDevice
+            && a.usbSysfsPath == b.usbSysfsPath;
+}
+
+QString ptzEndpointText(const PtzResolvedDevice &device)
+{
+    if (!device.valid) {
+        return QStringLiteral("none");
+    }
+    return QStringLiteral("%1 %2 USB %3:%4")
+            .arg(device.profile.displayName,
+                 device.videoDevice)
+            .arg(device.profile.usbVendorId, 4, 16, QLatin1Char('0'))
+            .arg(device.profile.usbProductId, 4, 16, QLatin1Char('0'));
+}
+
 QString aiBoxText(const NpuBox &box)
 {
     return QStringLiteral("%1,%2,%3,%4")
@@ -530,6 +558,10 @@ ControlPanelWindow::ControlPanelWindow(QWidget *parent)
             this, &ControlPanelWindow::onPtzCaptureStatsUpdated,
             Qt::QueuedConnection);
 
+    connect(m_ptzCapture, &PtzCaptureWorker::deviceLost,
+            this, &ControlPanelWindow::onPtzCaptureDeviceLost,
+            Qt::QueuedConnection);
+
     connect(m_ptzControl, &PtzControlWorker::stateChanged,
             this, &ControlPanelWindow::onPtzControlStateChanged,
             Qt::QueuedConnection);
@@ -542,6 +574,7 @@ ControlPanelWindow::ControlPanelWindow(QWidget *parent)
     applyStyle();
     loadAiSettings();
     onApplyAiConfigClicked();
+    loadPtzSettings();
 
     m_statusTimer = new QTimer(this);
     connect(m_statusTimer, &QTimer::timeout,
@@ -562,6 +595,13 @@ ControlPanelWindow::ControlPanelWindow(QWidget *parent)
             this, &ControlPanelWindow::onPtzFrameTimer);
     m_ptzFrameTimer->start(50);
 
+    // 运行期间轮询V4L2设备集合。1秒周期只在设备变化或服务异常时
+    // 执行重配置，不影响PCIe/HDMI主视频链路。
+    m_ptzDeviceMonitorTimer = new QTimer(this);
+    connect(m_ptzDeviceMonitorTimer, &QTimer::timeout,
+            this, &ControlPanelWindow::onPtzDeviceMonitorTimer);
+    m_ptzDeviceMonitorTimer->start(1000);
+
     updateStatusText();
 
     // 界面进入事件循环后自动启动PTZ视频和RS232控制。
@@ -574,12 +614,12 @@ ControlPanelWindow::ControlPanelWindow(QWidget *parent)
             }
             updateFanUi();
         }
-        if (m_ptzControl) {
-            m_ptzControl->startControl();
-        }
-        if (m_ptzCapture) {
-            m_ptzCapture->startCapture();
-        }
+        // 保持原版本“程序启动后自动开启预览和控制”的行为。
+        // 若设备尚未插入，则进入等待态，后续热插拔监测会自动恢复。
+        m_ptzPreviewDesired = true;
+        m_ptzControlDesired = true;
+        (void)applyPtzProfileSelection(false);
+        updatePtzServiceButtons();
     });
 }
 
@@ -591,6 +631,10 @@ ControlPanelWindow::~ControlPanelWindow()
 
     if (m_ptzFrameTimer) {
         m_ptzFrameTimer->stop();
+    }
+
+    if (m_ptzDeviceMonitorTimer) {
+        m_ptzDeviceMonitorTimer->stop();
     }
 
     if (m_ptzCapture) {
@@ -708,15 +752,21 @@ QWidget *ControlPanelWindow::createNavPanel()
 QWidget *ControlPanelWindow::createVideoPage()
 {
     QWidget *page = new QWidget(this);
-    QVBoxLayout *layout = new QVBoxLayout(page);
-    layout->setContentsMargins(12, 8, 12, 8);
-    layout->setSpacing(12);
+    QHBoxLayout *pageLayout = new QHBoxLayout(page);
+    pageLayout->setContentsMargins(8, 6, 8, 6);
+    pageLayout->setSpacing(10);
 
-    QGroupBox *displayGroup = new QGroupBox("HDMI 输出控制", page);
+    QWidget *leftPanel = new QWidget(page);
+    leftPanel->setFixedWidth(390);
+    QVBoxLayout *leftLayout = new QVBoxLayout(leftPanel);
+    leftLayout->setContentsMargins(0, 0, 0, 0);
+    leftLayout->setSpacing(8);
+
+    QGroupBox *displayGroup = new QGroupBox("HDMI 输出控制", leftPanel);
     QGridLayout *grid = new QGridLayout(displayGroup);
-    grid->setContentsMargins(18, 22, 18, 16);
-    grid->setHorizontalSpacing(14);
-    grid->setVerticalSpacing(14);
+    grid->setContentsMargins(14, 20, 14, 12);
+    grid->setHorizontalSpacing(10);
+    grid->setVerticalSpacing(9);
 
     m_btnStartStop = new QPushButton("启动/停止 HDMI", displayGroup);
     m_btnOsd = new QPushButton("OSD 开/关", displayGroup);
@@ -731,7 +781,8 @@ QWidget *ControlPanelWindow::createVideoPage()
     m_outputModeCombo->addItem("推理框预留", 2);
     m_outputModeCombo->addItem("BEV预留", 3);
 
-    QPushButton *applyVideo = new QPushButton("应用显示配置", displayGroup);
+    QPushButton *applyVideo = new QPushButton("应用显示与选路", displayGroup);
+    applyVideo->setMinimumHeight(50);
 
     grid->addWidget(m_btnStartStop, 0, 0);
     grid->addWidget(m_btnOsd, 0, 1);
@@ -740,18 +791,59 @@ QWidget *ControlPanelWindow::createVideoPage()
     grid->addWidget(new QLabel("输出模式", displayGroup), 2, 0);
     grid->addWidget(m_outputModeCombo, 2, 1);
     grid->addWidget(applyVideo, 3, 0, 1, 2);
+    leftLayout->addWidget(displayGroup);
 
-    layout->addWidget(displayGroup);
-
-    QGroupBox *noteGroup = new QGroupBox("当前策略", page);
+    QGroupBox *noteGroup = new QGroupBox("当前策略", leftPanel);
     QVBoxLayout *noteLayout = new QVBoxLayout(noteGroup);
-    QLabel *note = new QLabel("HDMI 主显示流走 PCIe + RGA + DRM/KMS，Qt 不参与每帧图像搬运。\n"
-                              "PTZ USB视频仅进入DSI上的Qt预览，不访问DRM，不改变原PCIe显示链路。",
-                              noteGroup);
+    noteLayout->setContentsMargins(10, 18, 10, 8);
+    QLabel *note = new QLabel(
+                "总览：HDMI显示完整九宫格，NPU暂停。\n"
+                "CH1~CH9：裁出对应640×360单路，放大到HDMI全屏，并仅将该路送入NPU。",
+                noteGroup);
     note->setWordWrap(true);
+    note->setObjectName("navHint");
     noteLayout->addWidget(note);
-    layout->addWidget(noteGroup);
-    layout->addStretch(1);
+    leftLayout->addWidget(noteGroup);
+    leftLayout->addStretch(1);
+    pageLayout->addWidget(leftPanel, 0);
+
+    QGroupBox *routeGroup = new QGroupBox("九宫格通道选择", page);
+    QVBoxLayout *routeLayout = new QVBoxLayout(routeGroup);
+    routeLayout->setContentsMargins(14, 20, 14, 12);
+    routeLayout->setSpacing(8);
+
+    m_videoRouteGroup = new QButtonGroup(routeGroup);
+    m_videoRouteGroup->setExclusive(true);
+
+    QPushButton *overviewButton = new QPushButton("九宫格总览（NPU暂停）", routeGroup);
+    overviewButton->setObjectName("videoRouteButton");
+    overviewButton->setCheckable(true);
+    overviewButton->setChecked(true);
+    overviewButton->setMinimumHeight(54);
+    m_videoRouteGroup->addButton(overviewButton, static_cast<int>(VideoRoute::Overview));
+    routeLayout->addWidget(overviewButton);
+
+    QGridLayout *channelGrid = new QGridLayout();
+    channelGrid->setHorizontalSpacing(8);
+    channelGrid->setVerticalSpacing(8);
+    for (int channel = 1; channel <= 9; ++channel) {
+        QPushButton *button = new QPushButton(QString("CH%1").arg(channel), routeGroup);
+        button->setObjectName("videoRouteButton");
+        button->setCheckable(true);
+        button->setMinimumSize(150, 82);
+        m_videoRouteGroup->addButton(button, channel);
+        const int index = channel - 1;
+        channelGrid->addWidget(button, index / 3, index % 3);
+    }
+    routeLayout->addLayout(channelGrid, 1);
+
+    m_videoRouteSummaryLabel = new QLabel("当前应用：九宫格总览；NPU暂停", routeGroup);
+    m_videoRouteSummaryLabel->setObjectName("ptzState");
+    m_videoRouteSummaryLabel->setAlignment(Qt::AlignCenter);
+    m_videoRouteSummaryLabel->setMinimumHeight(40);
+    routeLayout->addWidget(m_videoRouteSummaryLabel);
+
+    pageLayout->addWidget(routeGroup, 1);
 
     connect(m_btnStartStop, &QPushButton::clicked,
             this, &ControlPanelWindow::onStartStopClicked);
@@ -770,15 +862,43 @@ QWidget *ControlPanelWindow::createPtzPage()
     pageLayout->setContentsMargins(8, 6, 8, 6);
     pageLayout->setSpacing(10);
 
-    QGroupBox *previewGroup = new QGroupBox("PTZ USB 高清预览", page);
+    QGroupBox *previewGroup = new QGroupBox("PTZ相机预览与配置", page);
     QVBoxLayout *previewLayout = new QVBoxLayout(previewGroup);
     previewLayout->setContentsMargins(10, 20, 10, 10);
     previewLayout->setSpacing(6);
 
-    m_ptzPreviewLabel = new QLabel("等待 /dev/video0 ...", previewGroup);
+    QHBoxLayout *profileRow = new QHBoxLayout();
+    QLabel *profileLabel = new QLabel(QStringLiteral("相机配置"), previewGroup);
+    m_ptzProfileCombo = new QComboBox(previewGroup);
+    m_ptzProfileCombo->addItem(QStringLiteral("自动识别"),
+                               static_cast<int>(PtzProfileSelection::Auto));
+    m_ptzProfileCombo->addItem(QStringLiteral("当前HD USB PTZ"),
+                               static_cast<int>(PtzProfileSelection::HdUsbPtz));
+    m_ptzProfileCombo->addItem(QStringLiteral("Sony EVI-D100 + MS210x"),
+                               static_cast<int>(PtzProfileSelection::SonyEviD100));
+    m_ptzProfileCombo->setMinimumHeight(42);
+    m_ptzProfileCombo->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+
+    m_btnApplyPtzProfile = new QPushButton(QStringLiteral("应用配置"), previewGroup);
+    m_btnApplyPtzProfile->setObjectName("ptzButton");
+    m_btnApplyPtzProfile->setMinimumHeight(42);
+    m_btnApplyPtzProfile->setMinimumWidth(120);
+
+    profileRow->addWidget(profileLabel);
+    profileRow->addWidget(m_ptzProfileCombo, 1);
+    profileRow->addWidget(m_btnApplyPtzProfile);
+    previewLayout->addLayout(profileRow);
+
+    m_ptzProfileSummaryLabel = new QLabel(
+                QStringLiteral("尚未解析PTZ相机配置"), previewGroup);
+    m_ptzProfileSummaryLabel->setObjectName("ptzState");
+    m_ptzProfileSummaryLabel->setWordWrap(true);
+    previewLayout->addWidget(m_ptzProfileSummaryLabel);
+
+    m_ptzPreviewLabel = new QLabel("等待自动识别PTZ视频设备...", previewGroup);
     m_ptzPreviewLabel->setObjectName("ptzPreview");
     m_ptzPreviewLabel->setAlignment(Qt::AlignCenter);
-    m_ptzPreviewLabel->setMinimumSize(600, 338);
+    m_ptzPreviewLabel->setMinimumSize(600, 285);
     m_ptzPreviewLabel->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
     previewLayout->addWidget(m_ptzPreviewLabel, 1);
 
@@ -800,8 +920,8 @@ QWidget *ControlPanelWindow::createPtzPage()
     controlLayout->setSpacing(5);
 
     QHBoxLayout *serviceRow = new QHBoxLayout();
-    m_btnPtzPreview = new QPushButton("停止预览", controlGroup);
-    m_btnPtzControl = new QPushButton("断开控制", controlGroup);
+    m_btnPtzPreview = new QPushButton("启动预览", controlGroup);
+    m_btnPtzControl = new QPushButton("连接控制", controlGroup);
     m_btnPtzPreview->setObjectName("ptzButton");
     m_btnPtzControl->setObjectName("ptzButton");
     serviceRow->addWidget(m_btnPtzPreview);
@@ -914,6 +1034,8 @@ QWidget *ControlPanelWindow::createPtzPage()
 
     pageLayout->addWidget(controlGroup, 0);
 
+    connect(m_btnApplyPtzProfile, &QPushButton::clicked,
+            this, &ControlPanelWindow::onApplyPtzProfileClicked);
     connect(m_btnPtzPreview, &QPushButton::clicked,
             this, &ControlPanelWindow::onPtzPreviewClicked);
     connect(m_btnPtzControl, &QPushButton::clicked,
@@ -1130,7 +1252,7 @@ QWidget *ControlPanelWindow::createAiPage()
                             static_cast<int>(NpuTaskType::PlateCascade));
     m_npuTaskCombo->setMinimumHeight(46);
 
-    QLabel *sourceValue = new QLabel("PCIe 主视频（固定）", configGroup);
+    QLabel *sourceValue = new QLabel("视频显示页选定 CH1~CH9（总览暂停）", configGroup);
     sourceValue->setObjectName("ptzState");
     sourceValue->setMinimumHeight(38);
 
@@ -1389,15 +1511,34 @@ void ControlPanelWindow::onApplyVideoConfigClicked()
 
     QSize size = m_resolutionCombo->currentData().toSize();
     int mode = m_outputModeCombo->currentData().toInt();
+    const int checkedRoute = m_videoRouteGroup ? m_videoRouteGroup->checkedId() : 0;
+    const VideoRoute route = sanitizeVideoRoute(checkedRoute);
 
-    if (!m_display->setOutputResolution(size.width(), size.height())) {
+    if ((m_display->outputWidth() != size.width() ||
+         m_display->outputHeight() != size.height()) &&
+        !m_display->setOutputResolution(size.width(), size.height())) {
         m_lastError = m_display->lastErrorString();
     }
     m_display->setDisplayMode(mode);
     m_display->setOsdEnabled(m_osdEnabled);
 
-    m_lastAction = QString("应用显示配置: %1x%2 mode=%3")
-            .arg(size.width()).arg(size.height()).arg(mode);
+    const VideoRoute oldRoute = m_display->videoRoute();
+    m_display->setVideoRoute(route);
+    if (oldRoute != route) {
+        clearAiResultTable();
+        m_lastAiResultFrameId = 0;
+    }
+
+    if (m_videoRouteSummaryLabel) {
+        m_videoRouteSummaryLabel->setText(isSingleChannelRoute(route)
+                ? QString("当前应用：CH%1；HDMI全屏 + NPU单路")
+                  .arg(videoRouteChannel(route))
+                : QStringLiteral("当前应用：九宫格总览；NPU暂停"));
+    }
+
+    m_lastAction = QString("应用显示配置: %1x%2 mode=%3 route=%4")
+            .arg(size.width()).arg(size.height()).arg(mode)
+            .arg(QString::fromLatin1(videoRouteKey(route)));
     updateStatusText();
 }
 
@@ -1574,8 +1715,13 @@ void ControlPanelWindow::updateAiPanel(const NpuFrameResult &result)
     m_aiProcessed = result.processed;
     m_aiDropped = result.dropped;
 
+    const VideoRoute route = m_display ? m_display->videoRoute() : VideoRoute::Overview;
+    const bool pausedByOverview = result.enabled && !isSingleChannelRoute(route);
+
     if (!result.enabled) {
         m_aiStatus = QStringLiteral("off");
+    } else if (pausedByOverview) {
+        m_aiStatus = QStringLiteral("paused: overview");
     } else if (!result.error.empty()) {
         m_aiStatus = QString::fromStdString(result.error);
     } else if (result.ready) {
@@ -1589,17 +1735,20 @@ void ControlPanelWindow::updateAiPanel(const NpuFrameResult &result)
     if (m_aiRuntimeLabel) {
         const int resultCount = m_aiPlateCount + m_aiPedestrianCount;
         m_aiRuntimeLabel->setText(
-                    QStringLiteral("状态：%1｜任务：%2｜实际FPS：%3 / 目标%4\n"
-                                   "耗时：%5 ms｜预处理：%6 ms｜本帧结果：%7\n"
-                                   "已处理：%8｜覆盖丢帧：%9\n"
-                                   "最近错误：%10")
+                    QStringLiteral("状态：%1｜输入：%2｜任务：%3\n"
+                                   "实际FPS：%4 / 目标%5｜耗时：%6 ms｜预处理：%7 ms\n"
+                                   "本帧结果：%8｜已处理：%9｜覆盖丢帧：%10\n"
+                                   "最近错误：%11")
                     .arg(m_aiStatus)
+                    .arg(isSingleChannelRoute(route)
+                         ? QString("CH%1").arg(videoRouteChannel(route))
+                         : QStringLiteral("总览(暂停)"))
                     .arg(aiTaskDisplayName(result.task))
-                    .arg(result.fps, 0, 'f', 1)
+                    .arg(pausedByOverview ? 0.0 : result.fps, 0, 'f', 1)
                     .arg(result.targetFps)
                     .arg(result.lastMs, 0, 'f', 1)
                     .arg(result.preMs, 0, 'f', 1)
-                    .arg(resultCount)
+                    .arg(pausedByOverview ? 0 : resultCount)
                     .arg(result.processed)
                     .arg(result.dropped)
                     .arg(result.error.empty()
@@ -1652,7 +1801,9 @@ void ControlPanelWindow::appendAiResultRows(const NpuFrameResult &result)
 
     const QString timeText = QDateTime::currentDateTime().toString(QStringLiteral("HH:mm:ss.zzz"));
     const QString frameText = QString::number(result.frameId);
-    const QString taskText = aiTaskDisplayName(result.task);
+    const QString taskText = result.sourceChannel > 0
+            ? QString("CH%1 %2").arg(result.sourceChannel).arg(aiTaskDisplayName(result.task))
+            : aiTaskDisplayName(result.task);
     const QString latencyText = QString::number(result.lastMs, 'f', 1);
 
     for (const RowData &row : rows) {
@@ -1781,19 +1932,414 @@ void ControlPanelWindow::onDisplayAiStatsUpdated(bool enabled,
     updateStatusText();
 }
 
+
+void ControlPanelWindow::loadPtzSettings()
+{
+    if (!m_ptzProfileCombo) {
+        return;
+    }
+
+    QSettings settings(ptzSettingsPath(), QSettings::IniFormat);
+    const int selectionValue = settings.value(
+                QStringLiteral("ptz/profile_selection"),
+                static_cast<int>(PtzProfileSelection::Auto)).toInt();
+    const int lastSuccessfulValue = settings.value(
+                QStringLiteral("ptz/last_successful_profile"),
+                static_cast<int>(PtzProfileSelection::Auto)).toInt();
+
+    int index = m_ptzProfileCombo->findData(selectionValue);
+    if (index < 0) {
+        index = m_ptzProfileCombo->findData(
+                    static_cast<int>(PtzProfileSelection::Auto));
+    }
+    m_ptzProfileCombo->setCurrentIndex(qMax(0, index));
+    m_requestedPtzSelection = static_cast<PtzProfileSelection>(
+                m_ptzProfileCombo->currentData().toInt());
+
+    if (lastSuccessfulValue >= static_cast<int>(PtzProfileSelection::HdUsbPtz)
+            && lastSuccessfulValue <= static_cast<int>(PtzProfileSelection::SonyEviD100)) {
+        m_lastSuccessfulPtzSelection = static_cast<PtzProfileSelection>(lastSuccessfulValue);
+    } else {
+        m_lastSuccessfulPtzSelection = PtzProfileSelection::Auto;
+    }
+
+    updatePtzProfileSummary(QStringLiteral("等待应用“%1”")
+                            .arg(m_ptzProfileCombo->currentText()));
+}
+
+void ControlPanelWindow::savePtzSettings(PtzProfileSelection selection)
+{
+    QSettings settings(ptzSettingsPath(), QSettings::IniFormat);
+    settings.setValue(QStringLiteral("ptz/profile_selection"),
+                      static_cast<int>(selection));
+    settings.sync();
+}
+
+void ControlPanelWindow::clearPtzPreview(const QString &message)
+{
+    if (m_ptzCapture) {
+        m_ptzCapture->clearLatestFrame();
+    }
+    m_lastPtzFrame = QImage();
+    if (m_ptzPreviewLabel) {
+        m_ptzPreviewLabel->clear();
+        m_ptzPreviewLabel->setText(message);
+    }
+}
+
+void ControlPanelWindow::updatePtzServiceButtons()
+{
+    if (m_btnPtzPreview) {
+        if (m_ptzCapture && m_ptzCapture->isRunning()) {
+            m_btnPtzPreview->setText(QStringLiteral("停止预览"));
+        } else if (m_ptzPreviewDesired) {
+            m_btnPtzPreview->setText(QStringLiteral("取消等待"));
+        } else {
+            m_btnPtzPreview->setText(QStringLiteral("启动预览"));
+        }
+    }
+
+    if (m_btnPtzControl) {
+        if (m_ptzControl && m_ptzControl->isRunning()) {
+            m_btnPtzControl->setText(QStringLiteral("断开控制"));
+        } else if (m_ptzControlDesired) {
+            m_btnPtzControl->setText(QStringLiteral("取消等待"));
+        } else {
+            m_btnPtzControl->setText(QStringLiteral("连接控制"));
+        }
+    }
+}
+
+void ControlPanelWindow::enterPtzWaitingState(const QString &message,
+                                               bool clearActiveDevice)
+{
+    m_ptzWaitingForDevice = true;
+
+    if (clearActiveDevice) {
+        m_ptzSwitchInProgress = true;
+        if (m_ptzControl && m_ptzControl->isRunning()) {
+            m_ptzControl->stopControl();
+        }
+        if (m_ptzCapture && m_ptzCapture->isRunning()) {
+            m_ptzCapture->stopCapture();
+        }
+        m_ptzSwitchInProgress = false;
+        m_activePtzDevice = PtzResolvedDevice();
+        clearPtzPreview(message);
+    }
+
+    if (m_ptzVideoStatusLabel) {
+        m_ptzVideoStatusLabel->setText(message);
+    }
+    updatePtzProfileSummary(message);
+    updatePtzServiceButtons();
+    updateStatusText();
+}
+
+void ControlPanelWindow::updatePtzProfileSummary(const QString &overrideText)
+{
+    if (!m_ptzProfileSummaryLabel) {
+        return;
+    }
+
+    if (!overrideText.isEmpty()) {
+        m_ptzProfileSummaryLabel->setText(overrideText);
+        return;
+    }
+
+    if (!m_activePtzDevice.valid) {
+        const QString requested = ptzProfileSelectionName(m_requestedPtzSelection);
+        m_ptzProfileSummaryLabel->setText(
+                    m_ptzWaitingForDevice
+                    ? QStringLiteral("等待PTZ设备：%1").arg(requested)
+                    : QStringLiteral("尚未解析PTZ相机配置"));
+        return;
+    }
+
+    const PtzCameraProfile &profile = m_activePtzDevice.profile;
+    const QString usbText = QStringLiteral("%1:%2")
+            .arg(profile.usbVendorId, 4, 16, QLatin1Char('0'))
+            .arg(profile.usbProductId, 4, 16, QLatin1Char('0'));
+    QString text = QStringLiteral("当前：%1 | %2 | USB %3 | %4 %5x%6@%7 | 显示%8:%9")
+            .arg(profile.displayName,
+                 m_activePtzDevice.videoDevice,
+                 usbText,
+                 v4l2PixelFormatName(profile.pixelFormat))
+            .arg(profile.captureWidth)
+            .arg(profile.captureHeight)
+            .arg(profile.captureFps)
+            .arg(profile.displayAspectWidth)
+            .arg(profile.displayAspectHeight);
+
+    if (m_requestedPtzSelection != PtzProfileSelection::Auto
+            && m_requestedPtzSelection != profile.selection) {
+        text += QStringLiteral(" | 等待切换到：%1")
+                .arg(ptzProfileSelectionName(m_requestedPtzSelection));
+    }
+    m_ptzProfileSummaryLabel->setText(text);
+}
+
+bool ControlPanelWindow::switchToResolvedPtzDevice(const PtzResolvedDevice &resolved,
+                                                    bool forceRestart,
+                                                    QString *errorMessage)
+{
+    if (!resolved.valid || !m_ptzCapture || !m_ptzControl) {
+        if (errorMessage) {
+            *errorMessage = QStringLiteral("无效的PTZ切换目标");
+        }
+        return false;
+    }
+
+    const bool sameEndpoint = samePtzEndpoint(m_activePtzDevice, resolved);
+    if (sameEndpoint && !forceRestart) {
+        m_activePtzDevice = resolved;
+        m_ptzWaitingForDevice = false;
+        m_ptzDisplayAspectWidth = qMax(1, resolved.profile.displayAspectWidth);
+        m_ptzDisplayAspectHeight = qMax(1, resolved.profile.displayAspectHeight);
+
+        if (m_ptzPreviewDesired && !m_ptzCapture->isRunning()) {
+            m_ptzCapture->startCapture();
+        }
+        if (m_ptzControlDesired && !m_ptzControl->isRunning()) {
+            m_ptzControl->startControl();
+        }
+        updatePtzProfileSummary();
+        updatePtzServiceButtons();
+        if (errorMessage) {
+            errorMessage->clear();
+        }
+        return true;
+    }
+
+    m_ptzSwitchInProgress = true;
+    const PtzResolvedDevice previousDevice = m_activePtzDevice;
+
+    PtzResolvedDevice previousAvailable = previousDevice;
+    QString previousResolveError;
+    const bool previousStillPresent = previousDevice.valid
+            && V4l2DeviceDetector::isPresent(previousDevice,
+                                              &previousResolveError);
+
+    // 切换前先停止VISCA，stopControl会发送Pan/Tilt Stop与Zoom Stop。
+    if (m_ptzControl->isRunning()) {
+        m_ptzControl->stopControl();
+    }
+    if (m_ptzCapture->isRunning()) {
+        m_ptzCapture->stopCapture();
+    }
+
+    clearPtzPreview(QStringLiteral("正在切换到%1……")
+                    .arg(resolved.profile.displayName));
+
+    QString configError;
+    const bool captureConfigured = m_ptzCapture->setCaptureConfig(
+                resolved, &configError);
+    const bool controlConfigured = captureConfigured
+            && m_ptzControl->setCameraProfile(resolved.profile, &configError);
+
+    if (!captureConfigured || !controlConfigured) {
+        if (previousStillPresent) {
+            QString rollbackError;
+            (void)m_ptzCapture->setCaptureConfig(previousAvailable, &rollbackError);
+            (void)m_ptzControl->setCameraProfile(previousAvailable.profile,
+                                                  &rollbackError);
+            m_activePtzDevice = previousAvailable;
+            if (m_ptzPreviewDesired) {
+                m_ptzCapture->startCapture();
+            }
+            if (m_ptzControlDesired) {
+                m_ptzControl->startControl();
+            }
+        } else {
+            m_activePtzDevice = PtzResolvedDevice();
+        }
+
+        m_ptzSwitchInProgress = false;
+        const QString text = QStringLiteral("PTZ配置应用失败：%1").arg(configError);
+        if (errorMessage) {
+            *errorMessage = text;
+        }
+        m_lastError = text;
+        updatePtzProfileSummary(text);
+        updatePtzServiceButtons();
+        updateStatusText();
+        return false;
+    }
+
+    m_activePtzDevice = resolved;
+    m_ptzWaitingForDevice = false;
+    m_ptzDisplayAspectWidth = qMax(1, resolved.profile.displayAspectWidth);
+    m_ptzDisplayAspectHeight = qMax(1, resolved.profile.displayAspectHeight);
+    m_lastSuccessfulPtzSelection = resolved.profile.selection;
+
+    QSettings settings(ptzSettingsPath(), QSettings::IniFormat);
+    settings.setValue(QStringLiteral("ptz/last_successful_profile"),
+                      static_cast<int>(m_lastSuccessfulPtzSelection));
+    settings.sync();
+
+    qInfo() << "PTZ hot-switch applied:"
+            << ptzEndpointText(resolved)
+            << "previewDesired=" << m_ptzPreviewDesired
+            << "controlDesired=" << m_ptzControlDesired;
+
+    clearPtzPreview(QStringLiteral("等待%1视频帧……")
+                    .arg(resolved.profile.displayName));
+
+    if (m_ptzPreviewDesired) {
+        m_ptzCapture->startCapture();
+    }
+    if (m_ptzControlDesired) {
+        m_ptzControl->startControl();
+    }
+
+    m_ptzSwitchInProgress = false;
+    m_lastAction = QStringLiteral("切换PTZ视频源：%1")
+            .arg(resolved.profile.displayName);
+    m_lastError = QStringLiteral("none");
+    updatePtzProfileSummary();
+    updatePtzServiceButtons();
+    updateStatusText();
+    if (errorMessage) {
+        errorMessage->clear();
+    }
+    return true;
+}
+
+bool ControlPanelWindow::reconcilePtzDevice(bool userInitiated,
+                                            bool forceRestart)
+{
+    if (m_ptzSwitchInProgress || !m_ptzCapture || !m_ptzControl) {
+        return false;
+    }
+
+    PtzResolvedDevice refreshedActive = m_activePtzDevice;
+    QString activeError;
+    const bool activePresent = m_activePtzDevice.valid
+            && V4l2DeviceDetector::isPresent(m_activePtzDevice, &activeError);
+
+    PtzResolvedDevice target;
+    QString targetError;
+    bool targetFound = false;
+
+    if (m_requestedPtzSelection == PtzProfileSelection::Auto) {
+        // 自动模式下，只要当前源仍在线就保持当前源，避免第二台设备插入时
+        // 无故跳转。当前源消失后，再按上次成功源和唯一在线源进行选择。
+        if (activePresent) {
+            target = refreshedActive;
+            targetFound = true;
+        } else if (m_lastSuccessfulPtzSelection != PtzProfileSelection::Auto) {
+            targetFound = V4l2DeviceDetector::resolve(
+                        m_lastSuccessfulPtzSelection,
+                        &target,
+                        &targetError,
+                        nullptr);
+        }
+
+        if (!targetFound) {
+            targetFound = V4l2DeviceDetector::resolve(
+                        PtzProfileSelection::Auto,
+                        &target,
+                        &targetError,
+                        nullptr);
+        }
+    } else if (activePresent
+               && m_activePtzDevice.profile.selection == m_requestedPtzSelection) {
+        target = refreshedActive;
+        targetFound = true;
+    } else {
+        targetFound = V4l2DeviceDetector::resolve(
+                    m_requestedPtzSelection,
+                    &target,
+                    &targetError,
+                    nullptr);
+    }
+
+    if (!targetFound) {
+        QString waitText;
+        if (activePresent) {
+            waitText = QStringLiteral("等待“%1”接入；当前保持%2")
+                    .arg(ptzProfileSelectionName(m_requestedPtzSelection),
+                         refreshedActive.profile.displayName);
+            m_activePtzDevice = refreshedActive;
+            m_ptzWaitingForDevice = true;
+            updatePtzProfileSummary(waitText);
+            if (m_ptzVideoStatusLabel) {
+                m_ptzVideoStatusLabel->setText(waitText);
+            }
+        } else {
+            waitText = QStringLiteral("等待PTZ设备：%1")
+                    .arg(ptzProfileSelectionName(m_requestedPtzSelection));
+            enterPtzWaitingState(waitText, true);
+        }
+
+        if (userInitiated) {
+            m_lastAction = waitText;
+            m_lastError = targetError.isEmpty()
+                    ? QStringLiteral("none")
+                    : QStringLiteral("PTZ配置：%1").arg(targetError);
+        }
+        if (m_lastPtzMonitorMessage != waitText) {
+            qInfo() << "PTZ hotplug waiting:" << waitText
+                    << "detail=" << targetError;
+            m_lastPtzMonitorMessage = waitText;
+        }
+        updatePtzServiceButtons();
+        updateStatusText();
+        return false;
+    }
+
+    m_lastPtzMonitorMessage.clear();
+    QString switchError;
+    const bool ok = switchToResolvedPtzDevice(target,
+                                               forceRestart,
+                                               &switchError);
+    if (!ok && userInitiated && !switchError.isEmpty()) {
+        m_lastError = switchError;
+    }
+    return ok;
+}
+
+bool ControlPanelWindow::applyPtzProfileSelection(bool restartActiveServices)
+{
+    if (!m_ptzProfileCombo || !m_ptzCapture || !m_ptzControl) {
+        return false;
+    }
+
+    m_requestedPtzSelection = static_cast<PtzProfileSelection>(
+                m_ptzProfileCombo->currentData().toInt());
+    savePtzSettings(m_requestedPtzSelection);
+    m_lastAction = QStringLiteral("请求PTZ配置：%1")
+            .arg(ptzProfileSelectionName(m_requestedPtzSelection));
+
+    return reconcilePtzDevice(true, restartActiveServices);
+}
+
+void ControlPanelWindow::onApplyPtzProfileClicked()
+{
+    const bool anyServiceRunning = (m_ptzCapture && m_ptzCapture->isRunning())
+            || (m_ptzControl && m_ptzControl->isRunning());
+    (void)applyPtzProfileSelection(anyServiceRunning);
+}
+
 void ControlPanelWindow::onPtzPreviewClicked()
 {
     if (!m_ptzCapture) {
         return;
     }
 
-    if (m_ptzCapture->isRunning()) {
-        m_ptzCapture->stopCapture();
-        m_lastAction = "停止PTZ视频预览";
+    if (m_ptzPreviewDesired) {
+        m_ptzPreviewDesired = false;
+        if (m_ptzCapture->isRunning()) {
+            m_ptzCapture->stopCapture();
+        }
+        clearPtzPreview(QStringLiteral("PTZ视频预览已停止"));
+        m_lastAction = QStringLiteral("停止PTZ视频预览/取消自动恢复");
     } else {
-        m_ptzCapture->startCapture();
-        m_lastAction = "启动PTZ视频预览";
+        m_ptzPreviewDesired = true;
+        m_lastAction = QStringLiteral("启动PTZ视频预览/等待设备自动恢复");
+        (void)reconcilePtzDevice(true, false);
     }
+    updatePtzServiceButtons();
     updateStatusText();
 }
 
@@ -1803,14 +2349,52 @@ void ControlPanelWindow::onPtzControlClicked()
         return;
     }
 
-    if (m_ptzControl->isRunning()) {
-        m_ptzControl->stopControl();
-        m_lastAction = "断开RS232 PTZ控制";
+    if (m_ptzControlDesired) {
+        m_ptzControlDesired = false;
+        if (m_ptzControl->isRunning()) {
+            m_ptzControl->stopControl();
+        }
+        m_lastAction = QStringLiteral("断开RS232 PTZ控制/取消自动恢复");
     } else {
-        m_ptzControl->startControl();
-        m_lastAction = "连接RS232 PTZ控制";
+        m_ptzControlDesired = true;
+        m_lastAction = QStringLiteral("连接RS232 PTZ控制/等待设备自动恢复");
+        (void)reconcilePtzDevice(true, false);
     }
+    updatePtzServiceButtons();
     updateStatusText();
+}
+
+void ControlPanelWindow::onPtzDeviceMonitorTimer()
+{
+    if (m_ptzSwitchInProgress) {
+        return;
+    }
+
+    // 只有用户仍希望预览/控制，或当前已有活动配置时才持续监测。
+    if (!m_ptzPreviewDesired && !m_ptzControlDesired
+            && !m_activePtzDevice.valid) {
+        return;
+    }
+    (void)reconcilePtzDevice(false, false);
+}
+
+void ControlPanelWindow::onPtzCaptureDeviceLost(QString videoDevice,
+                                                 QString reason)
+{
+    if (m_ptzSwitchInProgress || !m_ptzPreviewDesired) {
+        return;
+    }
+
+    m_lastError = QStringLiteral("PTZ视频设备断开：%1").arg(reason);
+    clearPtzPreview(QStringLiteral("检测到%1断开，等待重新枚举PTZ设备……")
+                    .arg(videoDevice));
+    updatePtzServiceButtons();
+    updateStatusText();
+
+    // 给udev/V4L2节点留出稳定时间，随后由统一重协调流程恢复。
+    QTimer::singleShot(500, this, [this]() {
+        (void)reconcilePtzDevice(false, false);
+    });
 }
 
 void ControlPanelWindow::onPtzFrameTimer()
@@ -1832,9 +2416,21 @@ void ControlPanelWindow::onPtzFrameTimer()
         return;
     }
 
+    QSize displaySize = target;
+    const qreal sourceAspect = qreal(m_ptzDisplayAspectWidth)
+            / qreal(m_ptzDisplayAspectHeight);
+    const qreal targetAspect = qreal(target.width()) / qreal(target.height());
+    if (targetAspect > sourceAspect) {
+        displaySize.setWidth(qMax(1, qRound(target.height() * sourceAspect)));
+    } else {
+        displaySize.setHeight(qMax(1, qRound(target.width() / sourceAspect)));
+    }
+
+    // 720x480模拟视频使用非方形像素，按Profile的4:3比例显示；
+    // HD USB PTZ仍按16:9显示。QLabel居中后自动形成必要黑边。
     const QPixmap pixmap = QPixmap::fromImage(frame).scaled(
-                target,
-                Qt::KeepAspectRatio,
+                displaySize,
+                Qt::IgnoreAspectRatio,
                 Qt::FastTransformation);
     m_ptzPreviewLabel->setPixmap(pixmap);
 }
@@ -2033,14 +2629,20 @@ void ControlPanelWindow::onPtzCaptureStateChanged(bool running, QString message)
     if (m_ptzVideoStatusLabel) {
         m_ptzVideoStatusLabel->setText(message);
     }
-    if (m_btnPtzPreview) {
-        m_btnPtzPreview->setText(running ? "停止预览" : "启动预览");
-    }
     if (!running && m_ptzPreviewLabel && message != "PTZ视频已停止") {
         m_ptzPreviewLabel->setText(message);
     }
 
+    updatePtzServiceButtons();
     updateStatusText();
+
+    // 非人工停止、非切换过程中的异常退出，由热插拔协调器重新解析和恢复。
+    if (!running && m_ptzPreviewDesired && !m_ptzSwitchInProgress
+            && message != QStringLiteral("PTZ视频已停止")) {
+        QTimer::singleShot(700, this, [this]() {
+            (void)reconcilePtzDevice(false, false);
+        });
+    }
 }
 
 void ControlPanelWindow::onPtzCaptureStatsUpdated(double captureFps,
@@ -2073,11 +2675,7 @@ void ControlPanelWindow::onPtzControlStateChanged(bool ready, QString message)
     if (m_ptzControlStatusLabel) {
         m_ptzControlStatusLabel->setText(message);
     }
-    if (m_btnPtzControl) {
-        const bool running = m_ptzControl && m_ptzControl->isRunning();
-        m_btnPtzControl->setText(running ? "断开控制" : "连接控制");
-    }
-
+    updatePtzServiceButtons();
     updateStatusText();
 }
 
@@ -2138,11 +2736,16 @@ void ControlPanelWindow::updateStatusText()
                 : QStringLiteral("OFF");
     }
 
-    const QString aiShort = m_aiEnabled ? (m_aiReady ? "ON" : "WAIT") : "OFF";
+    const VideoRoute route = m_display ? m_display->videoRoute() : VideoRoute::Overview;
+    const QString routeText = QString::fromLatin1(videoRouteKey(route));
+    const QString aiShort = m_aiEnabled
+            ? (!isSingleChannelRoute(route) ? "PAUSE" : (m_aiReady ? "ON" : "WAIT"))
+            : "OFF";
     const QString aiTaskShort = m_aiTask == NpuTaskType::PlateCascade ? "PLATE" : "PED";
 
-    QString bottom = QString("HDMI:%1  PTZ-V:%2  PTZ-C:%3  FAN:%4  RX:%5  FLIP:%6  PTZ:%7  AI:%8/%9 P:%10 D:%11  TEMP:%12  FAIL:%13")
+    QString bottom = QString("HDMI:%1 VIEW:%2  PTZ-V:%3  PTZ-C:%4  FAN:%5  RX:%6  FLIP:%7  PTZ:%8  AI:%9/%10 P:%11 D:%12  TEMP:%13  FAIL:%14")
             .arg(m_displayRunning ? "ON" : "OFF")
+            .arg(routeText)
             .arg(m_ptzCaptureRunning ? "ON" : "OFF")
             .arg(m_ptzControlReady ? "ON" : "OFF")
             .arg(fanText)
@@ -2167,6 +2770,9 @@ void ControlPanelWindow::updateStatusText()
     detail += QString("显示规格 : %1x%2 RGB565\n")
             .arg(m_display ? m_display->outputWidth() : 0)
             .arg(m_display ? m_display->outputHeight() : 0);
+    detail += QString("视频选路 : %1\n").arg(routeText);
+    detail += QString("NPU输入  : %1\n")
+            .arg(isSingleChannelRoute(route) ? routeText : QStringLiteral("PAUSED"));
     detail += QString("OSD显示  : %1\n").arg(m_osdEnabled ? "ON" : "OFF");
     detail += QString("当前页面 : %1\n").arg(m_currentPage);
     detail += QString("运行时间 : %1 s\n\n").arg(m_seconds);
@@ -2178,6 +2784,18 @@ void ControlPanelWindow::updateStatusText()
     detail += QString("HDMI rga_avg_us: %1\n").arg(m_rgaAvgUs, 0, 'f', 1);
     detail += QString("HDMI fail_cnt  : %1\n\n").arg(m_failCount);
 
+    detail += QString("PTZ配置     : %1\n")
+            .arg(m_activePtzDevice.valid
+                 ? QStringLiteral("%1 | %2 | %3 %4x%5@%6 | 显示%7:%8")
+                   .arg(m_activePtzDevice.profile.displayName,
+                        m_activePtzDevice.videoDevice,
+                        v4l2PixelFormatName(m_activePtzDevice.profile.pixelFormat))
+                   .arg(m_activePtzDevice.profile.captureWidth)
+                   .arg(m_activePtzDevice.profile.captureHeight)
+                   .arg(m_activePtzDevice.profile.captureFps)
+                   .arg(m_ptzDisplayAspectWidth)
+                   .arg(m_ptzDisplayAspectHeight)
+                 : QStringLiteral("未解析"));
     detail += QString("PTZ视频状态 : %1\n").arg(m_ptzCaptureState);
     detail += QString("PTZ控制状态 : %1\n").arg(m_ptzControlState);
     detail += QString("PTZ capture_fps: %1\n").arg(m_ptzCaptureFps, 0, 'f', 1);
@@ -2225,6 +2843,9 @@ void ControlPanelWindow::applyStyle()
         "QGroupBox::title { subcontrol-origin: margin; left: 16px; padding: 0 6px; color: #85C7FF; }"
         "QPushButton { background: #26384B; color: #FFFFFF; border: 1px solid #3F5871; border-radius: 12px; min-height: 54px; font-size: 19px; font-weight: 600; }"
         "QPushButton:pressed { background: #0A84FF; }"
+        "#videoRouteButton { min-height: 54px; font-size: 22px; font-weight: 700; }"
+        "#videoRouteButton:checked { background: #0A84FF; color: white; border: 2px solid #85C7FF; }"
+        "#videoRouteButton:pressed { background: #1260B3; }"
         "#touchAdjustButton { min-width: 54px; max-width: 54px; min-height: 46px; max-height: 46px; border-radius: 10px; font-size: 28px; font-weight: 700; padding: 0px; }"
         "#touchValueSpin { min-height: 46px; font-size: 20px; font-weight: 700; padding: 0px 4px; }"
         "#compactActionButton { min-height: 40px; max-height: 42px; font-size: 17px; padding: 0 12px; }"
