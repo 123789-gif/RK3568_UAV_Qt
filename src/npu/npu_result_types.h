@@ -22,6 +22,8 @@ struct NpuFrameResult
 {
     uint64_t frameId = 0;
     uint64_t configRevision = 0;
+    uint64_t sourceRevision = 0;
+    int sourceChannel = 0;
     NpuTaskType task = NpuTaskType::Pedestrian;
     bool enabled = false;
     bool ready = false;

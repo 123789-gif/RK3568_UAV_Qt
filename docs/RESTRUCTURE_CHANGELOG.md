@@ -26,3 +26,40 @@
 - AI配置保存到部署目录 `config/ai_panel.ini`；输入源固定为PCIe主视频。
 - HDMI OSD显示当前任务缩写；PCIe、RGA、DRM、PTZ和部署脚本未修改。
 - 车牌检测接口当前未提供检测分数，结果表明确显示 `--`，不伪造置信度。
+
+
+## 视频选路与单路 NPU 输入
+
+- 新增 `video_route_config.h`，固定标准 3×3、640×360 的 CH1～CH9 ROI 映射；
+- 视频显示页新增总览和 CH1～CH9 触控选路；
+- 单路模式下 HDMI 和 NPU 绑定同一通道；
+- 总览模式暂停 NPU，不再把完整九宫格送入模型；
+- NPU 输入搬运由约 4.15 MB/推理帧降为约 0.46 MB/推理帧；
+- 增加 source revision，防止切换通道后旧检测结果叠加到新画面。
+
+# 第五阶段：PTZ 双相机 Profile 与动态 V4L2 选路
+
+- 新增 `ptz_camera_profile.h/.cpp`，集中保存当前 HD USB PTZ 和 Sony EVI-D100 + MS210x 的 USB、视频、显示比例及 VISCA 配置；
+- 新增 `v4l2_device_detector.h/.cpp`，枚举 `/dev/videoN`、过滤非采集节点、读取 sysfs USB VID/PID，并验证目标格式能力；
+- `PtzCaptureWorker` 不再写死 `/dev/video0`、960×540@20，改为消费已解析的 `PtzResolvedDevice`；
+- `PtzControlWorker` 不再内部写死串口路径，改为从相机 Profile 获取 `/dev/ttyS0` 和 VISCA 配置；
+- PTZ 页面新增“自动识别 / 当前 HD USB PTZ / Sony EVI-D100 + MS210x”选择及应用按钮；
+- 配置切换先解析新设备，再停止并重启原本处于运行状态的 PTZ 服务；解析失败时保留现有运行链路；
+- EVI-D100 预览按 4:3 显示，HD USB PTZ 按 16:9 显示；
+- PTZ Profile 选择保存到 `config/ptz_camera.ini`；
+- 部署运行检查由固定 `/dev/video0` 改为接受任意 `/dev/videoN` 候选节点；
+- PCIe、九宫格选路、NPU、RGA/DRM、FPGA 协议和模型均未修改。
+
+
+# 第六阶段：PTZ Profile 修正与运行时热切换
+
+- 修正 HD USB PTZ 的实测 USB ID：`33f1:0003` 改为 `33f1:1003`；保留已验证的 MJPEG 960×540@20、16:9 配置；
+- 增加 1 秒周期 PTZ 设备监测，Qt 运行期间可拔出当前视频设备并插入另一套 PTZ，无需重启应用；
+- 自动模式保持仍在线的当前源；当前源消失后按上次成功 Profile 或唯一在线设备自动恢复；
+- 手动选择目标设备未在线时保留当前有效链路并等待，目标设备出现后自动切换；
+- 采集线程增加 V4L2 设备丢失检测，覆盖 `POLLERR/POLLHUP/POLLNVAL`、节点消失及 `ENODEV/EIO/EPIPE`；
+- 切换流程固定为 VISCA 停止 → 采集停止 → STREAMOFF/munmap/close → 新设备解析与配置 → 预览/控制按用户期望状态恢复；
+- 切换和设备断开时清空最新帧与截图源，避免旧相机画面残留；
+- PTZ 配置文件新增 `last_successful_profile`，用于自动模式下两台设备同时在线时保持确定性；
+- `check_runtime.sh` 在没有 `/dev/videoN` 时改为警告而非阻止启动，使应用可先启动再等待相机热插入；
+- 未修改 PCIe、FPGA、九宫格选路、NPU、RGA/DRM 主显示链路。

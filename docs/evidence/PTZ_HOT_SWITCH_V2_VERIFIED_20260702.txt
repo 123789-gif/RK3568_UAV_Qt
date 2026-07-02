@@ -1,0 +1,103 @@
+===== VERIFY DATE =====
+Thu Jul  2 03:22:12 PM UTC 2026
+
+===== SYSTEM =====
+Linux linaro-alip 6.1.99 #1 SMP Fri Mar 21 08:36:35 UTC 2025 aarch64 GNU/Linux
+
+===== APPLICATION =====
+0cd34e74ae2d9313f37a70d04ca1cb17c02806d9353bfe901026915b2132b6d1  /userdata/Apps/RK3568_PTZ_Qt_ptz_hot_switch_v2_test/bin/rk_dual_screen_video
+/proc/exe
+
+===== VERIFIED FEATURES =====
+PCIe 1080P video input: PASS
+Nine-grid overview display: PASS
+CH1-CH9 single-channel routing: PASS
+Single-channel NPU input: PASS
+HD USB PTZ profile 33f1:1003: PASS
+HD USB PTZ MJPG 960x540@20: PASS
+Sony EVI-D100 + MS210x profile 534d:0021: PASS
+Sony EVI-D100 MJPG 720x480@25: PASS
+Automatic PTZ device detection: PASS
+Manual PTZ source switching: PASS
+USB hot-plug source recovery: PASS
+Dynamic /dev/videoN selection: PASS
+VISCA /dev/ttyS0 9600 8N1: PASS
+Background application execution: PASS
+Invalid profile handling without crash: PASS
+
+===== USB DEVICES =====
+Bus 008 Device 001: ID 1d6b:0003 Linux Foundation 3.0 root hub
+Bus 007 Device 001: ID 1d6b:0002 Linux Foundation 2.0 root hub
+Bus 002 Device 001: ID 1d6b:0003 Linux Foundation 3.0 root hub
+Bus 001 Device 001: ID 1d6b:0002 Linux Foundation 2.0 root hub
+Bus 006 Device 001: ID 1d6b:0001 Linux Foundation 1.1 root hub
+Bus 005 Device 016: ID 534d:0021 MacroSilicon MS210x Video Grabber [EasierCAP]
+Bus 005 Device 002: ID 1a40:0101 Terminus Technology Inc. Hub
+Bus 005 Device 001: ID 1d6b:0002 Linux Foundation 2.0 root hub
+Bus 004 Device 001: ID 1d6b:0001 Linux Foundation 1.1 root hub
+Bus 003 Device 002: ID 0bda:d723 Realtek Semiconductor Corp. 802.11n WLAN Adapter
+Bus 003 Device 001: ID 1d6b:0002 Linux Foundation 2.0 root hub
+
+===== VIDEO DEVICES =====
+AV TO USB2.0: AV TO USB2.0 (usb-fd880000.usb-1.3):
+	/dev/video0
+	/dev/video1
+	/dev/media0
+
+
+===== VIDEO NODE PROFILES =====
+----- /dev/video0 -----
+ID_V4L_PRODUCT=AV TO USB2.0: AV TO USB2.0
+ID_MODEL_ID=0021
+ID_SERIAL=MACROSILICON_AV_TO_USB2.0_20200909
+ID_SERIAL_SHORT=20200909
+ID_VENDOR_ID=534d
+Format Video Capture:
+	Width/Height      : 720/480
+	Pixel Format      : 'MJPG' (Motion-JPEG)
+	Field             : None
+	Bytes per Line    : 0
+	Size Image        : 691200
+	Colorspace        : sRGB
+	Transfer Function : Rec. 709
+	YCbCr/HSV Encoding: ITU-R 601
+	Quantization      : Default (maps to Full Range)
+	Flags             :
+Streaming Parameters Video Capture:
+	Capabilities     : timeperframe
+	Frames per second: 25.000 (25/1)
+	Read buffers     : 0
+----- /dev/video1 -----
+ID_V4L_PRODUCT=AV TO USB2.0: AV TO USB2.0
+ID_MODEL_ID=0021
+ID_SERIAL=MACROSILICON_AV_TO_USB2.0_20200909
+ID_SERIAL_SHORT=20200909
+ID_VENDOR_ID=534d
+VIDIOC_G_FMT: failed: Invalid argument
+VIDIOC_G_PARM: failed: Inappropriate ioctl for device
+
+===== SAVED PTZ CONFIG =====
+[ptz]
+last_successful_profile=2
+profile_selection=2
+
+===== RECENT PTZ LOG =====
+----- /userdata/Apps/RK3568_PTZ_Qt_ptz_hot_switch_v2_test/logs/ptz_hot_switch_v2_background_start.log -----
+----- /userdata/Apps/RK3568_PTZ_Qt_ptz_hot_switch_v2_test/logs/ptz_hot_switch_v2.log -----
+[OK] executable: /userdata/Apps/RK3568_PTZ_Qt_ptz_hot_switch_v2_test/bin/rk_dual_screen_video
+[OK] PCIe driver file: /userdata/Apps/RK3568_PTZ_Qt_ptz_hot_switch_v2_test/driver/pango_pci_driver.ko
+[OK] V4L2 candidate nodes: /dev/video0 /dev/video1
+Starting in foreground; log: /userdata/Apps/RK3568_PTZ_Qt_ptz_hot_switch_v2_test/logs/rk_dual_screen_video.log
+PTZ hot-switch applied: "当前HD USB PTZ /dev/video0 USB 33f1:1003" previewDesired= true controlDesired= true
+PTZ hot-switch applied: "当前HD USB PTZ /dev/video0 USB 33f1:1003" previewDesired= true controlDesired= true
+PTZ hotplug waiting: "等待PTZ设备：当前HD USB PTZ" detail= "未找到“当前HD USB PTZ”：请检查USB连接及目标格式能力；未发现/dev/video数字节点"
+PTZ hot-switch applied: "Sony EVI-D100 + MS210x /dev/video0 USB 534d:0021" previewDesired= true controlDesired= true
+PTZ hot-switch applied: "Sony EVI-D100 + MS210x /dev/video0 USB 534d:0021" previewDesired= true controlDesired= true
+----- /userdata/Apps/RK3568_PTZ_Qt_ptz_hot_switch_v2_test/logs/rk_dual_screen_video.log -----
+PTZ hot-switch applied: "当前HD USB PTZ /dev/video0 USB 33f1:1003" previewDesired= true controlDesired= true
+PTZ hot-switch applied: "当前HD USB PTZ /dev/video0 USB 33f1:1003" previewDesired= true controlDesired= true
+PTZ hotplug waiting: "等待PTZ设备：当前HD USB PTZ" detail= "未找到“当前HD USB PTZ”：请检查USB连接及目标格式能力；未发现/dev/video数字节点"
+PTZ hot-switch applied: "Sony EVI-D100 + MS210x /dev/video0 USB 534d:0021" previewDesired= true controlDesired= true
+PTZ hot-switch applied: "Sony EVI-D100 + MS210x /dev/video0 USB 534d:0021" previewDesired= true controlDesired= true
+PTZ hot-switch applied: "Sony EVI-D100 + MS210x /dev/video0 USB 534d:0021" previewDesired= true controlDesired= true
+PTZ hot-switch applied: "Sony EVI-D100 + MS210x /dev/video0 USB 534d:0021" previewDesired= true controlDesired= true

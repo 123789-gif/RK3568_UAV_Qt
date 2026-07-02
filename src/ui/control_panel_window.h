@@ -3,6 +3,7 @@
 
 #include "video/drm_rga_display.h"
 #include "npu/npu_task_config.h"
+#include "ptz/v4l2_device_detector.h"
 
 #include <QImage>
 #include <QMainWindow>
@@ -18,6 +19,7 @@ class QSlider;
 class QSpinBox;
 class QDoubleSpinBox;
 class QTableWidget;
+class QButtonGroup;
 class FanController;
 class PtzCaptureWorker;
 class PtzControlWorker;
@@ -64,9 +66,12 @@ private slots:
                                  int pedestrianCount,
                                  QString status);
 
+    void onApplyPtzProfileClicked();
     void onPtzPreviewClicked();
     void onPtzControlClicked();
     void onPtzFrameTimer();
+    void onPtzDeviceMonitorTimer();
+    void onPtzCaptureDeviceLost(QString videoDevice, QString reason);
     void onSavePtzSnapshotClicked();
     void onViewPtzSnapshotsClicked();
     void onPtzCaptureStateChanged(bool running, QString message);
@@ -98,6 +103,17 @@ private:
     void clearAiResultTable();
     void loadAiSettings();
     void saveAiSettings(const NpuTaskConfig &config);
+    void loadPtzSettings();
+    void savePtzSettings(PtzProfileSelection selection);
+    bool applyPtzProfileSelection(bool restartActiveServices);
+    bool reconcilePtzDevice(bool userInitiated, bool forceRestart = false);
+    bool switchToResolvedPtzDevice(const PtzResolvedDevice &resolved,
+                                   bool forceRestart,
+                                   QString *errorMessage = nullptr);
+    void enterPtzWaitingState(const QString &message, bool clearActiveDevice);
+    void clearPtzPreview(const QString &message);
+    void updatePtzServiceButtons();
+    void updatePtzProfileSummary(const QString &overrideText = QString());
     void applyStyle();
 
 private:
@@ -110,6 +126,7 @@ private:
 
     QTimer *m_statusTimer = nullptr;
     QTimer *m_ptzFrameTimer = nullptr;
+    QTimer *m_ptzDeviceMonitorTimer = nullptr;
     QTimer *m_aiUiTimer = nullptr;
 
     QStackedWidget *m_stack = nullptr;
@@ -119,6 +136,9 @@ private:
     QPushButton *m_btnStartStop = nullptr;
     QPushButton *m_btnOsd = nullptr;
 
+    QComboBox *m_ptzProfileCombo = nullptr;
+    QPushButton *m_btnApplyPtzProfile = nullptr;
+    QLabel *m_ptzProfileSummaryLabel = nullptr;
     QLabel *m_ptzPreviewLabel = nullptr;
     QLabel *m_ptzVideoStatusLabel = nullptr;
     QLabel *m_ptzControlStatusLabel = nullptr;
@@ -137,6 +157,8 @@ private:
 
     QComboBox *m_resolutionCombo = nullptr;
     QComboBox *m_outputModeCombo = nullptr;
+    QButtonGroup *m_videoRouteGroup = nullptr;
+    QLabel *m_videoRouteSummaryLabel = nullptr;
     QComboBox *m_sourceCombo = nullptr;
     QComboBox *m_ch1PreprocCombo = nullptr;
     QComboBox *m_ch2PreprocCombo = nullptr;
@@ -154,6 +176,16 @@ private:
     bool m_displayRunning = false;
     bool m_osdEnabled = true;
     bool m_ptzCaptureRunning = false;
+    PtzResolvedDevice m_activePtzDevice;
+    PtzProfileSelection m_requestedPtzSelection = PtzProfileSelection::Auto;
+    PtzProfileSelection m_lastSuccessfulPtzSelection = PtzProfileSelection::Auto;
+    bool m_ptzPreviewDesired = true;
+    bool m_ptzControlDesired = true;
+    bool m_ptzSwitchInProgress = false;
+    bool m_ptzWaitingForDevice = false;
+    QString m_lastPtzMonitorMessage;
+    int m_ptzDisplayAspectWidth = 16;
+    int m_ptzDisplayAspectHeight = 9;
     bool m_ptzControlReady = false;
 
     int m_seconds = 0;

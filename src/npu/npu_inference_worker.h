@@ -35,7 +35,15 @@ public:
     void setNmsThreshold(float threshold);
     float nmsThreshold() const;
 
-    void submitFrame(uint64_t frameId, const uint8_t* rgb565, std::size_t bytes, int width, int height);
+    void setInputSource(int sourceChannel, uint64_t sourceRevision);
+    bool wantsFrame() const;
+    void submitFrame(uint64_t frameId,
+                     const uint8_t* rgb565,
+                     std::size_t bytes,
+                     int width,
+                     int height,
+                     int sourceChannel,
+                     uint64_t sourceRevision);
     NpuFrameResult latestResult() const;
     std::vector<NpuFrameResult> resultsAfter(uint64_t frameId, std::size_t maxResults = 64) const;
 

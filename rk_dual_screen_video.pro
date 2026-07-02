@@ -13,6 +13,8 @@ SOURCES += \
     src/pcie/pcie_frame_receiver.cpp \
     src/npu/npu_inference_worker.cpp \
     src/npu/vision.cpp \
+    src/ptz/ptz_camera_profile.cpp \
+    src/ptz/v4l2_device_detector.cpp \
     src/ptz/ptz_capture_worker.cpp \
     src/ptz/ptz_control_worker.cpp \
     src/ptz/visca_serial.cpp \
@@ -21,6 +23,7 @@ SOURCES += \
 HEADERS += \
     src/ui/control_panel_window.h \
     src/video/drm_rga_display.h \
+    src/video/video_route_config.h \
     src/pcie/pcie_frame_receiver.h \
     src/pcie/pango_pci_uapi.h \
     src/npu/npu_inference_worker.h \
@@ -28,6 +31,8 @@ HEADERS += \
     src/npu/npu_result_types.h \
     src/npu/demo_types.h \
     src/npu/vision.h \
+    src/ptz/ptz_camera_profile.h \
+    src/ptz/v4l2_device_detector.h \
     src/ptz/ptz_capture_worker.h \
     src/ptz/ptz_control_worker.h \
     src/ptz/visca_serial.hpp \
