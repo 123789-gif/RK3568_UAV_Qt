@@ -49,7 +49,7 @@ Goodix 触摸仅映射到 `DSI-1`。
 ### `src/ui`
 
 - 控制页面；
-- AI单任务选择、目标FPS、置信度和NMS阈值配置；
+- AI单任务选择、1～30 FPS目标帧率、置信度和NMS阈值配置；
 - AI运行状态与最近50条有效识别结果展示；
 - AI配置写入部署目录 `config/ai_panel.ini`；
 - PTZ 控制；
@@ -77,13 +77,14 @@ Goodix 触摸仅映射到 `DSI-1`。
 - 调用 `PcieFrameReceiver` 获取最新 DMA 帧；
 - RGA；
 - DRM/KMS；
-- OSD；
+- OSD：系统状态块计算下一可用 Y 坐标，AI 状态块顺序排版，检测框单独绘制；
 - NPU 帧提交；
 - 状态统计。
 
 ### `src/npu`
 
-- `NpuTaskConfig` 统一保存启用状态、任务类型、目标FPS、置信度和NMS阈值；
+- `NpuTaskConfig` 统一保存启用状态、任务类型、目标FPS、置信度和NMS阈值；目标帧率范围为 1～30 FPS，默认 15 FPS；
+- 纳秒级绝对截止时间调度，目标帧率不再因源帧离散边界退化到较低档位；
 - 单槽最新帧邮箱，输入固定来自PCIe主视频；
 - 行人检测任务仅装载并执行 `ped_det.rknn`；
 - 车牌级联任务仅装载并执行 `plate_det.rknn → plate_reco.rknn`；
@@ -109,9 +110,8 @@ Goodix 触摸仅映射到 `DSI-1`。
 1. 首版仅支持单任务，不支持行人检测与车牌级联并发；
 2. 车牌检测接口尚未返回检测分数，Qt结果表中车牌置信度显示为 `--`；
 3. NPU输入仍为1920×1080 RGB565整帧复制，后续可评估裁剪或缩小输入邮箱；
-4. HDMI 左上角系统 OSD 与 AI OSD 的统一排版尚未完成；
-5. DRM/RGA、OSD 和 NPU 帧提交仍集中在 `DrmRgaDisplay`；
-6. PCIe 驱动由部署脚本条件自动加载，用户态接收逻辑已剥离到 `src/pcie`。
+4. DRM/RGA、OSD 和 NPU 帧提交仍集中在 `DrmRgaDisplay`；
+5. PCIe 驱动由部署脚本条件自动加载，用户态接收逻辑已剥离到 `src/pcie`。
 
 ## 5. 推荐后续顺序
 
@@ -120,7 +120,7 @@ Goodix 触摸仅映射到 `DSI-1`。
 已完成：PcieFrameReceiver 与 DrmRgaDisplay 解耦
 已完成：NpuTaskConfig、单任务调度、结果快照和AI页面首版
 下一步：板端性能与任务切换回归
-下一步：OverlayComposer统一OSD，解决左上角文字重叠
+已完成：系统 OSD 与 AI 状态 OSD 使用共享纵向布局，消除左上角重叠
 后续：按实测瓶颈评估ROI、低分辨率邮箱或多任务调度
 ```
 
@@ -129,7 +129,7 @@ Goodix 触摸仅映射到 `DSI-1`。
 ```text
 PCIe RGB565 DMA帧
         ↓
-按目标FPS抽帧并复制到单槽最新帧邮箱
+按 1～30 FPS 纳秒级绝对截止时间抽帧并复制到单槽最新帧邮箱
         ↓
 读取一次完整NpuTaskConfig快照
         ↓
@@ -145,7 +145,7 @@ RGB565 → RGB预处理
         └─ Qt页面读取64帧有界结果历史
 ```
 
-推理线程仍为单线程。任务切换不重启Qt、不改变PCIe/RGA/DRM链路，也不新增整帧复制。
+推理线程仍为单线程。帧提交使用绝对截止时间保持长期平均目标帧率；若实际处理耗时超过目标周期，latest-only邮箱仍以新帧覆盖旧等待帧，避免延迟堆积。任务切换不重启Qt、不改变PCIe/RGA/DRM链路，也不新增整帧复制。
 
 
 ## 九宫格软件选路与单路推理

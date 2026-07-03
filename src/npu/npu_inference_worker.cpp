@@ -33,10 +33,25 @@ struct FrameCopy
     std::vector<uint8_t> data;
 };
 
+constexpr int64_t kNanosecondsPerSecond = 1000000000LL;
+constexpr int64_t kSubmitToleranceNs = 1000000LL;
+
+static int64_t steadyNs()
+{
+    using namespace std::chrono;
+    return duration_cast<nanoseconds>(steady_clock::now().time_since_epoch()).count();
+}
+
 static int64_t steadyMs()
 {
     using namespace std::chrono;
     return duration_cast<milliseconds>(steady_clock::now().time_since_epoch()).count();
+}
+
+static int64_t targetPeriodNs(int targetFps)
+{
+    targetFps = std::max(1, targetFps);
+    return (kNanosecondsPerSecond + targetFps / 2) / targetFps;
 }
 
 static double elapsedMs(std::chrono::steady_clock::time_point begin)
@@ -242,7 +257,7 @@ struct NpuInferenceWorker::Impl
 {
     std::atomic<bool> running {false};
     std::atomic<bool> stopReq {false};
-    std::atomic<int64_t> lastSubmitMs {0};
+    std::atomic<int64_t> nextSubmitNs {0};
     std::atomic<int> droppedFrames {0};
     std::atomic<int> processed {0};
     std::atomic<bool> modelsLoaded {false};
@@ -308,7 +323,7 @@ struct NpuInferenceWorker::Impl
             requestedConfig = next;
         }
 
-        lastSubmitMs.store(0);
+        nextSubmitNs.store(0);
 
         if (!next.enabled) {
             std::lock_guard<std::mutex> lk(pendingMutex);
@@ -362,7 +377,7 @@ struct NpuInferenceWorker::Impl
         sourceChannel = std::max(0, std::min(9, sourceChannel));
         inputSourceChannel.store(sourceChannel);
         inputSourceRevision.store(sourceRevision);
-        lastSubmitMs.store(0);
+        nextSubmitNs.store(0);
 
         {
             std::lock_guard<std::mutex> lk(pendingMutex);
@@ -398,10 +413,44 @@ struct NpuInferenceWorker::Impl
         if (!cfg.enabled || !running.load() || inputSourceChannel.load() == 0) {
             return false;
         }
-        const int64_t now = steadyMs();
-        const int64_t last = lastSubmitMs.load();
-        const int64_t minInterval = std::max<int64_t>(1, 1000 / cfg.targetFps);
-        return now - last >= minInterval;
+
+        const int64_t nowNs = steadyNs();
+        const int64_t deadlineNs = nextSubmitNs.load(std::memory_order_acquire);
+        return deadlineNs == 0 || nowNs + kSubmitToleranceNs >= deadlineNs;
+    }
+
+    bool claimFrameSlot(int targetFps, int64_t nowNs)
+    {
+        const int64_t periodNs = targetPeriodNs(targetFps);
+        int64_t deadlineNs = nextSubmitNs.load(std::memory_order_acquire);
+
+        for (;;) {
+            int64_t nextDeadlineNs = 0;
+            if (deadlineNs == 0) {
+                // 首帧立即接收，并从实际首帧时刻建立理想时间轴。
+                nextDeadlineNs = nowNs + periodNs;
+            } else {
+                if (nowNs + kSubmitToleranceNs < deadlineNs) {
+                    return false;
+                }
+
+                // 沿原理想时间轴推进，而不是从本次实际提交时刻重新计时。
+                // 当源帧率与目标帧率不可整除时，提交间隔可在相邻源帧之间
+                // 交替，从而保持长期平均帧率；若生产者长时间停顿，则跳过
+                // 已错过的截止点，避免恢复后突发补交旧任务。
+                nextDeadlineNs = deadlineNs;
+                do {
+                    nextDeadlineNs += periodNs;
+                } while (nextDeadlineNs <= nowNs);
+            }
+
+            if (nextSubmitNs.compare_exchange_weak(deadlineNs,
+                                                   nextDeadlineNs,
+                                                   std::memory_order_acq_rel,
+                                                   std::memory_order_acquire)) {
+                return true;
+            }
+        }
     }
 
     bool ensureModels(NpuTaskType task)
@@ -459,17 +508,16 @@ struct NpuInferenceWorker::Impl
             return;
         }
 
-        const int64_t now = steadyMs();
-        const int64_t last = lastSubmitMs.load();
-        const int64_t minInterval = std::max<int64_t>(1, 1000 / cfg.targetFps);
-        if (now - last < minInterval) {
-            return;
-        }
-        lastSubmitMs.store(now);
-
         const std::size_t need = static_cast<std::size_t>(width) *
                                  static_cast<std::size_t>(height) * 2u;
         if (bytes < need) {
+            return;
+        }
+
+        // wantsFrame() 仅用于在RGA裁剪前做低成本预检查；真正的时间槽
+        // 在数据与来源均验证通过后由这里原子占用，避免双重判断使用不同
+        // 时间基准，也避免无效帧推进调度时间轴。
+        if (!claimFrameSlot(cfg.targetFps, steadyNs())) {
             return;
         }
 

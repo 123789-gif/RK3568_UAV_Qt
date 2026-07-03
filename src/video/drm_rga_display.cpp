@@ -254,7 +254,7 @@ struct OsdStats {
     double tempC = -1.0;
 };
 
-static void draw_osd(void *fb, int pitchBytes, int fbW, int fbH, const OsdStats &st)
+static int draw_system_osd(void *fb, int pitchBytes, int fbW, int fbH, const OsdStats &st)
 {
     const int scale = (fbW >= 1600) ? 3 : 2;
     const int x = 24;
@@ -291,6 +291,10 @@ static void draw_osd(void *fb, int pitchBytes, int fbW, int fbH, const OsdStats 
     snprintf(line, sizeof(line), "FAIL %" PRIu64, st.failTotal);
     draw_text_shadow_rgb565(fb, pitchBytes, fbW, fbH, x, y + lineH * 6, line, scale,
                             st.failTotal ? red : white, shadow);
+
+    // 返回系统状态块之后的安全起始位置。AI 状态不再使用独立的硬编码 Y 偏移，
+    // 避免不同字体缩放下覆盖 TEMP / FAIL 行。
+    return y + lineH * 7 + 6;
 }
 
 static int scale_capture_x(float x, int fbW, int sourceW)
@@ -326,39 +330,54 @@ static std::string osd_ascii_label(const std::string& label, const char* fallbac
     return out.empty() ? fallback : out;
 }
 
-static void draw_npu_overlay(void *fb, int pitchBytes, int fbW, int fbH,
-                             int sourceW, int sourceH,
-                             const NpuFrameResult &result)
+static void draw_runtime_osd(void *fb, int pitchBytes, int fbW, int fbH,
+                             const OsdStats &stats,
+                             const NpuFrameResult *result)
 {
+    const int y0 = draw_system_osd(fb, pitchBytes, fbW, fbH, stats);
+    if (!result) {
+        return;
+    }
+
     const int scale = (fbW >= 1600) ? 2 : 1;
     const int lineH = 9 * scale;
     const int x0 = 24;
-    const int y0 = 24 + lineH * 8;
     const uint16_t shadow = rgb565(0, 0, 0);
     const uint16_t green = rgb565(0, 255, 0);
     const uint16_t yellow = rgb565(255, 220, 0);
     const uint16_t red = rgb565(255, 48, 48);
-    const uint16_t white = rgb565(255, 255, 255);
 
     char line[96];
     snprintf(line, sizeof(line), "%s %s FPS %.1F P %d D %d",
-             npu_status_text(result),
-             npuTaskShortName(result.task),
-             result.fps,
-             static_cast<int>(result.plates.size()),
-             static_cast<int>(result.pedestrians.size()));
+             npu_status_text(*result),
+             npuTaskShortName(result->task),
+             result->fps,
+             static_cast<int>(result->plates.size()),
+             static_cast<int>(result->pedestrians.size()));
     draw_text_shadow_rgb565(fb, pitchBytes, fbW, fbH, x0, y0, line, scale,
-                            result.ready ? green : yellow, shadow);
+                            result->ready ? green : yellow, shadow);
 
-    if (!result.error.empty()) {
-        std::string err = osd_ascii_label(result.error, "ERR");
-        draw_text_shadow_rgb565(fb, pitchBytes, fbW, fbH, x0, y0 + lineH, err.c_str(),
-                                scale, red, shadow);
+    if (!result->error.empty()) {
+        const std::string err = osd_ascii_label(result->error, "ERR");
+        draw_text_shadow_rgb565(fb, pitchBytes, fbW, fbH, x0, y0 + lineH,
+                                err.c_str(), scale, red, shadow);
     }
+}
 
+static void draw_npu_boxes(void *fb, int pitchBytes, int fbW, int fbH,
+                           int sourceW, int sourceH,
+                           const NpuFrameResult &result)
+{
     if (!result.enabled || !result.ready) {
         return;
     }
+
+    const int scale = (fbW >= 1600) ? 2 : 1;
+    const int lineH = 9 * scale;
+    const uint16_t shadow = rgb565(0, 0, 0);
+    const uint16_t yellow = rgb565(255, 220, 0);
+    const uint16_t red = rgb565(255, 48, 48);
+    const uint16_t white = rgb565(255, 255, 255);
 
     for (const NpuBox& box : result.plates) {
         const int x = scale_capture_x(box.x, fbW, sourceW);
@@ -934,7 +953,17 @@ void DrmRgaDisplay::workerMain()
                     osdStats.tempC = read_soc_temp_c();
                     lastSensorNs = sensorNow;
                 }
-                draw_osd(drm.fb[back].map, drm.fb[back].pitch, drm.modeW, drm.modeH, osdStats);
+                NpuFrameResult ai;
+                bool hasMatchingAi = false;
+                if (sourceChannel > 0) {
+                    ai = latestNpuResult();
+                    hasMatchingAi = ai.sourceChannel == sourceChannel &&
+                            ai.sourceRevision == routeRevision;
+                }
+
+                draw_runtime_osd(drm.fb[back].map, drm.fb[back].pitch,
+                                 drm.modeW, drm.modeH, osdStats,
+                                 hasMatchingAi ? &ai : nullptr);
 
                 char routeLabel[16];
                 if (sourceChannel > 0) {
@@ -949,13 +978,9 @@ void DrmRgaDisplay::workerMain()
                                         routeLabel, routeScale,
                                         rgb565(0, 255, 0), rgb565(0, 0, 0));
 
-                if (sourceChannel > 0) {
-                    const NpuFrameResult ai = latestNpuResult();
-                    if (ai.sourceChannel == sourceChannel &&
-                        ai.sourceRevision == routeRevision) {
-                        draw_npu_overlay(drm.fb[back].map, drm.fb[back].pitch,
-                                         drm.modeW, drm.modeH, 640, 360, ai);
-                    }
+                if (hasMatchingAi) {
+                    draw_npu_boxes(drm.fb[back].map, drm.fb[back].pitch,
+                                   drm.modeW, drm.modeH, 640, 360, ai);
                 }
 
                 if (m_displayMode.load() == 1) {

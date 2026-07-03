@@ -29,7 +29,7 @@ struct NpuFrameResult
     bool ready = false;
     bool modelsReady = false;
     bool usedRga = false;
-    int targetFps = 5;
+    int targetFps = NPU_TARGET_FPS_DEFAULT;
     float confidence = 0.50f;
     float nmsThreshold = 0.45f;
     double fps = 0.0;

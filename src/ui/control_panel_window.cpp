@@ -1276,9 +1276,9 @@ QWidget *ControlPanelWindow::createAiPage()
     };
 
     m_npuFpsSpin = new QSpinBox(configGroup);
-    m_npuFpsSpin->setRange(1, 15);
+    m_npuFpsSpin->setRange(NPU_TARGET_FPS_MIN, NPU_TARGET_FPS_MAX);
     m_npuFpsSpin->setSingleStep(1);
-    m_npuFpsSpin->setValue(5);
+    m_npuFpsSpin->setValue(NPU_TARGET_FPS_DEFAULT);
     m_npuFpsSpin->setSuffix(" fps");
     configureTouchSpin(m_npuFpsSpin);
 
@@ -1330,7 +1330,9 @@ QWidget *ControlPanelWindow::createAiPage()
     grid->addWidget(sourceValue, 2, 1);
 
     addTouchAdjustRow(3,
-                      QStringLiteral("目标推理帧率"),
+                      QStringLiteral("目标推理帧率（%1～%2）")
+                      .arg(NPU_TARGET_FPS_MIN)
+                      .arg(NPU_TARGET_FPS_MAX),
                       m_npuFpsSpin,
                       [this]() { m_npuFpsSpin->stepDown(); },
                       [this]() { m_npuFpsSpin->stepUp(); });
@@ -1851,7 +1853,8 @@ void ControlPanelWindow::loadAiSettings()
     const int taskValue = settings.value(
                 QStringLiteral("ai/task"),
                 static_cast<int>(NpuTaskType::Pedestrian)).toInt();
-    const int fps = settings.value(QStringLiteral("ai/target_fps"), 5).toInt();
+    const int fps = settings.value(QStringLiteral("ai/target_fps"),
+                                   NPU_TARGET_FPS_DEFAULT).toInt();
     const double confidence = settings.value(QStringLiteral("ai/confidence"), 0.50).toDouble();
     const double nms = settings.value(QStringLiteral("ai/nms"), 0.45).toDouble();
 
@@ -1861,7 +1864,9 @@ void ControlPanelWindow::loadAiSettings()
         taskIndex = 0;
     }
     m_npuTaskCombo->setCurrentIndex(taskIndex);
-    m_npuFpsSpin->setValue(qBound(1, fps, 15));
+    m_npuFpsSpin->setValue(qBound(NPU_TARGET_FPS_MIN,
+                                      fps,
+                                      NPU_TARGET_FPS_MAX));
     m_confSpin->setValue(qBound(0.10, confidence, 0.95));
     m_nmsSpin->setValue(qBound(0.10, nms, 0.90));
 }

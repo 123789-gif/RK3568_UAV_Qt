@@ -53,7 +53,8 @@ dist          本地发布包，不进入 Git
 - NPU 仍按既有顺序执行车牌检测、车牌识别和行人检测；
 - AI 页面仍使用总开关、总 FPS 和总置信度；
 - `DrmRgaDisplay` 仍包含 PCIe、RGA、DRM、OSD 和 NPU 帧提交；
-- HDMI OSD 文字重叠尚未重构；
+- HDMI 左上角系统状态与 AI 状态使用共享纵向布局，检测框仍独立绘制；
+- AI 目标推理帧率统一为 1～30 FPS，默认 15 FPS，并继续使用 latest-only 防积压调度；
 - PCIe 驱动尚未随发布包自动加载。
 
 后续功能修改必须从独立 `feature/*` 分支开始，并完成板端回归后再合并到 `main`。
