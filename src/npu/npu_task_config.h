@@ -11,7 +11,7 @@ enum class NpuTaskType : std::uint8_t
 
 inline constexpr int NPU_TARGET_FPS_MIN = 1;
 inline constexpr int NPU_TARGET_FPS_DEFAULT = 15;
-inline constexpr int NPU_TARGET_FPS_MAX = 30;
+inline constexpr int NPU_TARGET_FPS_MAX = 60;
 
 struct NpuTaskConfig
 {

@@ -30,6 +30,7 @@ struct FrameCopy
     int sourceChannel = 0;
     int width = 0;
     int height = 0;
+    double copyMs = 0.0;
     std::vector<uint8_t> data;
 };
 
@@ -58,6 +59,16 @@ static double elapsedMs(std::chrono::steady_clock::time_point begin)
 {
     using namespace std::chrono;
     return duration<double, std::milli>(steady_clock::now() - begin).count();
+}
+
+
+static void accumulateStageTiming(NpuFrameResult& result, const demo::vision::RknnStageTiming& timing)
+{
+    result.rknnInputMs += timing.input_ms;
+    result.rknnRunMs += timing.run_ms;
+    result.rknnOutputMs += timing.output_ms;
+    result.rknnPostMs += timing.post_ms;
+    result.rknnRunCount += timing.run_count;
 }
 
 static bool fileExists(const std::string& path)
@@ -397,8 +408,7 @@ struct NpuInferenceWorker::Impl
         state.sourceRevision = sourceRevision;
         state.modelsReady = modelsLoaded.load() &&
                 loadedTaskValue.load() == static_cast<int>(cfg.task);
-        state.status = sourceChannel == 0 ? "paused_overview"
-                                         : (cfg.enabled ? "pending" : "off");
+        state.status = cfg.enabled ? "pending" : "off";
         state.processed = processed.load();
         state.dropped = droppedFrames.load();
 
@@ -410,7 +420,7 @@ struct NpuInferenceWorker::Impl
     bool wantsFrame() const
     {
         const NpuTaskConfig cfg = configSnapshot();
-        if (!cfg.enabled || !running.load() || inputSourceChannel.load() == 0) {
+        if (!cfg.enabled || !running.load()) {
             return false;
         }
 
@@ -503,7 +513,8 @@ struct NpuInferenceWorker::Impl
         if (!cfg.enabled || !running.load() || !rgb565 || width <= 0 || height <= 0) {
             return;
         }
-        if (sourceChannel <= 0 || sourceChannel != inputSourceChannel.load() ||
+        if (sourceChannel < 0 || sourceChannel > 9 ||
+            sourceChannel != inputSourceChannel.load() ||
             sourceRevision != inputSourceRevision.load()) {
             return;
         }
@@ -527,7 +538,9 @@ struct NpuInferenceWorker::Impl
         copy.sourceRevision = sourceRevision;
         copy.width = width;
         copy.height = height;
+        const auto copyBegin = std::chrono::steady_clock::now();
         copy.data.assign(rgb565, rgb565 + need);
+        copy.copyMs = elapsedMs(copyBegin);
 
         {
             std::lock_guard<std::mutex> lk(pendingMutex);
@@ -599,7 +612,7 @@ struct NpuInferenceWorker::Impl
     void process(const FrameCopy& frame)
     {
         const NpuTaskConfig cfg = configSnapshot();
-        if (!cfg.enabled || frame.sourceChannel <= 0 ||
+        if (!cfg.enabled || frame.sourceChannel < 0 || frame.sourceChannel > 9 ||
             frame.sourceChannel != inputSourceChannel.load() ||
             frame.sourceRevision != inputSourceRevision.load()) {
             return;
@@ -607,6 +620,7 @@ struct NpuInferenceWorker::Impl
 
         NpuFrameResult result;
         result.frameId = frame.id;
+        result.copyMs = frame.copyMs;
         result.sourceChannel = frame.sourceChannel;
         result.sourceRevision = frame.sourceRevision;
         result.task = cfg.task;
@@ -675,7 +689,10 @@ struct NpuInferenceWorker::Impl
                                                     &ocrMs,
                                                     &ocrTiming);
                 result.plateMs += ocrMs;
+                accumulateStageTiming(result, ocrTiming);
             }
+
+            accumulateStageTiming(result, plateTiming);
 
             const std::size_t plateCount = std::min(plateBoxesOut.size(), plateTexts.size());
             for (std::size_t i = 0; i < plateCount; ++i) {
@@ -705,6 +722,7 @@ struct NpuInferenceWorker::Impl
                                             demo::DEFAULT_PED_TOPK_NMS,
                                             &result.pedMs,
                                             &pedTiming);
+            accumulateStageTiming(result, pedTiming);
             for (std::size_t i = 0; i < pedBoxesIn.size(); ++i) {
                 demo::Rect2f orig;
                 demo::vision::convert_input_box_to_orig(pedBoxesIn[i], orig,

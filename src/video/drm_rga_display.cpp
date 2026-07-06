@@ -1,8 +1,16 @@
 #include "video/drm_rga_display.h"
 #include "npu/npu_inference_worker.h"
 #include "pcie/pcie_frame_receiver.h"
+#include "system/perf_counters.h"
+#include "system/system_monitor.h"
 
 #include <QDebug>
+#include <QColor>
+#include <QFont>
+#include <QFontMetrics>
+#include <QImage>
+#include <QPainter>
+#include <QString>
 
 #include <algorithm>
 #include <cerrno>
@@ -11,6 +19,8 @@
 #include <cstdlib>
 #include <cstring>
 #include <ctime>
+#include <cctype>
+#include <cmath>
 #include <vector>
 #include <string>
 
@@ -79,6 +89,47 @@ static int rga_crop_scale_rgb565(const void *srcPtr,
     return c_RkRgaBlit(&src, &dst, nullptr);
 }
 
+
+static void prepare_and_submit_npu_frame(NpuInferenceWorker *worker,
+                                         const uint8_t *frameData,
+                                         uint64_t frameId,
+                                         const VideoTileRoi &sourceRoi,
+                                         int sourceChannel,
+                                         uint64_t sourceRevision,
+                                         std::vector<uint8_t> &npuTileBuffer,
+                                         uint64_t &npuCropFailTotal)
+{
+    if (!worker || !frameData || !worker->wantsFrame()) {
+        return;
+    }
+
+    const int cropRet = rga_crop_scale_rgb565(frameData,
+                                              PCIE_FRAME_W,
+                                              PCIE_FRAME_H,
+                                              sourceRoi,
+                                              npuTileBuffer.data(),
+                                              640,
+                                              360,
+                                              640,
+                                              360);
+    if (cropRet != 0) {
+        ++npuCropFailTotal;
+        if (npuCropFailTotal <= 10) {
+            qDebug() << "RGA display-priority NPU input failed ret=" << cropRet
+                     << "channel=" << sourceChannel;
+        }
+        return;
+    }
+
+    worker->submitFrame(frameId,
+                        npuTileBuffer.data(),
+                        npuTileBuffer.size(),
+                        640,
+                        360,
+                        sourceChannel,
+                        sourceRevision);
+}
+
 static VideoRoute decodeVideoRoute(uint64_t state)
 {
     return sanitizeVideoRoute(static_cast<int>(state & 0xffu));
@@ -135,26 +186,37 @@ static const char *glyph5x7(char c)
     case '8': return "11110" "10010" "10010" "11110" "10010" "10010" "11110";
     case '9': return "11110" "10010" "10010" "11110" "00010" "00010" "11110";
     case 'A': return "01100" "10010" "10010" "11110" "10010" "10010" "10010";
+    case 'B': return "11100" "10010" "10010" "11100" "10010" "10010" "11100";
     case 'C': return "01110" "10000" "10000" "10000" "10000" "10000" "01110";
     case 'D': return "11100" "10010" "10010" "10010" "10010" "10010" "11100";
     case 'E': return "11110" "10000" "10000" "11100" "10000" "10000" "11110";
     case 'F': return "11110" "10000" "10000" "11100" "10000" "10000" "10000";
     case 'G': return "01110" "10000" "10000" "10110" "10010" "10010" "01110";
+    case 'H': return "10010" "10010" "10010" "11110" "10010" "10010" "10010";
     case 'I': return "11100" "01000" "01000" "01000" "01000" "01000" "11100";
+    case 'J': return "00110" "00010" "00010" "00010" "00010" "10010" "01100";
     case 'K': return "10010" "10100" "11000" "11000" "10100" "10010" "10010";
     case 'L': return "10000" "10000" "10000" "10000" "10000" "10000" "11110";
     case 'M': return "10001" "11011" "10101" "10101" "10001" "10001" "10001";
     case 'N': return "10010" "11010" "10110" "10010" "10010" "10010" "10010";
+    case 'O': return "01100" "10010" "10010" "10010" "10010" "10010" "01100";
     case 'P': return "11100" "10010" "10010" "11100" "10000" "10000" "10000";
+    case 'Q': return "01100" "10010" "10010" "10010" "10110" "10010" "01110";
     case 'R': return "11100" "10010" "10010" "11100" "10100" "10010" "10010";
     case 'S': return "01110" "10000" "10000" "01100" "00010" "00010" "11100";
     case 'T': return "11111" "00100" "00100" "00100" "00100" "00100" "00100";
     case 'U': return "10010" "10010" "10010" "10010" "10010" "10010" "01100";
+    case 'V': return "10001" "10001" "10001" "10001" "01010" "01010" "00100";
+    case 'W': return "10001" "10001" "10001" "10101" "10101" "11011" "10001";
     case 'X': return "10001" "01010" "00100" "00100" "00100" "01010" "10001";
+    case 'Y': return "10001" "01010" "00100" "00100" "00100" "00100" "00100";
+    case 'Z': return "11111" "00001" "00010" "00100" "01000" "10000" "11111";
     case ':': return "00000" "00100" "00100" "00000" "00100" "00100" "00000";
     case '.': return "00000" "00000" "00000" "00000" "00000" "01100" "01100";
     case '%': return "11001" "11010" "00100" "01000" "10110" "00110" "00000";
     case '-': return "00000" "00000" "00000" "11110" "00000" "00000" "00000";
+    case '/': return "00001" "00010" "00010" "00100" "01000" "01000" "10000";
+    case '+': return "00000" "00100" "00100" "11111" "00100" "00100" "00000";
     case ' ': return "00000" "00000" "00000" "00000" "00000" "00000" "00000";
     default:  return "11111" "10001" "00110" "00100" "00110" "10001" "11111";
     }
@@ -200,101 +262,954 @@ static void draw_text_shadow_rgb565(void *fb, int pitchBytes, int fbW, int fbH,
     draw_text_rgb565(fb, pitchBytes, fbW, fbH, x, y, text, scale, fg);
 }
 
-static std::string read_file_string(const char *path)
-{
-    FILE *fp = fopen(path, "r");
-    if (!fp) return std::string();
-    char buf[128];
-    size_t n = fread(buf, 1, sizeof(buf) - 1, fp);
-    fclose(fp);
-    buf[n] = 0;
-    return std::string(buf);
-}
 
-static int read_npu_load_percent()
+static const uint8_t *hud_glyph8x12(char c)
 {
-    std::string s = read_file_string("/sys/kernel/debug/rknpu/load");
-    int v = -1;
-    if (sscanf(s.c_str(), "NPU load: %d%%", &v) == 1) return v;
-    const char *p = s.c_str();
-    while (*p) {
-        if (*p >= '0' && *p <= '9') {
-            if (sscanf(p, "%d", &v) == 1) return v;
-        }
-        ++p;
+    if (c >= 'a' && c <= 'z') c = char(c - 'a' + 'A');
+    static const uint8_t space[12] = {0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00};
+    static const uint8_t unknown[12] = {0x7e,0x42,0x06,0x0c,0x18,0x18,0x18,0x00,0x18,0x18,0x00,0x00};
+    switch (c) {
+    case '0': { static const uint8_t g[12] = {0x3c,0x66,0xc3,0xc3,0xcb,0xd3,0xe3,0xc3,0xc3,0x66,0x3c,0x00}; return g; }
+    case '1': { static const uint8_t g[12] = {0x18,0x38,0x78,0x18,0x18,0x18,0x18,0x18,0x18,0x18,0x7e,0x00}; return g; }
+    case '2': { static const uint8_t g[12] = {0x3c,0x66,0xc3,0x03,0x06,0x0c,0x18,0x30,0x60,0xc0,0xff,0x00}; return g; }
+    case '3': { static const uint8_t g[12] = {0x7e,0xc3,0x03,0x06,0x1c,0x06,0x03,0x03,0xc3,0x66,0x3c,0x00}; return g; }
+    case '4': { static const uint8_t g[12] = {0x06,0x0e,0x1e,0x36,0x66,0xc6,0xff,0x06,0x06,0x06,0x1f,0x00}; return g; }
+    case '5': { static const uint8_t g[12] = {0xff,0xc0,0xc0,0xc0,0xfc,0x06,0x03,0x03,0xc3,0x66,0x3c,0x00}; return g; }
+    case '6': { static const uint8_t g[12] = {0x1e,0x30,0x60,0xc0,0xfc,0xc6,0xc3,0xc3,0xc3,0x66,0x3c,0x00}; return g; }
+    case '7': { static const uint8_t g[12] = {0xff,0xc3,0x06,0x06,0x0c,0x0c,0x18,0x18,0x30,0x30,0x30,0x00}; return g; }
+    case '8': { static const uint8_t g[12] = {0x3c,0x66,0xc3,0xc3,0x66,0x3c,0x66,0xc3,0xc3,0x66,0x3c,0x00}; return g; }
+    case '9': { static const uint8_t g[12] = {0x3c,0x66,0xc3,0xc3,0xc3,0x67,0x3f,0x03,0x06,0x0c,0x78,0x00}; return g; }
+    case 'A': { static const uint8_t g[12] = {0x18,0x3c,0x66,0xc3,0xc3,0xff,0xc3,0xc3,0xc3,0xc3,0xc3,0x00}; return g; }
+    case 'B': { static const uint8_t g[12] = {0xfc,0x66,0x63,0x63,0x66,0x7c,0x66,0x63,0x63,0x66,0xfc,0x00}; return g; }
+    case 'C': { static const uint8_t g[12] = {0x3e,0x63,0xc0,0xc0,0xc0,0xc0,0xc0,0xc0,0xc0,0x63,0x3e,0x00}; return g; }
+    case 'D': { static const uint8_t g[12] = {0xfc,0x66,0x63,0x63,0x63,0x63,0x63,0x63,0x63,0x66,0xfc,0x00}; return g; }
+    case 'E': { static const uint8_t g[12] = {0xff,0xc0,0xc0,0xc0,0xfc,0xc0,0xc0,0xc0,0xc0,0xc0,0xff,0x00}; return g; }
+    case 'F': { static const uint8_t g[12] = {0xff,0xc0,0xc0,0xc0,0xfc,0xc0,0xc0,0xc0,0xc0,0xc0,0xc0,0x00}; return g; }
+    case 'G': { static const uint8_t g[12] = {0x3e,0x63,0xc0,0xc0,0xc0,0xcf,0xc3,0xc3,0xc3,0x63,0x3e,0x00}; return g; }
+    case 'H': { static const uint8_t g[12] = {0xc3,0xc3,0xc3,0xc3,0xff,0xc3,0xc3,0xc3,0xc3,0xc3,0xc3,0x00}; return g; }
+    case 'I': { static const uint8_t g[12] = {0x7e,0x18,0x18,0x18,0x18,0x18,0x18,0x18,0x18,0x18,0x7e,0x00}; return g; }
+    case 'J': { static const uint8_t g[12] = {0x1f,0x06,0x06,0x06,0x06,0x06,0x06,0x06,0xc6,0xc6,0x7c,0x00}; return g; }
+    case 'K': { static const uint8_t g[12] = {0xc3,0xc6,0xcc,0xd8,0xf0,0xe0,0xf0,0xd8,0xcc,0xc6,0xc3,0x00}; return g; }
+    case 'L': { static const uint8_t g[12] = {0xc0,0xc0,0xc0,0xc0,0xc0,0xc0,0xc0,0xc0,0xc0,0xc0,0xff,0x00}; return g; }
+    case 'M': { static const uint8_t g[12] = {0xc3,0xe7,0xff,0xdb,0xdb,0xc3,0xc3,0xc3,0xc3,0xc3,0xc3,0x00}; return g; }
+    case 'N': { static const uint8_t g[12] = {0xc3,0xe3,0xf3,0xdb,0xcf,0xc7,0xc3,0xc3,0xc3,0xc3,0xc3,0x00}; return g; }
+    case 'O': { static const uint8_t g[12] = {0x3c,0x66,0xc3,0xc3,0xc3,0xc3,0xc3,0xc3,0xc3,0x66,0x3c,0x00}; return g; }
+    case 'P': { static const uint8_t g[12] = {0xfc,0x66,0x63,0x63,0x66,0x7c,0x60,0x60,0x60,0x60,0x60,0x00}; return g; }
+    case 'Q': { static const uint8_t g[12] = {0x3c,0x66,0xc3,0xc3,0xc3,0xc3,0xdb,0xcf,0xc6,0x67,0x3f,0x03}; return g; }
+    case 'R': { static const uint8_t g[12] = {0xfc,0x66,0x63,0x63,0x66,0x7c,0x78,0x6c,0x66,0x63,0xc3,0x00}; return g; }
+    case 'S': { static const uint8_t g[12] = {0x3e,0x63,0xc0,0xc0,0x70,0x1c,0x06,0x03,0x03,0xc6,0x7c,0x00}; return g; }
+    case 'T': { static const uint8_t g[12] = {0xff,0x18,0x18,0x18,0x18,0x18,0x18,0x18,0x18,0x18,0x18,0x00}; return g; }
+    case 'U': { static const uint8_t g[12] = {0xc3,0xc3,0xc3,0xc3,0xc3,0xc3,0xc3,0xc3,0xc3,0x66,0x3c,0x00}; return g; }
+    case 'V': { static const uint8_t g[12] = {0xc3,0xc3,0xc3,0xc3,0x66,0x66,0x66,0x3c,0x3c,0x18,0x18,0x00}; return g; }
+    case 'W': { static const uint8_t g[12] = {0xc3,0xc3,0xc3,0xc3,0xdb,0xdb,0xdb,0xff,0xe7,0xc3,0xc3,0x00}; return g; }
+    case 'X': { static const uint8_t g[12] = {0xc3,0x66,0x66,0x3c,0x18,0x18,0x3c,0x66,0x66,0xc3,0xc3,0x00}; return g; }
+    case 'Y': { static const uint8_t g[12] = {0xc3,0x66,0x66,0x3c,0x18,0x18,0x18,0x18,0x18,0x18,0x18,0x00}; return g; }
+    case 'Z': { static const uint8_t g[12] = {0xff,0x03,0x06,0x0c,0x18,0x18,0x30,0x60,0xc0,0xc0,0xff,0x00}; return g; }
+    case '.': { static const uint8_t g[12] = {0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x18,0x18,0x00}; return g; }
+    case '/': { static const uint8_t g[12] = {0x03,0x06,0x06,0x0c,0x0c,0x18,0x18,0x30,0x30,0x60,0xc0,0x00}; return g; }
+    case ':': { static const uint8_t g[12] = {0x00,0x00,0x18,0x18,0x00,0x00,0x00,0x18,0x18,0x00,0x00,0x00}; return g; }
+    case '-': { static const uint8_t g[12] = {0x00,0x00,0x00,0x00,0x00,0x7e,0x7e,0x00,0x00,0x00,0x00,0x00}; return g; }
+    case '+': { static const uint8_t g[12] = {0x00,0x00,0x18,0x18,0x18,0x7e,0x7e,0x18,0x18,0x18,0x00,0x00}; return g; }
+    case '%': { static const uint8_t g[12] = {0xc2,0xc6,0x0c,0x18,0x30,0x60,0xc6,0x86,0x00,0x00,0x00,0x00}; return g; }
+    case '(': { static const uint8_t g[12] = {0x0c,0x18,0x30,0x60,0x60,0x60,0x60,0x60,0x30,0x18,0x0c,0x00}; return g; }
+    case ')': { static const uint8_t g[12] = {0x30,0x18,0x0c,0x06,0x06,0x06,0x06,0x06,0x0c,0x18,0x30,0x00}; return g; }
+    case ' ': return space;
+    default: return unknown;
     }
-    s = read_file_string("/sys/class/devfreq/fde40000.npu/load");
-    if (sscanf(s.c_str(), "%d", &v) == 1) return v;
-    return -1;
 }
 
-static double read_soc_temp_c()
+
+static uint8_t rgb565_r8(uint16_t c)
 {
-    const char *paths[] = {
-        "/sys/devices/virtual/thermal/thermal_zone0/temp",
-        "/sys/class/thermal/thermal_zone0/temp"
+    return static_cast<uint8_t>(((c >> 11) & 0x1f) * 255 / 31);
+}
+
+static uint8_t rgb565_g8(uint16_t c)
+{
+    return static_cast<uint8_t>(((c >> 5) & 0x3f) * 255 / 63);
+}
+
+static uint8_t rgb565_b8(uint16_t c)
+{
+    return static_cast<uint8_t>((c & 0x1f) * 255 / 31);
+}
+
+static uint16_t blend_rgb565_over(uint16_t dst, uint16_t src, uint8_t alpha)
+{
+    if (alpha == 0) return dst;
+    if (alpha == 255) return src;
+    const int inv = 255 - alpha;
+    const int r = (static_cast<int>(rgb565_r8(src)) * alpha + static_cast<int>(rgb565_r8(dst)) * inv + 127) / 255;
+    const int g = (static_cast<int>(rgb565_g8(src)) * alpha + static_cast<int>(rgb565_g8(dst)) * inv + 127) / 255;
+    const int b = (static_cast<int>(rgb565_b8(src)) * alpha + static_cast<int>(rgb565_b8(dst)) * inv + 127) / 255;
+    return rgb565(static_cast<uint8_t>(r), static_cast<uint8_t>(g), static_cast<uint8_t>(b));
+}
+
+static void blend_pixel_rgb565(void *fb, int pitchBytes, int fbW, int fbH,
+                               int x, int y, uint16_t color, uint8_t alpha)
+{
+    if (!fb || x < 0 || y < 0 || x >= fbW || y >= fbH) return;
+    uint8_t *base = static_cast<uint8_t *>(fb);
+    uint16_t *dst = reinterpret_cast<uint16_t *>(base + y * pitchBytes) + x;
+    *dst = blend_rgb565_over(*dst, color, alpha);
+}
+
+static bool hud_glyph_bit(const uint8_t *g, int x, int y)
+{
+    if (!g || x < 0 || x >= 8 || y < 0 || y >= 12) return false;
+    return (g[y] & (0x80u >> x)) != 0;
+}
+
+static bool hud_glyph_bit_12x18(const uint8_t *g, int x, int y)
+{
+    if (!g || x < 0 || x >= 12 || y < 0 || y >= 18) return false;
+    const int sx = (x * 8) / 12;
+    const int sy = (y * 12) / 18;
+    return hud_glyph_bit(g, sx, sy);
+}
+
+static void draw_hud_char_12x18_rgb565(void *fb, int pitchBytes, int fbW, int fbH,
+                                        int x, int y, char c, uint16_t color)
+{
+    const uint8_t *g = hud_glyph8x12(c);
+    const uint8_t edgeAlpha = 48;
+
+    for (int gy = 0; gy < 18; ++gy) {
+        for (int gx = 0; gx < 12; ++gx) {
+            if (!hud_glyph_bit_12x18(g, gx, gy)) continue;
+            if (!hud_glyph_bit_12x18(g, gx - 1, gy)) blend_pixel_rgb565(fb, pitchBytes, fbW, fbH, x + gx - 1, y + gy, color, edgeAlpha);
+            if (!hud_glyph_bit_12x18(g, gx + 1, gy)) blend_pixel_rgb565(fb, pitchBytes, fbW, fbH, x + gx + 1, y + gy, color, edgeAlpha);
+            if (!hud_glyph_bit_12x18(g, gx, gy - 1)) blend_pixel_rgb565(fb, pitchBytes, fbW, fbH, x + gx, y + gy - 1, color, edgeAlpha);
+            if (!hud_glyph_bit_12x18(g, gx, gy + 1)) blend_pixel_rgb565(fb, pitchBytes, fbW, fbH, x + gx, y + gy + 1, color, edgeAlpha);
+        }
+    }
+
+    for (int gy = 0; gy < 18; ++gy) {
+        for (int gx = 0; gx < 12; ++gx) {
+            if (hud_glyph_bit_12x18(g, gx, gy)) {
+                fill_rect_rgb565(fb, pitchBytes, fbW, fbH, x + gx, y + gy, 1, 1, color);
+            }
+        }
+    }
+}
+
+static void draw_hud_text_12x18_rgb565(void *fb, int pitchBytes, int fbW, int fbH,
+                                        int x, int y, const char *text, uint16_t color)
+{
+    constexpr int kPitch = 13;
+    int cx = x;
+    for (const char *p = text; *p; ++p) {
+        draw_hud_char_12x18_rgb565(fb, pitchBytes, fbW, fbH, cx, y, *p, color);
+        cx += kPitch;
+    }
+}
+
+static void draw_hud_char_rgb565(void *fb, int pitchBytes, int fbW, int fbH,
+                                  int x, int y, char c, int scale, uint16_t color)
+{
+    const uint8_t *g = hud_glyph8x12(c);
+    if (scale <= 1) {
+        // Native-size HUD text: add a very small soft edge around glyph pixels.
+        // This keeps the no-Qt/no-FreeType lightweight path, but reduces the harsh 1-bit look.
+        const uint8_t edgeAlpha = 58;
+        for (int gy = 0; gy < 12; ++gy) {
+            for (int gx = 0; gx < 8; ++gx) {
+                if (!hud_glyph_bit(g, gx, gy)) continue;
+                if (!hud_glyph_bit(g, gx - 1, gy)) blend_pixel_rgb565(fb, pitchBytes, fbW, fbH, x + gx - 1, y + gy, color, edgeAlpha);
+                if (!hud_glyph_bit(g, gx + 1, gy)) blend_pixel_rgb565(fb, pitchBytes, fbW, fbH, x + gx + 1, y + gy, color, edgeAlpha);
+                if (!hud_glyph_bit(g, gx, gy - 1)) blend_pixel_rgb565(fb, pitchBytes, fbW, fbH, x + gx, y + gy - 1, color, edgeAlpha);
+                if (!hud_glyph_bit(g, gx, gy + 1)) blend_pixel_rgb565(fb, pitchBytes, fbW, fbH, x + gx, y + gy + 1, color, edgeAlpha);
+            }
+        }
+        for (int gy = 0; gy < 12; ++gy) {
+            const uint8_t row = g[gy];
+            for (int gx = 0; gx < 8; ++gx) {
+                if (row & (0x80u >> gx)) {
+                    fill_rect_rgb565(fb, pitchBytes, fbW, fbH, x + gx, y + gy, 1, 1, color);
+                }
+            }
+        }
+        return;
+    }
+
+    for (int gy = 0; gy < 12; ++gy) {
+        const uint8_t row = g[gy];
+        for (int gx = 0; gx < 8; ++gx) {
+            if (row & (0x80u >> gx)) {
+                fill_rect_rgb565(fb, pitchBytes, fbW, fbH,
+                                  x + gx * scale, y + gy * scale,
+                                  scale, scale, color);
+            }
+        }
+    }
+}
+
+static void draw_hud_text_rgb565(void *fb, int pitchBytes, int fbW, int fbH,
+                                  int x, int y, const char *text, int scale, uint16_t color)
+{
+    const int pitch = (scale <= 1) ? 8 : (9 * scale);
+    int cx = x;
+    for (const char *p = text; *p; ++p) {
+        draw_hud_char_rgb565(fb, pitchBytes, fbW, fbH, cx, y, *p, scale, color);
+        cx += pitch;
+    }
+}
+
+static void blit_rgb565_block(void *fb, int pitchBytes, int fbW, int fbH,
+                              int x, int y, int w, int h, const std::vector<uint16_t> &pixels)
+{
+    if (!fb || pixels.empty() || w <= 0 || h <= 0) return;
+    if (x >= fbW || y >= fbH || x + w <= 0 || y + h <= 0) return;
+    const int srcX0 = std::max(0, -x);
+    const int srcY0 = std::max(0, -y);
+    const int dstX0 = std::max(0, x);
+    const int dstY0 = std::max(0, y);
+    const int copyW = std::min(w - srcX0, fbW - dstX0);
+    const int copyH = std::min(h - srcY0, fbH - dstY0);
+    if (copyW <= 0 || copyH <= 0) return;
+    uint8_t *base = static_cast<uint8_t *>(fb);
+    for (int row = 0; row < copyH; ++row) {
+        const uint16_t *src = pixels.data() + (srcY0 + row) * w + srcX0;
+        uint16_t *dst = reinterpret_cast<uint16_t *>(base + (dstY0 + row) * pitchBytes) + dstX0;
+        memcpy(dst, src, static_cast<size_t>(copyW) * sizeof(uint16_t));
+    }
+}
+
+static uint16_t hud_load_color(int value)
+{
+    if (value >= 95) return rgb565(255, 72, 72);
+    if (value >= 80) return rgb565(255, 220, 0);
+    return rgb565(245, 248, 255);
+}
+
+static uint16_t hud_temp_color(double tempC)
+{
+    if (tempC >= 85.0) return rgb565(255, 72, 72);
+    if (tempC >= 75.0) return rgb565(255, 220, 0);
+    return rgb565(245, 248, 255);
+}
+
+static uint16_t hud_fps_color(double fps, double target)
+{
+    if (target <= 0.1) return rgb565(245, 248, 255);
+    if (fps < target * 0.70) return rgb565(255, 72, 72);
+    if (fps < target * 0.85) return rgb565(255, 220, 0);
+    return rgb565(245, 248, 255);
+}
+
+static uint16_t hud_latency_color(double valueMs, double warnMs, double badMs)
+{
+    if (valueMs >= badMs) return rgb565(255, 72, 72);
+    if (valueMs >= warnMs) return rgb565(255, 220, 0);
+    return rgb565(245, 248, 255);
+}
+
+static void hud_format_percent(char *buf, size_t size, int value)
+{
+    if (value >= 0) snprintf(buf, size, "%3d%%", value);
+    else snprintf(buf, size, " NA ");
+}
+
+static void hud_format_temp(char *buf, size_t size, double value)
+{
+    if (value >= 0.0) snprintf(buf, size, "%4.1f C", value);
+    else snprintf(buf, size, " NA   ");
+}
+
+static void hud_format_fps(char *buf, size_t size, double value)
+{
+    snprintf(buf, size, "%4.1f", value);
+}
+
+static void hud_format_ai_fps(char *buf, size_t size, double value, int target)
+{
+    if (target > 0) snprintf(buf, size, "%4.1f/%02d", value, target);
+    else snprintf(buf, size, "%4.1f/--", value);
+}
+
+static void hud_format_ms(char *buf, size_t size, double us)
+{
+    snprintf(buf, size, "%4.1f", us / 1000.0);
+}
+
+
+static int scale_capture_x(float x, int fbW, int sourceW);
+static int scale_capture_y(float y, int fbH, int sourceH);
+
+struct PlateOsdStyle {
+    uint16_t frameColor = 0;
+    QColor background;
+    QColor text;
+    uint16_t shadowColor = 0;
+};
+
+static PlateOsdStyle plate_osd_style(int classId)
+{
+    PlateOsdStyle st;
+    st.shadowColor = rgb565(0, 0, 0);
+    switch (classId) {
+    case 0:  // Blue plate.
+        st.frameColor = rgb565(0, 96, 255);
+        st.background = QColor(0, 84, 210, 232);
+        st.text = QColor(255, 255, 255);
+        break;
+    case 1:  // Green / new-energy plate.
+        st.frameColor = rgb565(0, 210, 80);
+        st.background = QColor(0, 185, 80, 232);
+        st.text = QColor(0, 0, 0);
+        break;
+    case 2:  // Yellow plate.
+        st.frameColor = rgb565(255, 220, 0);
+        st.background = QColor(245, 210, 0, 232);
+        st.text = QColor(0, 0, 0);
+        break;
+    case 3:  // Police plate: white plate, black prefix, red suffix.
+        st.frameColor = rgb565(255, 255, 255);
+        st.background = QColor(245, 245, 245, 235);
+        st.text = QColor(0, 0, 0);
+        break;
+    case 4:  // Consulate / black plate.
+        st.frameColor = rgb565(20, 20, 20);
+        st.background = QColor(10, 10, 10, 235);
+        st.text = QColor(255, 255, 255);
+        break;
+    default:
+        st.frameColor = rgb565(255, 220, 0);
+        st.background = QColor(35, 35, 35, 220);
+        st.text = QColor(255, 255, 255);
+        break;
+    }
+    return st;
+}
+
+static QString strip_plate_separators(QString s)
+{
+    QString out;
+    out.reserve(s.size());
+    for (QChar c : s) {
+        if (c.isSpace() || c == '-' || c == '_' || c == ':' || c == '.') {
+            continue;
+        }
+        out.append(c.toUpper());
+    }
+    return out;
+}
+
+static bool is_chinese_plate_province(QChar c)
+{
+    static const QString provinces = QStringLiteral("京沪津渝冀晋蒙辽吉黑苏浙皖闽赣鲁豫鄂湘粤桂琼川贵云藏陕甘青宁新警领");
+    return provinces.contains(c);
+}
+
+static bool starts_with_ascii_token(const QString &s, const char *token)
+{
+    const QString t = QString::fromLatin1(token);
+    return s.left(t.size()).compare(t, Qt::CaseInsensitive) == 0;
+}
+
+static bool match_pinyin_province(const QString &compact, QString &province, int &tokenLen)
+{
+    struct Entry { const char *token; const char *province; };
+    // Keep ambiguous model tokens exactly aligned with demo::pinyin_chars().
+    static const Entry entries[] = {
+        {"LINGCON", "领"}, {"JINGPOL", "警"},
+        {"QIONG", "琼"}, {"CHUAN", "川"}, {"XIANG", "湘"}, {"ZANG", "藏"},
+        {"MENG", "蒙"}, {"LIAO", "辽"}, {"ZHE", "浙"}, {"WAN", "皖"},
+        {"MIN", "闽"}, {"GAN2", "甘"}, {"GAN", "赣"}, {"YUE", "粤"},
+        {"GUI2", "贵"}, {"GUI", "桂"}, {"YUN", "云"}, {"SHAN", "陕"},
+        {"QING", "青"}, {"NING", "宁"}, {"XIN", "新"}, {"JING", "京"},
+        {"HU", "沪"}, {"JIN2", "晋"}, {"JIN", "津"}, {"YU2", "豫"},
+        {"YU", "渝"}, {"JI2", "吉"}, {"JI", "冀"}, {"HEI", "黑"},
+        {"SU", "苏"}, {"LU", "鲁"}, {"E", "鄂"}
     };
-    for (const char *path : paths) {
-        std::string s = read_file_string(path);
-        if (!s.empty()) {
-            long v = 0;
-            if (sscanf(s.c_str(), "%ld", &v) == 1) return double(v) / 1000.0;
+    for (const Entry &e : entries) {
+        if (starts_with_ascii_token(compact, e.token)) {
+            province = QString::fromUtf8(e.province);
+            tokenLen = static_cast<int>(strlen(e.token));
+            return true;
         }
     }
-    return -1.0;
+    return false;
+}
+
+static QString format_plate_text_for_osd(const NpuBox &box)
+{
+    // Prefer real Chinese OCR output. Use pinyin label only as fallback.
+    QString raw = QString::fromUtf8(box.text.c_str()).trimmed();
+    if (raw.isEmpty()) {
+        raw = QString::fromUtf8(box.label.c_str()).trimmed();
+    }
+    if (raw.isEmpty()) {
+        return QString();
+    }
+
+    QString province;
+    QString tail;
+    const QString compact = strip_plate_separators(raw);
+    if (compact.isEmpty()) {
+        return QString();
+    }
+
+    const QChar first = compact.at(0);
+    if (is_chinese_plate_province(first)) {
+        province = QString(first);
+        tail = compact.mid(1);
+    } else {
+        int tokenLen = 0;
+        if (match_pinyin_province(compact, province, tokenLen)) {
+            tail = compact.mid(tokenLen);
+        } else {
+            // Fall back to readable ASCII if the province token is unknown.
+            QString fallback = compact;
+            if (fallback.size() > 2) {
+                fallback.insert(2, QLatin1Char(' '));
+            }
+            return fallback.left(12);
+        }
+    }
+
+    tail = strip_plate_separators(tail);
+    if (tail.isEmpty()) {
+        return province;
+    }
+
+    const QString city = tail.left(1);
+    const QString number = tail.mid(1);
+    if (number.isEmpty()) {
+        return province + city;
+    }
+    return province + city + QStringLiteral(" ") + number;
+}
+
+struct CachedRgb565Label {
+    int width = 0;
+    int height = 0;
+    std::vector<uint16_t> pixels;
+
+    bool empty() const {
+        return width <= 0 || height <= 0 || pixels.empty();
+    }
+
+    void clear() {
+        width = 0;
+        height = 0;
+        pixels.clear();
+    }
+};
+
+static bool plate_label_needs_red_suffix(int classId, const QString &text)
+{
+    return (classId == 3 || classId == 4) && text.size() > 1;
+}
+
+static QColor plate_label_suffix_color(int classId)
+{
+    if (classId == 3 || classId == 4) {
+        return QColor(220, 0, 0);
+    }
+    return QColor();
+}
+
+static CachedRgb565Label render_plate_label_rgb565(int fbW, const QString &text, int classId)
+{
+    CachedRgb565Label out;
+    if (text.isEmpty()) {
+        return out;
+    }
+
+    const int pixelSize = (fbW >= 1600) ? 36 : 26;
+    QFont font(QStringLiteral("Sans Serif"));
+    font.setPixelSize(pixelSize);
+    font.setBold(true);
+    QFontMetrics fm(font);
+
+    const int padX = 10;
+    const int padY = 5;
+    const int textW = std::max(1, fm.horizontalAdvance(text));
+    const int textH = std::max(1, fm.height());
+    const int labelW = textW + padX * 2;
+    const int labelH = textH + padY * 2;
+    if (labelW <= 0 || labelH <= 0) {
+        return out;
+    }
+
+    const PlateOsdStyle st = plate_osd_style(classId);
+    QColor bg = st.background;
+    bg.setAlpha(255);  // 预渲染为不透明 RGB565 块，避免每帧 alpha 混合。
+    QColor textColor = st.text;
+    textColor.setAlpha(255);
+
+    QImage img(labelW, labelH, QImage::Format_RGB32);
+    img.fill(bg.rgb());
+    QPainter painter(&img);
+    painter.setRenderHint(QPainter::TextAntialiasing, true);
+    painter.setRenderHint(QPainter::Antialiasing, false);
+    painter.setPen(QColor(0, 0, 0));
+    painter.drawRect(0, 0, labelW - 1, labelH - 1);
+    painter.setFont(font);
+    const int textY = padY + fm.ascent();
+    if (plate_label_needs_red_suffix(classId, text)) {
+        const QString prefix = text.left(text.size() - 1);
+        const QString suffix = text.right(1);
+        painter.setPen(textColor);
+        painter.drawText(padX, textY, prefix);
+        painter.setPen(plate_label_suffix_color(classId));
+        painter.drawText(padX + fm.horizontalAdvance(prefix), textY, suffix);
+    } else {
+        painter.setPen(textColor);
+        painter.drawText(padX, textY, text);
+    }
+    painter.end();
+
+    out.width = labelW;
+    out.height = labelH;
+    out.pixels.resize(static_cast<std::size_t>(labelW) * static_cast<std::size_t>(labelH));
+    for (int yy = 0; yy < labelH; ++yy) {
+        const QRgb *srcRow = reinterpret_cast<const QRgb *>(img.constScanLine(yy));
+        uint16_t *dstRow = out.pixels.data() + static_cast<std::size_t>(yy) * static_cast<std::size_t>(labelW);
+        for (int xx = 0; xx < labelW; ++xx) {
+            const QRgb px = srcRow[xx];
+            dstRow[xx] = rgb565(static_cast<uint8_t>(qRed(px)),
+                                static_cast<uint8_t>(qGreen(px)),
+                                static_cast<uint8_t>(qBlue(px)));
+        }
+    }
+    return out;
+}
+
+static void blit_plate_label_rgb565(void *fb, int pitchBytes, int fbW, int fbH,
+                                    int anchorX, int anchorY,
+                                    const CachedRgb565Label &label)
+{
+    if (!fb || label.empty()) {
+        return;
+    }
+
+    int x = anchorX - label.width / 2;
+    int y = anchorY - label.height - 8;
+    if (x < 2) x = 2;
+    if (x + label.width > fbW - 2) x = fbW - label.width - 2;
+    if (y < 2) y = anchorY + 8;
+    if (y + label.height > fbH - 2) y = fbH - label.height - 2;
+    if (x < 0 || y < 0) {
+        return;
+    }
+
+    const int startX = std::max(0, -x);
+    const int startY = std::max(0, -y);
+    const int endX = std::min(label.width, fbW - x);
+    const int endY = std::min(label.height, fbH - y);
+    if (startX >= endX || startY >= endY) {
+        return;
+    }
+
+    uint8_t *base = static_cast<uint8_t *>(fb);
+    const int copyPixels = endX - startX;
+    const std::size_t copyBytes = static_cast<std::size_t>(copyPixels) * sizeof(uint16_t);
+    for (int yy = startY; yy < endY; ++yy) {
+        const uint16_t *srcRow = label.pixels.data() +
+                static_cast<std::size_t>(yy) * static_cast<std::size_t>(label.width) + startX;
+        uint16_t *dstRow = reinterpret_cast<uint16_t *>(base + (y + yy) * pitchBytes) + x + startX;
+        std::memcpy(dstRow, srcRow, copyBytes);
+    }
+}
+
+struct StablePlateOsdSlot {
+    bool active = false;
+    uint64_t lastSeenNs = 0;
+    int sourceChannel = -999;
+    uint64_t sourceRevision = 0;
+    int classId = 0;
+    float x = 0.0f;
+    float y = 0.0f;
+    float w = 0.0f;
+    float h = 0.0f;
+    QString stableText;
+    QString pendingText;
+    int pendingCount = 0;
+    int missedFrames = 0;
+    QString cachedText;
+    int cachedClassId = -1000;
+    int cachedFbW = 0;
+    CachedRgb565Label cachedLabel;
+};
+
+static std::vector<StablePlateOsdSlot>& stable_plate_slots()
+{
+    static std::vector<StablePlateOsdSlot> plateSlots;
+    return plateSlots;
+}
+
+static float rect_iou(float ax, float ay, float aw, float ah,
+                      float bx, float by, float bw, float bh)
+{
+    const float x1 = std::max(ax, bx);
+    const float y1 = std::max(ay, by);
+    const float x2 = std::min(ax + aw, bx + bw);
+    const float y2 = std::min(ay + ah, by + bh);
+    const float iw = std::max(0.0f, x2 - x1);
+    const float ih = std::max(0.0f, y2 - y1);
+    const float inter = iw * ih;
+    const float uni = aw * ah + bw * bh - inter;
+    return uni > 1.0f ? inter / uni : 0.0f;
+}
+
+static int find_plate_slot(const NpuBox &box, const std::vector<bool> &used)
+{
+    auto &plateSlots = stable_plate_slots();
+    int best = -1;
+    float bestScore = 0.0f;
+    for (std::size_t i = 0; i < plateSlots.size(); ++i) {
+        if (i < used.size() && used[i]) continue;
+        const StablePlateOsdSlot &s = plateSlots[i];
+        if (!s.active) continue;
+        const float iou = rect_iou(box.x, box.y, box.w, box.h, s.x, s.y, s.w, s.h);
+        const float cx0 = box.x + box.w * 0.5f;
+        const float cy0 = box.y + box.h * 0.5f;
+        const float cx1 = s.x + s.w * 0.5f;
+        const float cy1 = s.y + s.h * 0.5f;
+        const float dist = std::sqrt((cx0 - cx1) * (cx0 - cx1) + (cy0 - cy1) * (cy0 - cy1));
+        const float diag = std::max(12.0f, std::sqrt(box.w * box.w + box.h * box.h));
+        const float score = iou + std::max(0.0f, 1.0f - dist / (diag * 1.6f)) * 0.25f;
+        if ((iou >= 0.12f || dist <= diag * 0.8f) && score > bestScore) {
+            bestScore = score;
+            best = static_cast<int>(i);
+        }
+    }
+    return best;
+}
+
+static int allocate_plate_slot()
+{
+    auto &plateSlots = stable_plate_slots();
+    constexpr std::size_t kMaxSlots = 4;
+    for (std::size_t i = 0; i < plateSlots.size(); ++i) {
+        if (!plateSlots[i].active) return static_cast<int>(i);
+    }
+    if (plateSlots.size() < kMaxSlots) {
+        plateSlots.emplace_back();
+        return static_cast<int>(plateSlots.size() - 1);
+    }
+    std::size_t oldest = 0;
+    for (std::size_t i = 1; i < plateSlots.size(); ++i) {
+        if (plateSlots[i].lastSeenNs < plateSlots[oldest].lastSeenNs) oldest = i;
+    }
+    return static_cast<int>(oldest);
+}
+
+static void clear_stable_plate_slots()
+{
+    stable_plate_slots().clear();
+}
+
+static void deactivate_plate_slot(StablePlateOsdSlot &slot)
+{
+    slot.active = false;
+    slot.stableText.clear();
+    slot.pendingText.clear();
+    slot.pendingCount = 0;
+    slot.missedFrames = 0;
+    slot.cachedText.clear();
+    slot.cachedClassId = -1000;
+    slot.cachedFbW = 0;
+    slot.cachedLabel.clear();
+}
+
+static void update_stable_plate_slots(const NpuFrameResult &result)
+{
+    auto &plateSlots = stable_plate_slots();
+    const uint64_t now = now_ns();
+    constexpr uint64_t kExpireNs = 250000000ULL;
+    constexpr int kConfirmCount = 3;
+    constexpr int kExpireMissedFrames = 2;
+
+    static int s_lastChannel = -1000;
+    static uint64_t s_lastRevision = 0;
+    static NpuTaskType s_lastTask = NpuTaskType::Pedestrian;
+    if (s_lastChannel != result.sourceChannel ||
+        s_lastRevision != result.sourceRevision ||
+        s_lastTask != result.task) {
+        clear_stable_plate_slots();
+        s_lastChannel = result.sourceChannel;
+        s_lastRevision = result.sourceRevision;
+        s_lastTask = result.task;
+    }
+
+    for (StablePlateOsdSlot &slot : plateSlots) {
+        if (slot.active && now - slot.lastSeenNs > kExpireNs) {
+            deactivate_plate_slot(slot);
+        }
+    }
+
+    std::vector<bool> used(plateSlots.size(), false);
+    for (const NpuBox &box : result.plates) {
+        const QString text = format_plate_text_for_osd(box);
+        if (text.isEmpty() || box.w <= 1.0f || box.h <= 1.0f) {
+            continue;
+        }
+
+        int idx = find_plate_slot(box, used);
+        if (idx < 0) idx = allocate_plate_slot();
+        if (idx < 0) continue;
+        if (static_cast<std::size_t>(idx) >= used.size()) used.resize(plateSlots.size(), false);
+        used[static_cast<std::size_t>(idx)] = true;
+
+        StablePlateOsdSlot &slot = plateSlots[static_cast<std::size_t>(idx)];
+        const bool wasActive = slot.active;
+        slot.active = true;
+        slot.lastSeenNs = now;
+        slot.sourceChannel = result.sourceChannel;
+        slot.sourceRevision = result.sourceRevision;
+        slot.classId = box.classId;
+        slot.missedFrames = 0;
+        if (!wasActive) {
+            slot.x = box.x;
+            slot.y = box.y;
+            slot.w = box.w;
+            slot.h = box.h;
+            slot.stableText = text;
+            slot.pendingText = text;
+            slot.pendingCount = kConfirmCount;
+        } else {
+            constexpr float kAlpha = 0.22f;
+            slot.x = slot.x * (1.0f - kAlpha) + box.x * kAlpha;
+            slot.y = slot.y * (1.0f - kAlpha) + box.y * kAlpha;
+            slot.w = slot.w * (1.0f - kAlpha) + box.w * kAlpha;
+            slot.h = slot.h * (1.0f - kAlpha) + box.h * kAlpha;
+            if (slot.pendingText == text) {
+                if (slot.pendingCount < kConfirmCount) ++slot.pendingCount;
+            } else {
+                slot.pendingText = text;
+                slot.pendingCount = 1;
+            }
+            if (slot.pendingCount >= kConfirmCount && slot.stableText != text) {
+                slot.stableText = text;
+                slot.cachedText.clear();
+                slot.cachedClassId = -1000;
+                slot.cachedFbW = 0;
+                slot.cachedLabel.clear();
+            }
+        }
+    }
+
+    for (std::size_t i = 0; i < plateSlots.size(); ++i) {
+        StablePlateOsdSlot &slot = plateSlots[i];
+        if (!slot.active) {
+            continue;
+        }
+        const bool seenThisFrame = i < used.size() && used[i];
+        if (seenThisFrame) {
+            slot.missedFrames = 0;
+            continue;
+        }
+        ++slot.missedFrames;
+        if (slot.missedFrames >= kExpireMissedFrames || now - slot.lastSeenNs > kExpireNs) {
+            deactivate_plate_slot(slot);
+        }
+    }
+}
+
+static void draw_stable_plate_labels(void *fb, int pitchBytes, int fbW, int fbH,
+                                     int sourceW, int sourceH)
+{
+    const uint64_t now = now_ns();
+    constexpr uint64_t kExpireNs = 250000000ULL;
+    constexpr int kDrawMissTolerance = 0;
+    for (StablePlateOsdSlot &slot : stable_plate_slots()) {
+        if (!slot.active || slot.stableText.isEmpty() ||
+            now - slot.lastSeenNs > kExpireNs ||
+            slot.missedFrames > kDrawMissTolerance) {
+            continue;
+        }
+        if (slot.cachedText != slot.stableText ||
+            slot.cachedClassId != slot.classId ||
+            slot.cachedFbW != fbW ||
+            slot.cachedLabel.empty()) {
+            slot.cachedLabel = render_plate_label_rgb565(fbW, slot.stableText, slot.classId);
+            slot.cachedText = slot.stableText;
+            slot.cachedClassId = slot.classId;
+            slot.cachedFbW = fbW;
+        }
+
+        const int x = scale_capture_x(slot.x, fbW, sourceW);
+        const int y = scale_capture_y(slot.y, fbH, sourceH);
+        const int w = std::max(2, scale_capture_x(slot.w, fbW, sourceW));
+        const int anchorX = x + w / 2;
+        const int anchorY = y;
+        blit_plate_label_rgb565(fb, pitchBytes, fbW, fbH,
+                                 anchorX, anchorY, slot.cachedLabel);
+    }
 }
 
 struct OsdStats {
     double rxFps = 0.0;
     double rgaFps = 0.0;
     double flipFps = 0.0;
+    double aiFps = 0.0;
+    int aiTargetFps = 0;
     double rgaAvgUs = 0.0;
+    double osdAvgUs = 0.0;
+    double plateOsdAvgUs = 0.0;
+    double npuPrepareAvgUs = 0.0;
     uint64_t failTotal = 0;
+    int cpuLoad = -1;
     int npuLoad = -1;
     double tempC = -1.0;
 };
 
-static int draw_system_osd(void *fb, int pitchBytes, int fbW, int fbH, const OsdStats &st)
+static const char* npu_status_text(const NpuFrameResult& result);
+static std::string osd_ascii_label(const std::string& label, const char* fallback);
+
+
+static int draw_perf_hud(void *fb, int pitchBytes, int fbW, int fbH, const OsdStats &st)
 {
-    const int scale = (fbW >= 1600) ? 3 : 2;
-    const int x = 24;
-    const int y = 24;
-    const int lineH = 9 * scale;
+    const int cardX = (fbW >= 1600) ? 16 : 10;
+    const int cardY = (fbW >= 1600) ? 14 : 8;
+    const int cardW = std::min(fbW - cardX - 8, 486);
+    if (!fb || cardW <= 0) return 0;
 
+    const int stripeW = 2;
+    const int padX = 8;
+    const int padY = 6;
+    const int rowH = 30;
+    const int glyphH = 18;
+    const int textYOffset = (rowH - glyphH) / 2;
+    const int cardH = padY * 2 + rowH * 3;
+
+    struct HudCache {
+        int fbW = 0;
+        int w = 0;
+        int h = 0;
+        uint64_t lastUpdateNs = 0;
+        std::vector<uint16_t> pixels;
+    };
+    static HudCache cache;
+
+    const uint64_t tNow = now_ns();
+    if (cache.fbW != fbW || cache.w != cardW || cache.h != cardH ||
+        cache.pixels.empty() || tNow - cache.lastUpdateNs >= 250000000ULL) {
+        cache.fbW = fbW;
+        cache.w = cardW;
+        cache.h = cardH;
+        cache.lastUpdateNs = tNow;
+        cache.pixels.assign(static_cast<size_t>(cardW) * static_cast<size_t>(cardH), rgb565(12, 18, 25));
+
+        const int pitch = cardW * static_cast<int>(sizeof(uint16_t));
+        const uint16_t bg = rgb565(12, 18, 25);
+        const uint16_t bg2 = rgb565(15, 23, 32);
+        const uint16_t border = rgb565(48, 60, 72);
+        const uint16_t divider = rgb565(32, 42, 54);
+        const uint16_t accent = rgb565(0, 214, 214);
+        const uint16_t label = rgb565(168, 182, 196);
+        const uint16_t dim = rgb565(118, 130, 144);
+        const uint16_t red = rgb565(255, 72, 72);
+
+        fill_rect_rgb565(cache.pixels.data(), pitch, cardW, cardH, 0, 0, cardW, cardH, bg);
+        fill_rect_rgb565(cache.pixels.data(), pitch, cardW, cardH, stripeW, 0, cardW - stripeW, cardH, bg2);
+        fill_rect_rgb565(cache.pixels.data(), pitch, cardW, cardH, 0, 0, stripeW, cardH, accent);
+        draw_rect_outline_rgb565(cache.pixels.data(), pitch, cardW, cardH, 0, 0, cardW, cardH, 1, border);
+        fill_rect_rgb565(cache.pixels.data(), pitch, cardW, cardH, stripeW, padY + rowH, cardW - stripeW, 1, divider);
+        fill_rect_rgb565(cache.pixels.data(), pitch, cardW, cardH, stripeW, padY + rowH * 2, cardW - stripeW, 1, divider);
+
+        const int x0 = stripeW + padX;
+        const int y0 = padY + textYOffset;
+        auto drawTextPx = [&](int row, int x, const char *text, uint16_t color) {
+            draw_hud_text_12x18_rgb565(cache.pixels.data(), pitch, cardW, cardH,
+                                        x0 + x, y0 + row * rowH,
+                                        text, color);
+        };
+        auto drawMetric = [&](int row,
+                              int keyX,
+                              int colonX,
+                              int valueX,
+                              const char *key,
+                              const char *value,
+                              uint16_t valueColor) {
+            drawTextPx(row, keyX, key, label);
+            drawTextPx(row, colonX, ":", dim);
+            drawTextPx(row, valueX, value, valueColor);
+        };
+
+        char buf[32];
+
+        constexpr int kRowLabelX = 0;
+        constexpr int kMetric1KeyX = 78;
+        constexpr int kMetric1ColonX = 117;
+        constexpr int kMetric1ValueX = 133;
+        constexpr int kMetric2KeyX = 196;
+        constexpr int kMetric2ColonX = 235;
+        constexpr int kMetric2ValueX = 251;
+        constexpr int kMetric3KeyX = 330;
+        constexpr int kMetric3ColonX = 369;
+        constexpr int kMetric3ValueX = 385;
+
+        // SYS row: system resources. TMP value keeps a small gap before C for readability.
+        drawTextPx(0, kRowLabelX, "SYS", accent);
+        hud_format_percent(buf, sizeof(buf), st.cpuLoad);
+        drawMetric(0, kMetric1KeyX, kMetric1ColonX, kMetric1ValueX,
+                   "CPU", buf, st.cpuLoad >= 0 ? hud_load_color(st.cpuLoad) : dim);
+        hud_format_percent(buf, sizeof(buf), st.npuLoad);
+        drawMetric(0, kMetric2KeyX, kMetric2ColonX, kMetric2ValueX,
+                   "NPU", buf, st.npuLoad >= 0 ? hud_load_color(st.npuLoad) : dim);
+        hud_format_temp(buf, sizeof(buf), st.tempC);
+        drawMetric(0, kMetric3KeyX, kMetric3ColonX, kMetric3ValueX,
+                   "TMP", buf, st.tempC >= 0.0 ? hud_temp_color(st.tempC) : dim);
+
+        // FPS row: keep RX label for the PCIe receive path summary; no repeated row unit text.
+        drawTextPx(1, kRowLabelX, "FPS", accent);
+        hud_format_fps(buf, sizeof(buf), st.rxFps);
+        drawMetric(1, kMetric1KeyX, kMetric1ColonX, kMetric1ValueX,
+                   "RX", buf, hud_fps_color(st.rxFps, 55.0));
+        // Show only real-time AI FPS in the compact HDMI HUD. The target FPS remains
+        // available on the Qt AI page, where detailed inference diagnostics belong.
+        hud_format_fps(buf, sizeof(buf), st.aiFps);
+        drawMetric(1, kMetric2KeyX, kMetric2ColonX, kMetric2ValueX,
+                   "AI", buf, hud_fps_color(st.aiFps, st.aiTargetFps > 0 ? static_cast<double>(st.aiTargetFps) : 0.0));
+        hud_format_fps(buf, sizeof(buf), st.flipFps);
+        drawMetric(1, kMetric3KeyX, kMetric3ColonX, kMetric3ValueX,
+                   "DSP", buf, hud_fps_color(st.flipFps, 55.0));
+
+        // LAT row: use ms as the implicit unit; avoid widening the row title.
+        drawTextPx(2, kRowLabelX, "LAT", accent);
+        hud_format_ms(buf, sizeof(buf), st.rgaAvgUs);
+        drawMetric(2, kMetric1KeyX, kMetric1ColonX, kMetric1ValueX,
+                   "RGA", buf, hud_latency_color(st.rgaAvgUs / 1000.0, 4.0, 8.0));
+        hud_format_ms(buf, sizeof(buf), st.npuPrepareAvgUs);
+        drawMetric(2, kMetric2KeyX, kMetric2ColonX, kMetric2ValueX,
+                   "NP", buf, hud_latency_color(st.npuPrepareAvgUs / 1000.0, 8.0, 14.0));
+        hud_format_ms(buf, sizeof(buf), st.osdAvgUs);
+        drawMetric(2, kMetric3KeyX, kMetric3ColonX, kMetric3ValueX,
+                   "OSD", buf, hud_latency_color(st.osdAvgUs / 1000.0, 4.0, 8.0));
+
+        if (st.failTotal > 0) {
+            fill_rect_rgb565(cache.pixels.data(), pitch, cardW, cardH, cardW - 54, 0,
+                              54, 14, red);
+            draw_hud_text_rgb565(cache.pixels.data(), pitch, cardW, cardH,
+                                  cardW - 48, 2,
+                                  "FAIL", 1, rgb565(255, 255, 255));
+        }
+    }
+
+    blit_rgb565_block(fb, pitchBytes, fbW, fbH, cardX, cardY, cache.w, cache.h, cache.pixels);
+    return cardY + cache.h + 6;
+}
+
+static void draw_perf_hud_with_ai_summary(void *fb, int pitchBytes, int fbW, int fbH,
+                                          const OsdStats &stats,
+                                          const NpuFrameResult *result)
+{
+    const int y0 = draw_perf_hud(fb, pitchBytes, fbW, fbH, stats);
+    if (!result || result->error.empty()) {
+        return;
+    }
+
+    const int scale = (fbW >= 1600) ? 2 : 1;
+    const int x0 = (fbW >= 1600) ? 22 : 12;
     const uint16_t shadow = rgb565(0, 0, 0);
-    const uint16_t green = rgb565(0, 255, 0);
-    const uint16_t white = rgb565(255, 255, 255);
-    const uint16_t yellow = rgb565(255, 220, 0);
-    const uint16_t red = rgb565(255, 40, 40);
-
-    char line[96];
-    draw_text_shadow_rgb565(fb, pitchBytes, fbW, fbH, x, y,
-                            "RK3568 PCIE RGA DRM", scale, yellow, shadow);
-
-    snprintf(line, sizeof(line), "RX   %.1F", st.rxFps);
-    draw_text_shadow_rgb565(fb, pitchBytes, fbW, fbH, x, y + lineH * 1, line, scale, green, shadow);
-
-    snprintf(line, sizeof(line), "RGA  %.1F", st.rgaFps);
-    draw_text_shadow_rgb565(fb, pitchBytes, fbW, fbH, x, y + lineH * 2, line, scale, green, shadow);
-
-    snprintf(line, sizeof(line), "FLIP %.1F", st.flipFps);
-    draw_text_shadow_rgb565(fb, pitchBytes, fbW, fbH, x, y + lineH * 3, line, scale, green, shadow);
-
-    if (st.npuLoad >= 0) snprintf(line, sizeof(line), "NPU  %d%%", st.npuLoad);
-    else snprintf(line, sizeof(line), "NPU  NA");
-    draw_text_shadow_rgb565(fb, pitchBytes, fbW, fbH, x, y + lineH * 4, line, scale, white, shadow);
-
-    if (st.tempC >= 0.0) snprintf(line, sizeof(line), "TEMP %.1FC", st.tempC);
-    else snprintf(line, sizeof(line), "TEMP NA");
-    draw_text_shadow_rgb565(fb, pitchBytes, fbW, fbH, x, y + lineH * 5, line, scale, white, shadow);
-
-    snprintf(line, sizeof(line), "FAIL %" PRIu64, st.failTotal);
-    draw_text_shadow_rgb565(fb, pitchBytes, fbW, fbH, x, y + lineH * 6, line, scale,
-                            st.failTotal ? red : white, shadow);
-
-    // 返回系统状态块之后的安全起始位置。AI 状态不再使用独立的硬编码 Y 偏移，
-    // 避免不同字体缩放下覆盖 TEMP / FAIL 行。
-    return y + lineH * 7 + 6;
+    const uint16_t red = rgb565(255, 72, 72);
+    const std::string err = osd_ascii_label(result->error, "ERR");
+    draw_text_shadow_rgb565(fb, pitchBytes, fbW, fbH, x0, y0 + 4,
+                            err.c_str(), scale, red, shadow);
 }
 
 static int scale_capture_x(float x, int fbW, int sourceW)
@@ -330,43 +1245,10 @@ static std::string osd_ascii_label(const std::string& label, const char* fallbac
     return out.empty() ? fallback : out;
 }
 
-static void draw_runtime_osd(void *fb, int pitchBytes, int fbW, int fbH,
-                             const OsdStats &stats,
-                             const NpuFrameResult *result)
-{
-    const int y0 = draw_system_osd(fb, pitchBytes, fbW, fbH, stats);
-    if (!result) {
-        return;
-    }
-
-    const int scale = (fbW >= 1600) ? 2 : 1;
-    const int lineH = 9 * scale;
-    const int x0 = 24;
-    const uint16_t shadow = rgb565(0, 0, 0);
-    const uint16_t green = rgb565(0, 255, 0);
-    const uint16_t yellow = rgb565(255, 220, 0);
-    const uint16_t red = rgb565(255, 48, 48);
-
-    char line[96];
-    snprintf(line, sizeof(line), "%s %s FPS %.1F P %d D %d",
-             npu_status_text(*result),
-             npuTaskShortName(result->task),
-             result->fps,
-             static_cast<int>(result->plates.size()),
-             static_cast<int>(result->pedestrians.size()));
-    draw_text_shadow_rgb565(fb, pitchBytes, fbW, fbH, x0, y0, line, scale,
-                            result->ready ? green : yellow, shadow);
-
-    if (!result->error.empty()) {
-        const std::string err = osd_ascii_label(result->error, "ERR");
-        draw_text_shadow_rgb565(fb, pitchBytes, fbW, fbH, x0, y0 + lineH,
-                                err.c_str(), scale, red, shadow);
-    }
-}
-
 static void draw_npu_boxes(void *fb, int pitchBytes, int fbW, int fbH,
                            int sourceW, int sourceH,
-                           const NpuFrameResult &result)
+                           const NpuFrameResult &result,
+                           uint64_t *plateLabelNs)
 {
     if (!result.enabled || !result.ready) {
         return;
@@ -375,20 +1257,22 @@ static void draw_npu_boxes(void *fb, int pitchBytes, int fbW, int fbH,
     const int scale = (fbW >= 1600) ? 2 : 1;
     const int lineH = 9 * scale;
     const uint16_t shadow = rgb565(0, 0, 0);
-    const uint16_t yellow = rgb565(255, 220, 0);
     const uint16_t red = rgb565(255, 48, 48);
     const uint16_t white = rgb565(255, 255, 255);
 
+    update_stable_plate_slots(result);
     for (const NpuBox& box : result.plates) {
         const int x = scale_capture_x(box.x, fbW, sourceW);
         const int y = scale_capture_y(box.y, fbH, sourceH);
         const int w = std::max(2, scale_capture_x(box.w, fbW, sourceW));
         const int h = std::max(2, scale_capture_y(box.h, fbH, sourceH));
-        draw_rect_outline_rgb565(fb, pitchBytes, fbW, fbH, x, y, w, h, 3, yellow);
-
-        std::string label = "PLATE " + osd_ascii_label(box.label.empty() ? box.text : box.label, "PLATE");
-        const int ty = std::max(2, y - lineH - 2);
-        draw_text_shadow_rgb565(fb, pitchBytes, fbW, fbH, x, ty, label.c_str(), scale, yellow, shadow);
+        const PlateOsdStyle st = plate_osd_style(box.classId);
+        draw_rect_outline_rgb565(fb, pitchBytes, fbW, fbH, x, y, w, h, 3, st.frameColor);
+    }
+    const uint64_t plateLabelBeginNs = now_ns();
+    draw_stable_plate_labels(fb, pitchBytes, fbW, fbH, sourceW, sourceH);
+    if (plateLabelNs) {
+        *plateLabelNs += now_ns() - plateLabelBeginNs;
     }
 
     for (const NpuBox& box : result.pedestrians) {
@@ -697,6 +1581,8 @@ void DrmRgaDisplay::stopDisplay()
 bool DrmRgaDisplay::isRunning() const { return m_running.load(); }
 void DrmRgaDisplay::setOsdEnabled(bool enable) { m_osdEnabled.store(enable); }
 bool DrmRgaDisplay::osdEnabled() const { return m_osdEnabled.load(); }
+void DrmRgaDisplay::setPerfHudEnabled(bool enable) { m_perfHudEnabled.store(enable); }
+bool DrmRgaDisplay::perfHudEnabled() const { return m_perfHudEnabled.load(); }
 void DrmRgaDisplay::setDisplayMode(int mode) { m_displayMode.store(mode); }
 int DrmRgaDisplay::displayMode() const { return m_displayMode.load(); }
 
@@ -879,6 +1765,9 @@ void DrmRgaDisplay::workerMain()
         uint64_t lastSensorNs = 0;
         uint64_t readCnt = 0, validCnt = 0, rgaCnt = 0, flipCnt = 0, failCnt = 0, rgaNsSum = 0;
         uint64_t failTotal = 0;
+        rkqt::perf::AverageCounter osdCounter;
+        rkqt::perf::AverageCounter plateOsdCounter;
+        rkqt::perf::AverageCounter npuPrepareCounter;
         uint64_t npuCropFailTotal = 0;
         OsdStats osdStats {};
         std::vector<uint8_t> npuTileBuffer(640u * 360u * PCIE_BPP);
@@ -904,27 +1793,6 @@ void DrmRgaDisplay::workerMain()
             const VideoTileRoi sourceRoi = videoRouteRoi(route);
             const int sourceChannel = videoRouteChannel(route);
 
-            if (sourceChannel > 0 && m_npuWorker && m_npuWorker->wantsFrame()) {
-                const int cropRet = rga_crop_scale_rgb565(
-                            frame.data, PCIE_FRAME_W, PCIE_FRAME_H, sourceRoi,
-                            npuTileBuffer.data(), 640, 360, 640, 360);
-                if (cropRet == 0) {
-                    m_npuWorker->submitFrame(validCnt,
-                                             npuTileBuffer.data(),
-                                             npuTileBuffer.size(),
-                                             640,
-                                             360,
-                                             sourceChannel,
-                                             routeRevision);
-                } else {
-                    ++npuCropFailTotal;
-                    if (npuCropFailTotal <= 10) {
-                        qDebug() << "RGA crop for NPU failed ret=" << cropRet
-                                 << "route=" << videoRouteKey(route);
-                    }
-                }
-            }
-
             int back = front ^ 1;
             uint64_t r0 = now_ns();
             int r = rga_crop_scale_rgb565(frame.data,
@@ -946,41 +1814,59 @@ void DrmRgaDisplay::workerMain()
             rgaCnt++;
             rgaNsSum += (r1 - r0);
 
-            if (m_osdEnabled.load()) {
-                uint64_t sensorNow = now_ns();
-                if (sensorNow - lastSensorNs >= 1000000000ULL || lastSensorNs == 0) {
-                    osdStats.npuLoad = read_npu_load_percent();
-                    osdStats.tempC = read_soc_temp_c();
-                    lastSensorNs = sensorNow;
-                }
-                NpuFrameResult ai;
-                bool hasMatchingAi = false;
-                if (sourceChannel > 0) {
-                    ai = latestNpuResult();
-                    hasMatchingAi = ai.sourceChannel == sourceChannel &&
-                            ai.sourceRevision == routeRevision;
+            uint64_t sensorNow = now_ns();
+            if (sensorNow - lastSensorNs >= 1000000000ULL || lastSensorNs == 0) {
+                const rkqt::system::SystemSnapshot snapshot = rkqt::system::SystemMonitor::readSnapshot();
+                osdStats.cpuLoad = snapshot.cpuLoadPercent;
+                osdStats.npuLoad = snapshot.npuLoadPercent;
+                osdStats.tempC = snapshot.socTempC;
+                lastSensorNs = sensorNow;
+            }
+
+            NpuFrameResult ai = latestNpuResult();
+            const bool hasMatchingAi = ai.sourceChannel == sourceChannel &&
+                    ai.sourceRevision == routeRevision;
+            if (ai.enabled) {
+                osdStats.aiFps = ai.fps;
+                osdStats.aiTargetFps = ai.targetFps;
+            } else {
+                osdStats.aiFps = 0.0;
+                osdStats.aiTargetFps = 0;
+            }
+
+            const bool perfHudEnabled = m_perfHudEnabled.load();
+            const bool aiOverlayEnabled = m_osdEnabled.load();
+            if (perfHudEnabled || aiOverlayEnabled || m_displayMode.load() == 1) {
+                const uint64_t osdBeginNs = now_ns();
+                uint64_t plateLabelNsThisFrame = 0;
+
+                if (perfHudEnabled) {
+                    draw_perf_hud_with_ai_summary(drm.fb[back].map, drm.fb[back].pitch,
+                                                  drm.modeW, drm.modeH, osdStats,
+                                                  &ai);
+
+                    char routeLabel[16];
+                    if (sourceChannel > 0) {
+                        snprintf(routeLabel, sizeof(routeLabel), "CAM %d", sourceChannel);
+                    } else {
+                        snprintf(routeLabel, sizeof(routeLabel), "ALL");
+                    }
+                    const int routeScale = drm.modeW >= 1600 ? 2 : 1;
+                    draw_text_shadow_rgb565(drm.fb[back].map, drm.fb[back].pitch,
+                                            drm.modeW, drm.modeH,
+                                            drm.modeW - 110 * routeScale, 24,
+                                            routeLabel, routeScale,
+                                            rgb565(0, 255, 0), rgb565(0, 0, 0));
                 }
 
-                draw_runtime_osd(drm.fb[back].map, drm.fb[back].pitch,
-                                 drm.modeW, drm.modeH, osdStats,
-                                 hasMatchingAi ? &ai : nullptr);
-
-                char routeLabel[16];
-                if (sourceChannel > 0) {
-                    snprintf(routeLabel, sizeof(routeLabel), "CAM %d", sourceChannel);
-                } else {
-                    snprintf(routeLabel, sizeof(routeLabel), "ALL");
-                }
-                const int routeScale = drm.modeW >= 1600 ? 2 : 1;
-                draw_text_shadow_rgb565(drm.fb[back].map, drm.fb[back].pitch,
-                                        drm.modeW, drm.modeH,
-                                        drm.modeW - 110 * routeScale, 24,
-                                        routeLabel, routeScale,
-                                        rgb565(0, 255, 0), rgb565(0, 0, 0));
-
-                if (hasMatchingAi) {
+                if (aiOverlayEnabled && hasMatchingAi) {
+                    // 总览模式提交给 NPU 的输入已经缩小到 640x360；
+                    // 绘制时将该坐标系直接拉伸映射回 1920x1080 HDMI。
+                    const int aiSourceW = 640;
+                    const int aiSourceH = 360;
                     draw_npu_boxes(drm.fb[back].map, drm.fb[back].pitch,
-                                   drm.modeW, drm.modeH, 640, 360, ai);
+                                   drm.modeW, drm.modeH, aiSourceW, aiSourceH, ai,
+                                   &plateLabelNsThisFrame);
                 }
 
                 if (m_displayMode.load() == 1) {
@@ -991,6 +1877,11 @@ void DrmRgaDisplay::workerMain()
                     draw_rect_outline_rgb565(drm.fb[back].map, drm.fb[back].pitch, drm.modeW, drm.modeH,
                                               1100, 300, 520, 300, 4, yellow);
                 }
+
+                osdCounter.addNs(now_ns() - osdBeginNs);
+                if (plateLabelNsThisFrame > 0) {
+                    plateOsdCounter.addNs(plateLabelNsThisFrame);
+                }
             }
 
             bool usedSetCrtc = false;
@@ -998,6 +1889,23 @@ void DrmRgaDisplay::workerMain()
                 Q_UNUSED(usedSetCrtc);
                 front = back;
                 flipCnt++;
+
+                // 显示链路优先：当前帧完成 RGA 和 DRM flip 之后，才准备 NPU 输入。
+                // 这样九宫格总览/单路高清输入的 RGA 缩小不会阻塞当前 HDMI 帧提交。
+                // NPU worker 仍使用 latest-only 单槽机制，推理慢时覆盖旧待处理帧，
+                // 只影响后续 AI 结果刷新，不应直接反压当前显示输出。
+                if (m_npuWorker && m_npuWorker->wantsFrame()) {
+                    const uint64_t npuPrepareBeginNs = now_ns();
+                    prepare_and_submit_npu_frame(m_npuWorker.get(),
+                                                 frame.data,
+                                                 validCnt,
+                                                 sourceRoi,
+                                                 sourceChannel,
+                                                 routeRevision,
+                                                 npuTileBuffer,
+                                                 npuCropFailTotal);
+                    npuPrepareCounter.addNs(now_ns() - npuPrepareBeginNs);
+                }
             } else {
                 failCnt++;
                 failTotal++;
@@ -1017,10 +1925,19 @@ void DrmRgaDisplay::workerMain()
                 osdStats.rgaFps = rgaFps;
                 osdStats.flipFps = flipFps;
                 osdStats.rgaAvgUs = rgaAvgUs;
+                osdStats.osdAvgUs = osdCounter.averageUs();
+                osdStats.plateOsdAvgUs = plateOsdCounter.averageUs();
+                osdStats.npuPrepareAvgUs = npuPrepareCounter.averageUs();
                 osdStats.failTotal = failTotal;
 
                 emit statsUpdated(readFps, validFps, rgaFps, flipFps, rgaAvgUs,
-                                  int(failCnt), osdStats.npuLoad, osdStats.tempC);
+                                  int(failCnt),
+                                  osdStats.cpuLoad,
+                                  osdStats.npuLoad,
+                                  osdStats.tempC,
+                                  osdStats.osdAvgUs,
+                                  osdStats.plateOsdAvgUs,
+                                  osdStats.npuPrepareAvgUs);
                 {
                     const NpuFrameResult ai = latestNpuResult();
                     QString aiStatus;
@@ -1030,17 +1947,13 @@ void DrmRgaDisplay::workerMain()
                     int pedestrianCount = static_cast<int>(ai.pedestrians.size());
                     if (!ai.enabled) {
                         aiStatus = "off";
-                    } else if (sourceChannel == 0) {
-                        aiStatus = "paused: overview";
-                        aiReady = false;
-                        aiFps = 0.0;
-                        plateCount = 0;
-                        pedestrianCount = 0;
                     } else if (!ai.error.empty()) {
                         aiStatus = QString::fromStdString(ai.error);
                     } else if (ai.ready) {
-                        aiStatus = QString("CH%1 %2 ok %3ms")
-                                .arg(sourceChannel)
+                        aiStatus = QString("%1 %2 ok %3ms")
+                                .arg(sourceChannel > 0
+                                     ? QString("CH%1").arg(sourceChannel)
+                                     : QStringLiteral("ALL"))
                                 .arg(QString::fromLatin1(npuTaskKey(ai.task)))
                                 .arg(ai.lastMs, 0, 'f', 1);
                     } else {
@@ -1055,6 +1968,9 @@ void DrmRgaDisplay::workerMain()
                 }
 
                 readCnt = validCnt = rgaCnt = flipCnt = failCnt = rgaNsSum = 0;
+                osdCounter.reset();
+                plateOsdCounter.reset();
+                npuPrepareCounter.reset();
                 lastNs = now;
             }
         }

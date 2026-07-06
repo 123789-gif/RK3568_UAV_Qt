@@ -35,6 +35,12 @@ struct NpuFrameResult
     double fps = 0.0;
     double lastMs = 0.0;
     double preMs = 0.0;
+    double copyMs = 0.0;
+    double rknnInputMs = 0.0;
+    double rknnRunMs = 0.0;
+    double rknnOutputMs = 0.0;
+    double rknnPostMs = 0.0;
+    uint64_t rknnRunCount = 0;
     double plateMs = 0.0;
     double pedMs = 0.0;
     int processed = 0;
