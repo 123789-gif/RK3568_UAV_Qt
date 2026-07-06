@@ -27,8 +27,12 @@ public:
     void stopDisplay();
     bool isRunning() const;
 
+    // AI 结果叠加层：检测框、车牌大字标签等。性能 HUD 独立显示。
     void setOsdEnabled(bool enable);
     bool osdEnabled() const;
+
+    void setPerfHudEnabled(bool enable);
+    bool perfHudEnabled() const;
 
     void setDisplayMode(int mode);
     int displayMode() const;
@@ -64,8 +68,12 @@ signals:
                       double flipFps,
                       double rgaAvgUs,
                       int failCount,
+                      int cpuLoad,
                       int npuLoad,
-                      double tempC);
+                      double tempC,
+                      double osdAvgUs,
+                      double plateOsdAvgUs,
+                      double npuPrepareAvgUs);
     void aiStatsUpdated(bool enabled,
                         bool ready,
                         double fps,
@@ -83,6 +91,7 @@ private:
     std::atomic<bool> m_stopReq {false};
 
     std::atomic<bool> m_osdEnabled {true};
+    std::atomic<bool> m_perfHudEnabled {true};
     std::atomic<int>  m_displayMode {0};
     // [63:8] route revision, [7:0] VideoRoute value.
     std::atomic<uint64_t> m_videoRouteState {(1ULL << 8)};

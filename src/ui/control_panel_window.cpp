@@ -527,7 +527,7 @@ ControlPanelWindow::ControlPanelWindow(QWidget *parent)
 {
     ui->setupUi(this);
 
-    setWindowTitle("RK3568 Dual Display + PTZ Console");
+    setWindowTitle(QStringLiteral("智能交通感知系统控制台"));
 
     m_display = new DrmRgaDisplay(this);
     m_ptzCapture = new PtzCaptureWorker(this);
@@ -678,7 +678,7 @@ void ControlPanelWindow::setupControlUi()
     root->setContentsMargins(14, 12, 14, 10);
     root->setSpacing(8);
 
-    QLabel *title = new QLabel("RK3568 双屏异构显示与 PTZ 控制台", central);
+    QLabel *title = new QLabel(QStringLiteral("智能交通感知系统控制台"), central);
     title->setObjectName("titleLabel");
     title->setAlignment(Qt::AlignCenter);
     root->addWidget(title);
@@ -769,7 +769,7 @@ QWidget *ControlPanelWindow::createVideoPage()
     grid->setVerticalSpacing(9);
 
     m_btnStartStop = new QPushButton("启动/停止 HDMI", displayGroup);
-    m_btnOsd = new QPushButton("OSD 开/关", displayGroup);
+    m_btnOsd = new QPushButton("AI结果OSD 开/关", displayGroup);
 
     m_resolutionCombo = new QComboBox(displayGroup);
     m_resolutionCombo->addItem("1920x1080@60", QSize(1920, 1080));
@@ -797,7 +797,7 @@ QWidget *ControlPanelWindow::createVideoPage()
     QVBoxLayout *noteLayout = new QVBoxLayout(noteGroup);
     noteLayout->setContentsMargins(10, 18, 10, 8);
     QLabel *note = new QLabel(
-                "总览：HDMI显示完整九宫格，NPU暂停。\n"
+                "总览：HDMI显示完整九宫格，并将完整九宫格画面送入NPU。\n"
                 "CH1~CH9：裁出对应640×360单路，放大到HDMI全屏，并仅将该路送入NPU。",
                 noteGroup);
     note->setWordWrap(true);
@@ -815,7 +815,7 @@ QWidget *ControlPanelWindow::createVideoPage()
     m_videoRouteGroup = new QButtonGroup(routeGroup);
     m_videoRouteGroup->setExclusive(true);
 
-    QPushButton *overviewButton = new QPushButton("九宫格总览（NPU暂停）", routeGroup);
+    QPushButton *overviewButton = new QPushButton(QStringLiteral("九宫格总览（NPU全图）"), routeGroup);
     overviewButton->setObjectName("videoRouteButton");
     overviewButton->setCheckable(true);
     overviewButton->setChecked(true);
@@ -837,7 +837,7 @@ QWidget *ControlPanelWindow::createVideoPage()
     }
     routeLayout->addLayout(channelGrid, 1);
 
-    m_videoRouteSummaryLabel = new QLabel("当前应用：九宫格总览；NPU暂停", routeGroup);
+    m_videoRouteSummaryLabel = new QLabel(QStringLiteral("当前应用：九宫格总览；NPU全图"), routeGroup);
     m_videoRouteSummaryLabel->setObjectName("ptzState");
     m_videoRouteSummaryLabel->setAlignment(Qt::AlignCenter);
     m_videoRouteSummaryLabel->setMinimumHeight(40);
@@ -1241,6 +1241,9 @@ QWidget *ControlPanelWindow::createAiPage()
     grid->setContentsMargins(12, 18, 12, 10);
     grid->setHorizontalSpacing(8);
     grid->setVerticalSpacing(7);
+    // 压缩标签列，为三个触控数值框保留稳定且完整的显示宽度。
+    grid->setColumnMinimumWidth(0, 104);
+    grid->setColumnStretch(0, 0);
     grid->setColumnStretch(1, 1);
 
     m_npuEnableCheck = new QCheckBox("启用 NPU 推理", configGroup);
@@ -1252,14 +1255,14 @@ QWidget *ControlPanelWindow::createAiPage()
                             static_cast<int>(NpuTaskType::PlateCascade));
     m_npuTaskCombo->setMinimumHeight(46);
 
-    QLabel *sourceValue = new QLabel("视频显示页选定 CH1~CH9（总览暂停）", configGroup);
+    QLabel *sourceValue = new QLabel(QStringLiteral("视频显示页选定输入：总览全图或CH1~CH9"), configGroup);
     sourceValue->setObjectName("ptzState");
     sourceValue->setMinimumHeight(38);
 
     auto makeTouchButton = [configGroup](const QString &text) {
         QPushButton *button = new QPushButton(text, configGroup);
         button->setObjectName("touchAdjustButton");
-        button->setFixedSize(54, 46);
+        button->setFixedSize(50, 46);
         button->setAutoRepeat(true);
         button->setAutoRepeatDelay(350);
         button->setAutoRepeatInterval(120);
@@ -1271,15 +1274,21 @@ QWidget *ControlPanelWindow::createAiPage()
         spin->setReadOnly(true);
         spin->setAlignment(Qt::AlignCenter);
         spin->setObjectName("touchValueSpin");
-        spin->setMinimumSize(104, 46);
+        spin->setMinimumSize(120, 46);
+        spin->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
         spin->setFocusPolicy(Qt::NoFocus);
     };
 
     m_npuFpsSpin = new QSpinBox(configGroup);
-    m_npuFpsSpin->setRange(1, 15);
+    m_npuFpsSpin->setRange(NPU_TARGET_FPS_MIN, NPU_TARGET_FPS_MAX);
     m_npuFpsSpin->setSingleStep(1);
-    m_npuFpsSpin->setValue(5);
+    m_npuFpsSpin->setValue(NPU_TARGET_FPS_DEFAULT);
     m_npuFpsSpin->setSuffix(" fps");
+    m_npuFpsSpin->setToolTip(
+                QStringLiteral("可设置范围：%1～%2 fps；默认：%3 fps")
+                .arg(NPU_TARGET_FPS_MIN)
+                .arg(NPU_TARGET_FPS_MAX)
+                .arg(NPU_TARGET_FPS_DEFAULT));
     configureTouchSpin(m_npuFpsSpin);
 
     m_confSpin = new QDoubleSpinBox(configGroup);
@@ -1308,7 +1317,7 @@ QWidget *ControlPanelWindow::createAiPage()
         QWidget *adjustWidget = new QWidget(configGroup);
         QHBoxLayout *adjustLayout = new QHBoxLayout(adjustWidget);
         adjustLayout->setContentsMargins(0, 0, 0, 0);
-        adjustLayout->setSpacing(6);
+        adjustLayout->setSpacing(5);
         adjustLayout->addWidget(minusButton);
         adjustLayout->addWidget(spin, 1);
         adjustLayout->addWidget(plusButton);
@@ -1499,7 +1508,7 @@ void ControlPanelWindow::onOsdClicked()
         m_display->setOsdEnabled(m_osdEnabled);
     }
 
-    m_lastAction = QString("OSD %1").arg(m_osdEnabled ? "ON" : "OFF");
+    m_lastAction = QString("AI结果OSD %1").arg(m_osdEnabled ? "ON" : "OFF");
     updateStatusText();
 }
 
@@ -1533,7 +1542,7 @@ void ControlPanelWindow::onApplyVideoConfigClicked()
         m_videoRouteSummaryLabel->setText(isSingleChannelRoute(route)
                 ? QString("当前应用：CH%1；HDMI全屏 + NPU单路")
                   .arg(videoRouteChannel(route))
-                : QStringLiteral("当前应用：九宫格总览；NPU暂停"));
+                : QStringLiteral("当前应用：九宫格总览；NPU全图"));
     }
 
     m_lastAction = QString("应用显示配置: %1x%2 mode=%3 route=%4")
@@ -1716,12 +1725,9 @@ void ControlPanelWindow::updateAiPanel(const NpuFrameResult &result)
     m_aiDropped = result.dropped;
 
     const VideoRoute route = m_display ? m_display->videoRoute() : VideoRoute::Overview;
-    const bool pausedByOverview = result.enabled && !isSingleChannelRoute(route);
 
     if (!result.enabled) {
         m_aiStatus = QStringLiteral("off");
-    } else if (pausedByOverview) {
-        m_aiStatus = QStringLiteral("paused: overview");
     } else if (!result.error.empty()) {
         m_aiStatus = QString::fromStdString(result.error);
     } else if (result.ready) {
@@ -1736,19 +1742,26 @@ void ControlPanelWindow::updateAiPanel(const NpuFrameResult &result)
         const int resultCount = m_aiPlateCount + m_aiPedestrianCount;
         m_aiRuntimeLabel->setText(
                     QStringLiteral("状态：%1｜输入：%2｜任务：%3\n"
-                                   "实际FPS：%4 / 目标%5｜耗时：%6 ms｜预处理：%7 ms\n"
-                                   "本帧结果：%8｜已处理：%9｜覆盖丢帧：%10\n"
-                                   "最近错误：%11")
+                                   "实际FPS：%4 / 目标%5｜总耗时：%6 ms｜拷贝：%7 ms｜预处理：%8 ms\n"
+                                   "RKNN in/run/out/post：%9/%10/%11/%12 ms｜runs=%13\n"
+                                   "本帧结果：%14｜已处理：%15｜覆盖丢帧：%16\n"
+                                   "最近错误：%17")
                     .arg(m_aiStatus)
                     .arg(isSingleChannelRoute(route)
                          ? QString("CH%1").arg(videoRouteChannel(route))
-                         : QStringLiteral("总览(暂停)"))
+                         : QStringLiteral("总览全图"))
                     .arg(aiTaskDisplayName(result.task))
-                    .arg(pausedByOverview ? 0.0 : result.fps, 0, 'f', 1)
+                    .arg(result.fps, 0, 'f', 1)
                     .arg(result.targetFps)
                     .arg(result.lastMs, 0, 'f', 1)
+                    .arg(result.copyMs, 0, 'f', 2)
                     .arg(result.preMs, 0, 'f', 1)
-                    .arg(pausedByOverview ? 0 : resultCount)
+                    .arg(result.rknnInputMs, 0, 'f', 1)
+                    .arg(result.rknnRunMs, 0, 'f', 1)
+                    .arg(result.rknnOutputMs, 0, 'f', 1)
+                    .arg(result.rknnPostMs, 0, 'f', 1)
+                    .arg(static_cast<qulonglong>(result.rknnRunCount))
+                    .arg(resultCount)
                     .arg(result.processed)
                     .arg(result.dropped)
                     .arg(result.error.empty()
@@ -1803,7 +1816,7 @@ void ControlPanelWindow::appendAiResultRows(const NpuFrameResult &result)
     const QString frameText = QString::number(result.frameId);
     const QString taskText = result.sourceChannel > 0
             ? QString("CH%1 %2").arg(result.sourceChannel).arg(aiTaskDisplayName(result.task))
-            : aiTaskDisplayName(result.task);
+            : QStringLiteral("ALL %1").arg(aiTaskDisplayName(result.task));
     const QString latencyText = QString::number(result.lastMs, 'f', 1);
 
     for (const RowData &row : rows) {
@@ -1851,7 +1864,8 @@ void ControlPanelWindow::loadAiSettings()
     const int taskValue = settings.value(
                 QStringLiteral("ai/task"),
                 static_cast<int>(NpuTaskType::Pedestrian)).toInt();
-    const int fps = settings.value(QStringLiteral("ai/target_fps"), 5).toInt();
+    const int fps = settings.value(QStringLiteral("ai/target_fps"),
+                                   NPU_TARGET_FPS_DEFAULT).toInt();
     const double confidence = settings.value(QStringLiteral("ai/confidence"), 0.50).toDouble();
     const double nms = settings.value(QStringLiteral("ai/nms"), 0.45).toDouble();
 
@@ -1861,7 +1875,9 @@ void ControlPanelWindow::loadAiSettings()
         taskIndex = 0;
     }
     m_npuTaskCombo->setCurrentIndex(taskIndex);
-    m_npuFpsSpin->setValue(qBound(1, fps, 15));
+    m_npuFpsSpin->setValue(qBound(NPU_TARGET_FPS_MIN,
+                                      fps,
+                                      NPU_TARGET_FPS_MAX));
     m_confSpin->setValue(qBound(0.10, confidence, 0.95));
     m_nmsSpin->setValue(qBound(0.10, nms, 0.90));
 }
@@ -1900,8 +1916,12 @@ void ControlPanelWindow::onDisplayStatsUpdated(double readFps,
                                                double flipFps,
                                                double rgaAvgUs,
                                                int failCount,
+                                               int cpuLoad,
                                                int npuLoad,
-                                               double tempC)
+                                               double tempC,
+                                               double osdAvgUs,
+                                               double plateOsdAvgUs,
+                                               double npuPrepareAvgUs)
 {
     m_readFps = readFps;
     m_validFps = validFps;
@@ -1909,8 +1929,12 @@ void ControlPanelWindow::onDisplayStatsUpdated(double readFps,
     m_flipFps = flipFps;
     m_rgaAvgUs = rgaAvgUs;
     m_failCount = failCount;
+    m_cpuLoad = cpuLoad;
     m_npuLoad = npuLoad;
     m_tempC = tempC;
+    m_osdAvgUs = osdAvgUs;
+    m_plateOsdAvgUs = plateOsdAvgUs;
+    m_npuPrepareAvgUs = npuPrepareAvgUs;
 
     updateStatusText();
 }
@@ -2726,6 +2750,7 @@ void ControlPanelWindow::updateFanUi()
 
 void ControlPanelWindow::updateStatusText()
 {
+    QString cpuText = (m_cpuLoad >= 0) ? QString::number(m_cpuLoad) + "%" : "NA";
     QString npuText = (m_npuLoad >= 0) ? QString::number(m_npuLoad) + "%" : "NA";
     QString tempText = (m_tempC >= 0.0) ? QString::number(m_tempC, 'f', 1) + "C" : "NA";
 
@@ -2739,7 +2764,7 @@ void ControlPanelWindow::updateStatusText()
     const VideoRoute route = m_display ? m_display->videoRoute() : VideoRoute::Overview;
     const QString routeText = QString::fromLatin1(videoRouteKey(route));
     const QString aiShort = m_aiEnabled
-            ? (!isSingleChannelRoute(route) ? "PAUSE" : (m_aiReady ? "ON" : "WAIT"))
+            ? (m_aiReady ? "ON" : "WAIT")
             : "OFF";
     const QString aiTaskShort = m_aiTask == NpuTaskType::PlateCascade ? "PLATE" : "PED";
 
@@ -2772,8 +2797,9 @@ void ControlPanelWindow::updateStatusText()
             .arg(m_display ? m_display->outputHeight() : 0);
     detail += QString("视频选路 : %1\n").arg(routeText);
     detail += QString("NPU输入  : %1\n")
-            .arg(isSingleChannelRoute(route) ? routeText : QStringLiteral("PAUSED"));
-    detail += QString("OSD显示  : %1\n").arg(m_osdEnabled ? "ON" : "OFF");
+            .arg(isSingleChannelRoute(route) ? routeText : QStringLiteral("ALL"));
+    detail += QString("性能HUD  : ON\n");
+    detail += QString("AI结果OSD: %1\n").arg(m_osdEnabled ? "ON" : "OFF");
     detail += QString("当前页面 : %1\n").arg(m_currentPage);
     detail += QString("运行时间 : %1 s\n\n").arg(m_seconds);
 
@@ -2782,6 +2808,9 @@ void ControlPanelWindow::updateStatusText()
     detail += QString("HDMI rga_fps   : %1\n").arg(m_rgaFps, 0, 'f', 1);
     detail += QString("HDMI flip_fps  : %1\n").arg(m_flipFps, 0, 'f', 1);
     detail += QString("HDMI rga_avg_us: %1\n").arg(m_rgaAvgUs, 0, 'f', 1);
+    detail += QString("HDMI osd_avg_us: %1\n").arg(m_osdAvgUs, 0, 'f', 0);
+    detail += QString("HDMI plate_us  : %1\n").arg(m_plateOsdAvgUs, 0, 'f', 0);
+    detail += QString("NPU prepare_us : %1\n").arg(m_npuPrepareAvgUs, 0, 'f', 0);
     detail += QString("HDMI fail_cnt  : %1\n\n").arg(m_failCount);
 
     detail += QString("PTZ配置     : %1\n")
@@ -2818,6 +2847,7 @@ void ControlPanelWindow::updateStatusText()
     detail += QString("ai_ped    : %1\n").arg(m_aiPedestrianCount);
     detail += QString("ai_status : %1\n").arg(m_aiStatus);
 
+    detail += QString("cpu_load  : %1\n").arg(cpuText);
     detail += QString("npu_load  : %1\n").arg(npuText);
     detail += QString("temp      : %1\n").arg(tempText);
     detail += QString("最近操作 : %1\n").arg(m_lastAction);

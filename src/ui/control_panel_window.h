@@ -57,8 +57,12 @@ private slots:
                                double flipFps,
                                double rgaAvgUs,
                                int failCount,
+                               int cpuLoad,
                                int npuLoad,
-                               double tempC);
+                               double tempC,
+                               double osdAvgUs,
+                               double plateOsdAvgUs,
+                               double npuPrepareAvgUs);
     void onDisplayAiStatsUpdated(bool enabled,
                                  bool ready,
                                  double fps,
@@ -203,8 +207,12 @@ private:
     double m_flipFps = 0.0;
     double m_rgaAvgUs = 0.0;
     int m_failCount = 0;
+    int m_cpuLoad = -1;
     int m_npuLoad = -1;
     double m_tempC = -1.0;
+    double m_osdAvgUs = 0.0;
+    double m_plateOsdAvgUs = 0.0;
+    double m_npuPrepareAvgUs = 0.0;
     bool m_aiEnabled = false;
     bool m_aiReady = false;
     double m_aiFps = 0.0;

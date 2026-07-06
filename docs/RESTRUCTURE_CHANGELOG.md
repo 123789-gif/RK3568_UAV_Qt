@@ -63,3 +63,135 @@
 - PTZ 配置文件新增 `last_successful_profile`，用于自动模式下两台设备同时在线时保持确定性；
 - `check_runtime.sh` 在没有 `/dev/videoN` 时改为警告而非阻止启动，使应用可先启动再等待相机热插入；
 - 未修改 PCIe、FPGA、九宫格选路、NPU、RGA/DRM 主显示链路。
+
+# 第七阶段：OSD 排版与 NPU 吞吐上限优化
+
+- 系统状态 OSD 不再与 AI 状态 OSD 分别使用独立硬编码纵坐标；系统状态块返回下一可用 Y 坐标，AI 状态从该位置继续绘制；
+- 保留原有 PCIe/RGA/DRM 状态、NPU 状态、检测框和目标标签，仅修正左上角文字重叠，不改变检测框坐标映射；
+- 新增统一的 `NPU_TARGET_FPS_MIN/DEFAULT/MAX` 常量，目标推理帧率范围调整为 1～30 FPS，默认值调整为 15 FPS；
+- Qt 控件、配置钳位、INI 读取和结果默认值统一使用相同帧率常量，避免界面值与后端实际值不一致；
+- 保留单槽 latest-only 调度；NPU 忙时新帧覆盖旧等待帧，不引入任务队列和延迟堆积；
+- 未修改 PCIe、PTZ、模型文件、推理后处理、RGA 裁剪和部署脚本。
+
+# 第八阶段：NPU 绝对截止时间调度修正
+
+- 将目标推理帧率节流从“整数毫秒间隔 + 以上次实际提交时刻重新计时”改为纳秒级绝对截止时间调度；
+- 使用 `nextSubmitNs` 保留理想时间轴相位，源帧率与目标帧率不可整除时允许相邻源帧间隔交替，长期平均值接近目标帧率；
+- `wantsFrame()` 仅在 RGA 裁剪前做低成本到期预检查，`submit()` 在来源、尺寸和数据长度验证通过后原子占用时间槽；
+- 增加 1 ms 截止时间容差，避免 60 Hz 帧边界抖动导致 15/20/25/30 FPS 分别退化到较低离散档位；
+- 长时间无源帧或处理停顿后跳过已错过的截止点，不突发补交历史任务；
+- 配置、任务、启停或输入通道变化时重置调度时间轴；保留现有 latest-only 单槽覆盖机制；
+- 未修改模型、预处理、后处理、PCIe、RGA、DRM、OSD、PTZ和部署脚本。
+
+# 第九阶段：NPU 60 FPS 性能探测与 AI 参数布局优化
+
+- 将统一目标推理帧率上限从 30 FPS 扩展到 60 FPS，最小值仍为 1 FPS，默认值仍为 15 FPS；
+- Qt 控件范围、配置钳位和 INI 读取继续共用 `NPU_TARGET_FPS_MIN/DEFAULT/MAX`，避免界面与后端范围不一致；
+- “目标推理帧率”标签不再附带范围说明，范围改由 SpinBox 约束和工具提示表达；
+- AI 参数网格固定紧凑标签列，三个数值框统一扩大并允许横向伸展，`− / +` 按钮和间距适度收紧，解决 DSI 页面数值显示不完整；
+- 60 FPS 仅作为吞吐上限测试范围，默认配置不变；未修改绝对截止时间调度、latest-only 邮箱、模型、PCIe、RGA、DRM、OSD 和 PTZ。
+
+# 第十阶段：九宫格总览全图 AI 与界面标题更新
+
+- Qt 主窗口标题和页面顶部标题统一改为“智能交通感知系统控制台”；
+- 九宫格总览模式不再强制暂停 NPU，AI 开启时支持总览全图推理；
+- CH1～CH9 单路模式仍保持原有 640×360 ROI 裁剪和全屏显示路径；
+- `NpuInferenceWorker` 允许 sourceChannel=0 表示“总览全图”这一有效输入源，保留 source revision 过滤旧结果；
+- HDMI OSD 支持总览模式和单路模式下的检测框绘制；
+- Qt AI 页面和底部状态栏不再把总览显示为暂停，改为“总览全图 / ALL”；
+- 未修改 NPU 模型、后处理算法、目标 FPS 调度、PCIe 协议、PTZ 和部署脚本。
+
+# 第十一阶段：九宫格总览 AI 轻量输入与显示优先修复
+
+## 修改目标
+
+上一阶段的总览全图 AI 直接将完整 1920×1080 RGB565 帧同步提交给 NPU worker。该路径会在显示线程中产生大块内存复制和预处理压力，九宫格 AI 低帧率运行时也可能拖低 RX/RGA/FLIP 统计并引入偶发撕裂。
+
+## 修改内容
+
+- 九宫格总览仍支持 AI 推理，但不再把完整 1920×1080 帧提交给 NPU；
+- 总览模式下先使用 RGA 将完整九宫格缩小为 640×360 RGB565 轻量输入，再提交给 NPU worker；
+- CH1～CH9 单路模式继续沿用原有 640×360 ROI 裁剪路径；
+- 总览和单路模式的检测框均按 640×360 NPU 输入坐标映射回 HDMI 输出；
+- 该修改不改变 NPU 调度器、模型、PCIe 协议、DRM 输出时序和 PTZ 逻辑。
+
+## 预期效果
+
+- 九宫格总览 + NPU 低帧率推理时，RX/RGA/FLIP 不应再跟随 AI FPS 明显下降；
+- HDMI 九宫格显示应恢复“显示优先”，不应再因完整 1080P AI 输入复制而出现明显背压或偶发撕裂；
+- 总览 AI 的小目标效果可能弱于单路 ROI 推理，这是 640×360 全局缩小输入的预期代价。
+
+### 本轮显示优先与车牌OSD修正
+
+- 1080P 全图/九宫格总览 AI 仍通过 RGA 缩小为 640×360 后送入 NPU，适用于 PCIe 输入为单路 1080P 高清画面的测试。
+- NPU 输入准备调整为 DRM flip 之后执行，当前 HDMI 帧优先提交，降低 AI 输入缩放对显示关键路径的影响。
+- 补全 RGB565 OSD 5×7 字库中的 B/H/J/O/Q/V/W/Y/Z，修复车牌识别拼音标签中部分字母显示成占位符或错误形状的问题。
+
+
+# 第十二阶段：车牌 OSD 颜色、中文格式和稳定显示
+
+- 车牌检测框颜色改为按车牌类型显示：蓝牌、绿牌、黄牌、警牌和领馆牌分别使用对应颜色风格；未知类型使用安全 fallback。
+- 车牌识别字符不再使用拼音标签直接绘制，显示层优先使用识别输出的中文车牌文本，并将 fallback 拼音省份映射为中文简称。
+- 车牌 OSD 统一格式化为“浙A 14FH3”形式，省份简称与城市字母紧邻，后续号码与前缀之间增加空格。
+- 车牌字符结果改为绘制在车牌框上方，字号放大，并使用 Qt 字体渲染以支持中文省份简称。
+- 增加最多 4 个车牌 OSD 稳定槽，使用 IoU/中心距离匹配、坐标 EMA 平滑、连续 3 次确认后更新稳定字符，减少识别字符抖动和视觉闪烁。
+- 车牌稳定槽在 source channel、source revision、任务变化或超时后清理，避免通道切换后旧标签残留。
+- 未修改模型文件、车牌后处理算法、PCIe协议、RGA/DRM输出时序、PTZ逻辑和部署脚本。
+
+# 第十三阶段：性能分阶段打点与车牌 OSD 缓存优化
+
+- 新增 `src/system/system_monitor.*`，将 NPU load 与 SoC 温度读取从 `DrmRgaDisplay` 中拆出，作为后续系统性能监测模块的统一入口。
+- 新增 `src/system/perf_counters.*`，提供轻量平均耗时计数器，避免显示线程中继续散落临时统计变量。
+- HDMI 左上角 OSD 新增 `OSD/PL/NP` 微秒级平均耗时：分别用于观察整体 OSD 绘制、车牌稳定标签绘制和 NPU 输入准备耗时。
+- AI 页面新增拷贝、RKNN input/run/output/post 与 run 次数显示，便于区分帧复制、预处理、纯 NPU 运行、输出获取和后处理瓶颈。
+- 车牌中文稳定标签不再每帧重新通过 Qt 字体渲染；稳定文本、车牌类型或输出宽度变化时才重建 QImage 缓存，普通帧只做 RGB565 blit。
+- 保留现有连续确认、位置平滑、中文省份格式和按车牌类型着色逻辑，不修改模型、后处理算法、PCIe、PTZ 和部署脚本。
+
+## perf_hud_split_plate_osd_opt_v1
+
+- HDMI 左上角性能 HUD 与 AI 结果 OSD 语义分离：性能 HUD 默认保留，`AI结果OSD` 开关只控制检测框、车牌稳定标签等业务叠加。
+- HDMI 性能 HUD 收敛为三类摘要：`SYS`、`FPS`、`LAT`，用于现场快速判断 CPU/NPU/温度、PCIe/AI/显示帧率和 RGA/NP/OSD/PL 耗时。
+- 车牌稳定标签缓存从 ARGB QImage 每帧 alpha 混合，改为预渲染不透明 RGB565 标签块并按行 memcpy/blit，降低多车牌时 PL 线性增长开销。
+- 系统监测增加 `/proc/stat` CPU 使用率采样，并继续保留 NPU load 和 SoC 温度读取。
+- Qt“系统状态/详细状态”增加性能 HUD、AI结果OSD、OSD/PL/NP 耗时和 CPU load 信息，便于区分显示叠加、NPU输入准备和 RKNN 本体耗时。
+
+## perf_hud_readability_v1
+
+- 新增 HUD 专用 8x12 ASCII 点阵绘制路径，补齐 `/` 等性能指标必要符号。
+- HDMI 左上角 HUD 改为深色信息卡片、左侧青色状态条和 SYS/FPS/LAT 三行固定布局。
+- HUD 数字、指标名和分组标签采用不同颜色层级，异常状态使用黄色/红色提示。
+- HUD 每 250ms 更新 RGB565 缓存图层，显示帧只执行 blit，保持较低 OSD 开销。
+
+### Perf HUD Polish v2
+
+- HDMI 左上角性能 HUD 改为更紧凑的三行网格布局，缩小背景卡片、内边距和左侧状态条。
+- 指标统一采用 `KEY: VALUE` 形式，CPU/RX/RGA 等首列字段、冒号和数值列固定坐标对齐。
+- FPS 行右侧统一显示 `(FPS)`，LAT 行右侧统一显示 `(MS)`，减少每个字段重复单位造成的视觉噪声。
+- HUD 继续使用轻量字库缓存路径，但原生 8x12 绘制改为软边缘像素混合，降低 `/`、`%`、`:`、数字等字符的锯齿感。
+- 继续保持 250 ms HUD 缓存刷新和每帧 RGB565 blit，避免重新引入明显 OSD 开销。
+
+### Perf HUD Layout Trim v3
+
+- HDMI 左上角默认性能 HUD 隐藏 `PL`，保留 `RGA/NP/OSD` 三个 LAT 行指标。
+- `SYS/FPS/LAT` 三行改为严格三列对齐：第一列 `CPU/RX/RGA`，第二列 `NPU/AI/NP`，第三列 `TMP/DSP/OSD`。
+- HUD 背景卡片宽度缩小，`PL` 继续保留在内部 `OsdStats::plateOsdAvgUs` 统计中，便于后续放到系统详细状态或调试 HUD。
+
+### Perf HUD Compact RX v4
+
+- HUD 字体从 8x12 原生显示提升到约 12x18 的轻量软边缘显示，增强 HDMI 现场可读性。
+- FPS 行去掉末尾 `(FPS)`，LAT 行改为 `LAT MS`，HUD 横向布局更紧凑。
+- `TMP` 温度值增加 `C` 前的空格，例如 `62.0 C`。
+- 保留 `RX` 标签，不改动 PCIe 驱动；后续驱动提供 producer FPS 后可切换数据源。
+
+### Perf HUD Grid Balance v5
+
+- HDMI 左上角 HUD 进行小范围回调：去掉 `LAT MS` 中的 `MS`，LAT 行默认以毫秒为隐含单位，避免左侧行标题过长。
+- FPS 行的 `AI` 字段只显示实时推理帧率，不再显示目标帧率；目标帧率仍保留在 Qt 的 AI 推理页面。
+- 字体保持上一版约 12x18 的 HUD 尺寸，但三行行距扩大约 1.2 倍，改善字体放大后的拥挤感。
+- 三列横向坐标重新收紧，继续保持 `CPU/RX/RGA`、`NPU/AI/NP`、`TMP/DSP/OSD` 纵向对齐。
+
+
+## HUD / Plate OSD Fix v6
+- Fixed unequal visual row blocks in the HDMI HUD by using explicit equal row geometry.
+- Reduced stale multi-plate label persistence after scene switches by expiring unmatched stable slots quickly.
+- Added per-character suffix coloring for police and consulate plate labels.

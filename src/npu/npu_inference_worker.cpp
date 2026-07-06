@@ -30,8 +30,18 @@ struct FrameCopy
     int sourceChannel = 0;
     int width = 0;
     int height = 0;
+    double copyMs = 0.0;
     std::vector<uint8_t> data;
 };
+
+constexpr int64_t kNanosecondsPerSecond = 1000000000LL;
+constexpr int64_t kSubmitToleranceNs = 1000000LL;
+
+static int64_t steadyNs()
+{
+    using namespace std::chrono;
+    return duration_cast<nanoseconds>(steady_clock::now().time_since_epoch()).count();
+}
 
 static int64_t steadyMs()
 {
@@ -39,10 +49,26 @@ static int64_t steadyMs()
     return duration_cast<milliseconds>(steady_clock::now().time_since_epoch()).count();
 }
 
+static int64_t targetPeriodNs(int targetFps)
+{
+    targetFps = std::max(1, targetFps);
+    return (kNanosecondsPerSecond + targetFps / 2) / targetFps;
+}
+
 static double elapsedMs(std::chrono::steady_clock::time_point begin)
 {
     using namespace std::chrono;
     return duration<double, std::milli>(steady_clock::now() - begin).count();
+}
+
+
+static void accumulateStageTiming(NpuFrameResult& result, const demo::vision::RknnStageTiming& timing)
+{
+    result.rknnInputMs += timing.input_ms;
+    result.rknnRunMs += timing.run_ms;
+    result.rknnOutputMs += timing.output_ms;
+    result.rknnPostMs += timing.post_ms;
+    result.rknnRunCount += timing.run_count;
 }
 
 static bool fileExists(const std::string& path)
@@ -242,7 +268,7 @@ struct NpuInferenceWorker::Impl
 {
     std::atomic<bool> running {false};
     std::atomic<bool> stopReq {false};
-    std::atomic<int64_t> lastSubmitMs {0};
+    std::atomic<int64_t> nextSubmitNs {0};
     std::atomic<int> droppedFrames {0};
     std::atomic<int> processed {0};
     std::atomic<bool> modelsLoaded {false};
@@ -308,7 +334,7 @@ struct NpuInferenceWorker::Impl
             requestedConfig = next;
         }
 
-        lastSubmitMs.store(0);
+        nextSubmitNs.store(0);
 
         if (!next.enabled) {
             std::lock_guard<std::mutex> lk(pendingMutex);
@@ -362,7 +388,7 @@ struct NpuInferenceWorker::Impl
         sourceChannel = std::max(0, std::min(9, sourceChannel));
         inputSourceChannel.store(sourceChannel);
         inputSourceRevision.store(sourceRevision);
-        lastSubmitMs.store(0);
+        nextSubmitNs.store(0);
 
         {
             std::lock_guard<std::mutex> lk(pendingMutex);
@@ -382,8 +408,7 @@ struct NpuInferenceWorker::Impl
         state.sourceRevision = sourceRevision;
         state.modelsReady = modelsLoaded.load() &&
                 loadedTaskValue.load() == static_cast<int>(cfg.task);
-        state.status = sourceChannel == 0 ? "paused_overview"
-                                         : (cfg.enabled ? "pending" : "off");
+        state.status = cfg.enabled ? "pending" : "off";
         state.processed = processed.load();
         state.dropped = droppedFrames.load();
 
@@ -395,13 +420,47 @@ struct NpuInferenceWorker::Impl
     bool wantsFrame() const
     {
         const NpuTaskConfig cfg = configSnapshot();
-        if (!cfg.enabled || !running.load() || inputSourceChannel.load() == 0) {
+        if (!cfg.enabled || !running.load()) {
             return false;
         }
-        const int64_t now = steadyMs();
-        const int64_t last = lastSubmitMs.load();
-        const int64_t minInterval = std::max<int64_t>(1, 1000 / cfg.targetFps);
-        return now - last >= minInterval;
+
+        const int64_t nowNs = steadyNs();
+        const int64_t deadlineNs = nextSubmitNs.load(std::memory_order_acquire);
+        return deadlineNs == 0 || nowNs + kSubmitToleranceNs >= deadlineNs;
+    }
+
+    bool claimFrameSlot(int targetFps, int64_t nowNs)
+    {
+        const int64_t periodNs = targetPeriodNs(targetFps);
+        int64_t deadlineNs = nextSubmitNs.load(std::memory_order_acquire);
+
+        for (;;) {
+            int64_t nextDeadlineNs = 0;
+            if (deadlineNs == 0) {
+                // 首帧立即接收，并从实际首帧时刻建立理想时间轴。
+                nextDeadlineNs = nowNs + periodNs;
+            } else {
+                if (nowNs + kSubmitToleranceNs < deadlineNs) {
+                    return false;
+                }
+
+                // 沿原理想时间轴推进，而不是从本次实际提交时刻重新计时。
+                // 当源帧率与目标帧率不可整除时，提交间隔可在相邻源帧之间
+                // 交替，从而保持长期平均帧率；若生产者长时间停顿，则跳过
+                // 已错过的截止点，避免恢复后突发补交旧任务。
+                nextDeadlineNs = deadlineNs;
+                do {
+                    nextDeadlineNs += periodNs;
+                } while (nextDeadlineNs <= nowNs);
+            }
+
+            if (nextSubmitNs.compare_exchange_weak(deadlineNs,
+                                                   nextDeadlineNs,
+                                                   std::memory_order_acq_rel,
+                                                   std::memory_order_acquire)) {
+                return true;
+            }
+        }
     }
 
     bool ensureModels(NpuTaskType task)
@@ -454,22 +513,22 @@ struct NpuInferenceWorker::Impl
         if (!cfg.enabled || !running.load() || !rgb565 || width <= 0 || height <= 0) {
             return;
         }
-        if (sourceChannel <= 0 || sourceChannel != inputSourceChannel.load() ||
+        if (sourceChannel < 0 || sourceChannel > 9 ||
+            sourceChannel != inputSourceChannel.load() ||
             sourceRevision != inputSourceRevision.load()) {
             return;
         }
 
-        const int64_t now = steadyMs();
-        const int64_t last = lastSubmitMs.load();
-        const int64_t minInterval = std::max<int64_t>(1, 1000 / cfg.targetFps);
-        if (now - last < minInterval) {
-            return;
-        }
-        lastSubmitMs.store(now);
-
         const std::size_t need = static_cast<std::size_t>(width) *
                                  static_cast<std::size_t>(height) * 2u;
         if (bytes < need) {
+            return;
+        }
+
+        // wantsFrame() 仅用于在RGA裁剪前做低成本预检查；真正的时间槽
+        // 在数据与来源均验证通过后由这里原子占用，避免双重判断使用不同
+        // 时间基准，也避免无效帧推进调度时间轴。
+        if (!claimFrameSlot(cfg.targetFps, steadyNs())) {
             return;
         }
 
@@ -479,7 +538,9 @@ struct NpuInferenceWorker::Impl
         copy.sourceRevision = sourceRevision;
         copy.width = width;
         copy.height = height;
+        const auto copyBegin = std::chrono::steady_clock::now();
         copy.data.assign(rgb565, rgb565 + need);
+        copy.copyMs = elapsedMs(copyBegin);
 
         {
             std::lock_guard<std::mutex> lk(pendingMutex);
@@ -551,7 +612,7 @@ struct NpuInferenceWorker::Impl
     void process(const FrameCopy& frame)
     {
         const NpuTaskConfig cfg = configSnapshot();
-        if (!cfg.enabled || frame.sourceChannel <= 0 ||
+        if (!cfg.enabled || frame.sourceChannel < 0 || frame.sourceChannel > 9 ||
             frame.sourceChannel != inputSourceChannel.load() ||
             frame.sourceRevision != inputSourceRevision.load()) {
             return;
@@ -559,6 +620,7 @@ struct NpuInferenceWorker::Impl
 
         NpuFrameResult result;
         result.frameId = frame.id;
+        result.copyMs = frame.copyMs;
         result.sourceChannel = frame.sourceChannel;
         result.sourceRevision = frame.sourceRevision;
         result.task = cfg.task;
@@ -627,7 +689,10 @@ struct NpuInferenceWorker::Impl
                                                     &ocrMs,
                                                     &ocrTiming);
                 result.plateMs += ocrMs;
+                accumulateStageTiming(result, ocrTiming);
             }
+
+            accumulateStageTiming(result, plateTiming);
 
             const std::size_t plateCount = std::min(plateBoxesOut.size(), plateTexts.size());
             for (std::size_t i = 0; i < plateCount; ++i) {
@@ -657,6 +722,7 @@ struct NpuInferenceWorker::Impl
                                             demo::DEFAULT_PED_TOPK_NMS,
                                             &result.pedMs,
                                             &pedTiming);
+            accumulateStageTiming(result, pedTiming);
             for (std::size_t i = 0; i < pedBoxesIn.size(); ++i) {
                 demo::Rect2f orig;
                 demo::vision::convert_input_box_to_orig(pedBoxesIn[i], orig,
