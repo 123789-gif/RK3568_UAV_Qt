@@ -9,9 +9,12 @@ TEMPLATE = app
 SOURCES += \
     src/app/main.cpp \
     src/ui/control_panel_window.cpp \
+    src/ui/violation_preview_widget.cpp \
     src/video/drm_rga_display.cpp \
     src/pcie/pcie_frame_receiver.cpp \
     src/npu/npu_inference_worker.cpp \
+    src/npu/pedestrian_violation_engine.cpp \
+    src/npu/violation_rule_config.cpp \
     src/npu/vision.cpp \
     src/ptz/ptz_camera_profile.cpp \
     src/ptz/v4l2_device_detector.cpp \
@@ -24,11 +27,14 @@ SOURCES += \
 
 HEADERS += \
     src/ui/control_panel_window.h \
+    src/ui/violation_preview_widget.h \
     src/video/drm_rga_display.h \
     src/video/video_route_config.h \
     src/pcie/pcie_frame_receiver.h \
     src/pcie/pango_pci_uapi.h \
     src/npu/npu_inference_worker.h \
+    src/npu/pedestrian_violation_engine.h \
+    src/npu/violation_rule_config.h \
     src/npu/npu_task_config.h \
     src/npu/npu_result_types.h \
     src/npu/demo_types.h \
@@ -97,8 +103,10 @@ DISTFILES += \
     assets/models/ped_det.rknn \
     assets/models/plate_det.rknn \
     assets/models/plate_reco.rknn \
+    assets/models/yolov8_car.rknn \
     assets/models/SHA256SUMS \
     assets/config/runtime.env \
+    assets/config/pedestrian_violation.ini \
     assets/driver/rk3568-kernel-6.1.99/pango_pci_driver.ko \
     assets/driver/rk3568-kernel-6.1.99/SHA256SUMS \
     assets/driver/rk3568-kernel-6.1.99/DRIVER_INFO.txt \

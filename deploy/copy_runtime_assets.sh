@@ -14,7 +14,7 @@ mkdir -p "$OUTPUT_DIR/models" "$OUTPUT_DIR/config" "$OUTPUT_DIR/driver"
 
 cp -f "$PROJECT_ROOT"/assets/models/*.rknn "$OUTPUT_DIR/models/"
 cp -f "$PROJECT_ROOT/assets/models/SHA256SUMS" "$OUTPUT_DIR/models/"
-cp -f "$PROJECT_ROOT/assets/config/runtime.env" "$OUTPUT_DIR/config/"
+cp -f "$PROJECT_ROOT"/assets/config/* "$OUTPUT_DIR/config/"
 
 for file in pango_pci_driver.ko SHA256SUMS DRIVER_INFO.txt; do
     [[ -f "$DRIVER_SOURCE_DIR/$file" ]] || {

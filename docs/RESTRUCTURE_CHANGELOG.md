@@ -195,3 +195,11 @@
 - Fixed unequal visual row blocks in the HDMI HUD by using explicit equal row geometry.
 - Reduced stale multi-plate label persistence after scene switches by expiring unmatched stable slots quickly.
 - Added per-character suffix coloring for police and consulate plate labels.
+
+## Traffic Violation Vehicle Detect v1
+
+- Added `yolov8_car.rknn` as a fourth RKNN model for vehicle detection.
+- Added AI task `TrafficViolation` / “违法检测（行人+车辆）”. In this first stage it runs pedestrian detection and vehicle detection on the same preprocessed frame, then publishes both result sets.
+- Added vehicle result vectors and OSD drawing for `car / bus / van / truck` boxes.
+- Kept PCIe, RGA/DRM display, PTZ control, plate stable OSD and driver logic unchanged.
+- This stage does not yet enable crosswalk ROI, traffic-light state, or violation-rule judgment; those are reserved for a later rules patch.

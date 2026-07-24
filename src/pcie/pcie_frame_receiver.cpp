@@ -17,11 +17,24 @@ constexpr std::uint32_t kPioStartStopOffset = 0x000U;
 constexpr std::uint32_t kPioStartValue = 0xffffffe5U;
 constexpr std::uint32_t kPioStopValue = 0xffffff00U;
 
-std::string errnoMessage(const char *operation)
+std::string errnoMessageWithCode(const char *operation, int errorCode)
 {
     std::ostringstream os;
-    os << operation << " failed: errno=" << errno << " (" << std::strerror(errno) << ')';
+    os << operation << " failed: errno=" << errorCode
+       << " (" << std::strerror(errorCode) << ')';
     return os.str();
+}
+
+std::string errnoMessage(const char *operation)
+{
+    return errnoMessageWithCode(operation, errno);
+}
+
+void assignError(std::string *target, const std::string &message)
+{
+    if (target != nullptr) {
+        *target = message;
+    }
 }
 
 } // namespace
@@ -160,6 +173,227 @@ bool PcieFrameReceiver::isReady() const
 bool PcieFrameReceiver::pioControlActive() const
 {
     return m_streamStarted && m_barRegs != nullptr;
+}
+
+bool PcieFrameReceiver::getFpgaCaps(FpgaCaps &caps, std::string *errorMessage) const
+{
+    caps = FpgaCaps {};
+    if (m_deviceFd < 0) {
+        assignError(errorMessage, "FPGA GET_CAPS called while PCIe device is closed");
+        return false;
+    }
+
+    pango_pcie::FpgaCapsIoctl raw {};
+    raw.struct_size = sizeof(raw);
+    raw.abi_version = pango_pcie::kFpgaControlAbiVersion;
+
+    if (::ioctl(m_deviceFd, pango_pcie::kFpgaGetCapsCmd, &raw) < 0) {
+        assignError(errorMessage, errnoMessage("ioctl PANGO_FPGA_GET_CAPS"));
+        return false;
+    }
+
+    caps.valid = true;
+    caps.ipVersion = raw.ip_version;
+    caps.capability = raw.capability;
+    caps.algorithmBitmap = raw.algorithm_bitmap;
+    caps.streamCount = raw.stream_count;
+    if (errorMessage != nullptr) {
+        errorMessage->clear();
+    }
+    return true;
+}
+
+bool PcieFrameReceiver::getFpgaStatus(FpgaStatus &status, std::string *errorMessage) const
+{
+    status = FpgaStatus {};
+    if (m_deviceFd < 0) {
+        assignError(errorMessage, "FPGA GET_STATUS called while PCIe device is closed");
+        return false;
+    }
+
+    pango_pcie::FpgaStatusIoctl raw {};
+    raw.struct_size = sizeof(raw);
+    raw.abi_version = pango_pcie::kFpgaControlAbiVersion;
+
+    if (::ioctl(m_deviceFd, pango_pcie::kFpgaGetStatusCmd, &raw) < 0) {
+        assignError(errorMessage, errnoMessage("ioctl PANGO_FPGA_GET_STATUS"));
+        return false;
+    }
+
+    status.valid = true;
+    status.status = raw.status;
+    status.activeMode = raw.active_mode;
+    status.ackSequence = raw.ack_sequence;
+    status.errorStatus = raw.error_status;
+    status.frameCount = raw.frame_count;
+    status.lastApplyFrame = raw.last_apply_frame;
+    if (errorMessage != nullptr) {
+        errorMessage->clear();
+    }
+    return true;
+}
+
+bool PcieFrameReceiver::applyFpgaPreprocess(std::uint32_t mode,
+                                            std::uint32_t param0,
+                                            std::uint32_t timeoutMs,
+                                            FpgaApplyResult &result,
+                                            std::string *errorMessage) const
+{
+    result = FpgaApplyResult {};
+    result.requestedMode = mode;
+
+    if (m_deviceFd < 0) {
+        assignError(errorMessage, "FPGA APPLY_CONFIG called while PCIe device is closed");
+        return false;
+    }
+
+    pango_pcie::FpgaConfigIoctl raw {};
+    raw.struct_size = sizeof(raw);
+    raw.abi_version = pango_pcie::kFpgaControlAbiVersion;
+    raw.sequence = 0; // 由驱动分配，避免与当前ACK序号冲突。
+    raw.mode = mode;
+    raw.param0 = param0;
+    raw.timeout_ms = timeoutMs;
+
+    errno = 0;
+    const int ioctlResult = ::ioctl(m_deviceFd,
+                                    pango_pcie::kFpgaApplyConfigCmd,
+                                    &raw);
+    const int savedErrno = errno;
+
+    // 驱动在超时等失败路径也会尽量回填当前状态，始终保留这些信息。
+    result.success = (ioctlResult == 0);
+    result.systemError = (ioctlResult == 0) ? 0 : savedErrno;
+    result.sequence = raw.sequence;
+    result.activeMode = raw.active_mode;
+    result.ackSequence = raw.ack_sequence;
+    result.status = raw.status;
+    result.errorStatus = raw.error_status;
+    result.latencyUs = raw.apply_latency_us;
+
+    if (ioctlResult < 0) {
+        assignError(errorMessage,
+                    errnoMessageWithCode("ioctl PANGO_FPGA_APPLY_CONFIG", savedErrno));
+        return false;
+    }
+
+    if (errorMessage != nullptr) {
+        errorMessage->clear();
+    }
+    return true;
+}
+
+
+bool PcieFrameReceiver::getEthernetCaps(EthernetCaps &caps,
+                                        std::string *errorMessage) const
+{
+    caps = EthernetCaps {};
+    if (m_deviceFd < 0) {
+        assignError(errorMessage, "FPGA GET_ETH_CAPS called while PCIe device is closed");
+        return false;
+    }
+
+    pango_pcie::FpgaEthCapsIoctl raw {};
+    raw.struct_size = sizeof(raw);
+    raw.abi_version = pango_pcie::kFpgaEthAbiVersion;
+
+    if (::ioctl(m_deviceFd, pango_pcie::kFpgaGetEthCapsCmd, &raw) < 0) {
+        assignError(errorMessage, errnoMessage("ioctl PANGO_FPGA_GET_ETH_CAPS"));
+        return false;
+    }
+
+    caps.valid = true;
+    caps.ipVersion = raw.ip_version;
+    caps.capability = raw.capability;
+    caps.outputWidth = raw.output_width;
+    caps.outputHeight = raw.output_height;
+    caps.outputFps = raw.output_fps;
+    caps.destinationIpv4 = raw.destination_ipv4;
+    caps.destinationPort = raw.destination_port;
+    if (errorMessage != nullptr) {
+        errorMessage->clear();
+    }
+    return true;
+}
+
+bool PcieFrameReceiver::getEthernetStatus(EthernetStatus &status,
+                                          std::string *errorMessage) const
+{
+    status = EthernetStatus {};
+    if (m_deviceFd < 0) {
+        assignError(errorMessage, "FPGA GET_ETH_STATUS called while PCIe device is closed");
+        return false;
+    }
+
+    pango_pcie::FpgaEthStatusIoctl raw {};
+    raw.struct_size = sizeof(raw);
+    raw.abi_version = pango_pcie::kFpgaEthAbiVersion;
+
+    if (::ioctl(m_deviceFd, pango_pcie::kFpgaGetEthStatusCmd, &raw) < 0) {
+        assignError(errorMessage, errnoMessage("ioctl PANGO_FPGA_GET_ETH_STATUS"));
+        return false;
+    }
+
+    status.valid = true;
+    status.status = raw.status;
+    status.requestedEnable = (raw.requested_enable != 0U);
+    status.activeEnable = (raw.active_enable != 0U);
+    status.ackSequence = raw.ack_sequence;
+    status.errorStatus = raw.error_status;
+    status.frameCount = raw.frame_count;
+    status.lastApplyFrame = raw.last_apply_frame;
+    if (errorMessage != nullptr) {
+        errorMessage->clear();
+    }
+    return true;
+}
+
+bool PcieFrameReceiver::setEthernetOutput(bool enable,
+                                          std::uint32_t timeoutMs,
+                                          EthernetApplyResult &result,
+                                          std::string *errorMessage) const
+{
+    result = EthernetApplyResult {};
+    result.requestedEnable = enable;
+
+    if (m_deviceFd < 0) {
+        assignError(errorMessage, "FPGA SET_ETH_OUTPUT called while PCIe device is closed");
+        return false;
+    }
+
+    pango_pcie::FpgaEthConfigIoctl raw {};
+    raw.struct_size = sizeof(raw);
+    raw.abi_version = pango_pcie::kFpgaEthAbiVersion;
+    raw.sequence = 0;
+    raw.enable = enable ? 1U : 0U;
+    raw.timeout_ms = timeoutMs;
+
+    errno = 0;
+    const int ioctlResult = ::ioctl(m_deviceFd,
+                                    pango_pcie::kFpgaSetEthOutputCmd,
+                                    &raw);
+    const int savedErrno = errno;
+
+    result.success = (ioctlResult == 0);
+    result.systemError = (ioctlResult == 0) ? 0 : savedErrno;
+    result.sequence = raw.sequence;
+    result.activeEnable = (raw.active_enable != 0U);
+    result.ackSequence = raw.ack_sequence;
+    result.status = raw.status;
+    result.errorStatus = raw.error_status;
+    result.latencyUs = raw.apply_latency_us;
+    result.lastApplyFrame = raw.last_apply_frame;
+
+    if (ioctlResult < 0) {
+        assignError(errorMessage,
+                    errnoMessageWithCode("ioctl PANGO_FPGA_SET_ETH_OUTPUT", savedErrno));
+        return false;
+    }
+
+    if (errorMessage != nullptr) {
+        errorMessage->clear();
+    }
+    return true;
 }
 
 const PcieFrameReceiver::LinkInfo &PcieFrameReceiver::linkInfo() const

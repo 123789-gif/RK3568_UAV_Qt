@@ -4,6 +4,7 @@
 #include "video/drm_rga_display.h"
 #include "npu/npu_task_config.h"
 #include "ptz/v4l2_device_detector.h"
+#include "npu/violation_rule_config.h"
 
 #include <QImage>
 #include <QMainWindow>
@@ -14,15 +15,14 @@ class QLabel;
 class QStackedWidget;
 class QPushButton;
 class QComboBox;
-class QCheckBox;
 class QSlider;
 class QSpinBox;
 class QDoubleSpinBox;
-class QTableWidget;
 class QButtonGroup;
 class FanController;
 class PtzCaptureWorker;
 class PtzControlWorker;
+class ViolationPreviewWidget;
 
 QT_BEGIN_NAMESPACE
 namespace Ui {
@@ -44,8 +44,8 @@ private slots:
     void onStartStopClicked();
     void onOsdClicked();
     void onApplyVideoConfigClicked();
-    void onApplyFpgaConfigClicked();
     void onApplyAiConfigClicked();
+    void onStopAiInferenceClicked();
     void onStatusTimer();
     void onAiUiTimer();
 
@@ -68,7 +68,58 @@ private slots:
                                  double fps,
                                  int plateCount,
                                  int pedestrianCount,
+                                 int vehicleCount,
                                  QString status);
+
+    void onFpgaControlInfoUpdated(bool available,
+                                  quint32 ipVersion,
+                                  quint32 capability,
+                                  quint32 algorithmBitmap,
+                                  quint32 streamCount,
+                                  quint32 activeMode,
+                                  quint32 ackSequence,
+                                  quint32 status,
+                                  quint32 errorStatus,
+                                  quint32 frameCount,
+                                  quint32 lastApplyFrame,
+                                  QString message);
+    void onFpgaApplyFinished(bool success,
+                             quint32 requestedMode,
+                             quint32 activeMode,
+                             quint32 sequence,
+                             quint32 ackSequence,
+                             quint32 status,
+                             quint32 errorStatus,
+                             quint32 latencyUs,
+                             quint32 lastApplyFrame,
+                             QString message);
+
+    void onEthernetControlInfoUpdated(bool available,
+                                      quint32 ipVersion,
+                                      quint32 capability,
+                                      quint32 outputWidth,
+                                      quint32 outputHeight,
+                                      quint32 outputFps,
+                                      quint32 destinationIpv4,
+                                      quint32 destinationPort,
+                                      bool requestedEnable,
+                                      bool activeEnable,
+                                      quint32 ackSequence,
+                                      quint32 status,
+                                      quint32 errorStatus,
+                                      quint32 frameCount,
+                                      quint32 lastApplyFrame,
+                                      QString message);
+    void onEthernetApplyFinished(bool success,
+                                 bool requestedEnable,
+                                 bool activeEnable,
+                                 quint32 sequence,
+                                 quint32 ackSequence,
+                                 quint32 status,
+                                 quint32 errorStatus,
+                                 quint32 latencyUs,
+                                 quint32 lastApplyFrame,
+                                 QString message);
 
     void onApplyPtzProfileClicked();
     void onPtzPreviewClicked();
@@ -88,7 +139,6 @@ private slots:
 
     void onFanPowerClicked(bool checked);
     void onFanPwmChanged(int value);
-    void onApplyFanConfigClicked();
 
 private:
     void setupControlUi();
@@ -98,15 +148,29 @@ private:
     QWidget *createFpgaPage();
     QWidget *createCpuPage();
     QWidget *createAiPage();
+    QWidget *createViolationPage();
     QWidget *createStatusPage();
     void setCurrentPage(int index);
     void updateFanUi();
+    void requestFpgaMode(quint32 mode);
+    void updateFpgaModeButtons();
+    void requestEthernetOutput(bool enable);
+    void updateEthernetButtons();
+    void updateFpgaUiAvailability();
     void updateStatusText();
     void updateAiPanel(const NpuFrameResult &result);
-    void appendAiResultRows(const NpuFrameResult &result);
-    void clearAiResultTable();
+    void updateAiCurrentResult(const NpuFrameResult &result);
+    void clearAiCurrentResult();
+    void requestAiTask(NpuTaskType task);
+    void updateAiTaskButtons();
     void loadAiSettings();
     void saveAiSettings(const NpuTaskConfig &config);
+    void loadViolationSettings();
+    bool saveViolationSettings();
+    void startViolationDetection();
+    void stopViolationDetection(bool restorePreviousConfig = true);
+    void updateViolationPanel(const NpuFrameResult &result);
+    void updateViolationButtons();
     void loadPtzSettings();
     void savePtzSettings(PtzProfileSelection selection);
     bool applyPtzProfileSelection(bool restartActiveServices);
@@ -155,7 +219,8 @@ private:
     QSpinBox *m_ptzTiltSpeedSpin = nullptr;
 
     QPushButton *m_btnFanPower = nullptr;
-    QSlider *m_fanPwmSlider = nullptr;
+    QPushButton *m_btnFanPwmMinus = nullptr;
+    QPushButton *m_btnFanPwmPlus = nullptr;
     QSpinBox *m_fanPwmSpin = nullptr;
     QLabel *m_fanStatusLabel = nullptr;
 
@@ -163,22 +228,69 @@ private:
     QComboBox *m_outputModeCombo = nullptr;
     QButtonGroup *m_videoRouteGroup = nullptr;
     QLabel *m_videoRouteSummaryLabel = nullptr;
-    QComboBox *m_sourceCombo = nullptr;
-    QComboBox *m_ch1PreprocCombo = nullptr;
-    QComboBox *m_ch2PreprocCombo = nullptr;
-    QComboBox *m_ch3PreprocCombo = nullptr;
-    QComboBox *m_ch4PreprocCombo = nullptr;
-    QCheckBox *m_npuEnableCheck = nullptr;
-    QComboBox *m_npuTaskCombo = nullptr;
+    QButtonGroup *m_fpgaPreprocButtonGroup = nullptr;
+    QLabel *m_fpgaCapabilityLabel = nullptr;
+    QLabel *m_fpgaCurrentModeLabel = nullptr;
+    QLabel *m_fpgaApplyStatusLabel = nullptr;
+    QButtonGroup *m_ethernetOutputButtonGroup = nullptr;
+    QLabel *m_ethernetInfoLabel = nullptr;
+    QLabel *m_ethernetCurrentStateLabel = nullptr;
+    QLabel *m_ethernetApplyStatusLabel = nullptr;
+    QButtonGroup *m_npuTaskButtonGroup = nullptr;
+    QPushButton *m_btnAiApply = nullptr;
+    QPushButton *m_btnAiStop = nullptr;
     QSpinBox *m_npuFpsSpin = nullptr;
     QDoubleSpinBox *m_confSpin = nullptr;
     QDoubleSpinBox *m_nmsSpin = nullptr;
     QLabel *m_aiConfigSummaryLabel = nullptr;
     QLabel *m_aiRuntimeLabel = nullptr;
-    QTableWidget *m_aiResultTable = nullptr;
+    QLabel *m_aiCurrentResultLabel = nullptr;
+
+    ViolationPreviewWidget *m_violationPreview = nullptr;
+    QButtonGroup *m_violationLightModeGroup = nullptr;
+    QPushButton *m_btnViolationStart = nullptr;
+    QPushButton *m_btnViolationStop = nullptr;
+    QLabel *m_violationEditStatusLabel = nullptr;
+    QLabel *m_violationRuntimeLabel = nullptr;
+    QLabel *m_violationResultLabel = nullptr;
 
     bool m_displayRunning = false;
+    bool m_violationRunning = false;
+    bool m_violationConfigDirty = false;
+    ViolationRuleConfig m_violationConfig;
+    NpuTaskConfig m_violationPreviousAiConfig;
+    bool m_violationPreviousAiConfigValid = false;
+    std::uint64_t m_violationLastEventId = 0;
     bool m_osdEnabled = true;
+
+    bool m_fpgaControlAvailable = false;
+    bool m_fpgaApplyPending = false;
+    quint32 m_fpgaRequestedMode = 0;
+    quint32 m_fpgaIpVersion = 0;
+    quint32 m_fpgaCapability = 0;
+    quint32 m_fpgaAlgorithmBitmap = 0;
+    quint32 m_fpgaActiveMode = 0;
+    quint32 m_fpgaAckSequence = 0;
+    quint32 m_fpgaStatus = 0;
+    quint32 m_fpgaErrorStatus = 0;
+    quint32 m_fpgaFrameCount = 0;
+    quint32 m_fpgaLastApplyFrame = 0;
+    bool m_ethernetControlAvailable = false;
+    bool m_ethernetApplyPending = false;
+    bool m_ethernetRequestedEnable = true;
+    bool m_ethernetActiveEnable = true;
+    quint32 m_ethernetIpVersion = 0;
+    quint32 m_ethernetCapability = 0;
+    quint32 m_ethernetOutputWidth = 0;
+    quint32 m_ethernetOutputHeight = 0;
+    quint32 m_ethernetOutputFps = 0;
+    quint32 m_ethernetDestinationIpv4 = 0;
+    quint32 m_ethernetDestinationPort = 0;
+    quint32 m_ethernetAckSequence = 0;
+    quint32 m_ethernetStatus = 0;
+    quint32 m_ethernetErrorStatus = 0;
+    quint32 m_ethernetFrameCount = 0;
+    quint32 m_ethernetLastApplyFrame = 0;
     bool m_ptzCaptureRunning = false;
     PtzResolvedDevice m_activePtzDevice;
     PtzProfileSelection m_requestedPtzSelection = PtzProfileSelection::Auto;
@@ -218,14 +330,15 @@ private:
     double m_aiFps = 0.0;
     int m_aiPlateCount = 0;
     int m_aiPedestrianCount = 0;
+    int m_aiVehicleCount = 0;
     QString m_aiStatus = "off";
     NpuTaskType m_aiTask = NpuTaskType::Pedestrian;
+    NpuTaskType m_aiRequestedTask = NpuTaskType::Pedestrian;
+    bool m_aiTaskSwitchPending = false;
     double m_aiLastMs = 0.0;
     double m_aiPreMs = 0.0;
     int m_aiProcessed = 0;
     int m_aiDropped = 0;
-    uint64_t m_lastAiResultFrameId = 0;
-    int m_aiHistoryDepth = 50;
 
     double m_ptzCaptureFps = 0.0;
     double m_ptzDecodeFps = 0.0;

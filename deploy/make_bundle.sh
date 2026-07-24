@@ -32,6 +32,15 @@ if ! (
     exit 1
 fi
 
+LEGACY_PREPROC_ONLY_DRIVER_SHA256="ba83e3ccd5f9537d3b5dc2669efcbd2526a5e5e2972471886a91ccffcbad5dd2"
+CURRENT_DRIVER_SHA256="$(sha256sum "$DRIVER_SOURCE_DIR/pango_pci_driver.ko" | awk '{print $1}')"
+
+if [[ "$CURRENT_DRIVER_SHA256" == "$LEGACY_PREPROC_ONLY_DRIVER_SHA256" ]]; then
+    echo "ERROR: driver asset is the old preprocessing-only .ko and has no Ethernet ioctl." >&2
+    echo "Run: tools/sync_eth_driver_from_board.sh root@192.168.1.100" >&2
+    exit 1
+fi
+
 VERSION="$(date -u +%Y%m%dT%H%M%SZ)"
 APP_DIR="$OUTPUT_DIR/RK3568_PTZ_Qt"
 ARCHIVE_NAME="RK3568_PTZ_Qt_${VERSION}.tar.gz"
@@ -54,7 +63,7 @@ install -m 0755 \
 cp -f "$PROJECT_ROOT"/assets/models/* \
     "$APP_DIR/models/"
 
-cp -f "$PROJECT_ROOT/assets/config/runtime.env" \
+cp -f "$PROJECT_ROOT"/assets/config/* \
     "$APP_DIR/config/"
 
 cp -f "$DRIVER_SOURCE_DIR"/pango_pci_driver.ko \
@@ -75,6 +84,7 @@ printf '%s\n' "$VERSION" > "$APP_DIR/VERSION"
 
     find bin models config driver scripts \
         -type f \
+        ! -path 'config/pedestrian_violation.ini' \
         -print0 |
         sort -z |
         xargs -0 sha256sum > MANIFEST.sha256

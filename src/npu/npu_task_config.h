@@ -6,7 +6,8 @@
 enum class NpuTaskType : std::uint8_t
 {
     Pedestrian = 0,
-    PlateCascade = 1
+    PlateCascade = 1,
+    TrafficViolation = 2
 };
 
 inline constexpr int NPU_TARGET_FPS_MIN = 1;
@@ -37,6 +38,8 @@ inline NpuTaskConfig sanitizeNpuTaskConfig(NpuTaskConfig config)
 inline const char* npuTaskKey(NpuTaskType task)
 {
     switch (task) {
+    case NpuTaskType::TrafficViolation:
+        return "traffic_violation";
     case NpuTaskType::PlateCascade:
         return "plate_cascade";
     case NpuTaskType::Pedestrian:
@@ -48,6 +51,8 @@ inline const char* npuTaskKey(NpuTaskType task)
 inline const char* npuTaskShortName(NpuTaskType task)
 {
     switch (task) {
+    case NpuTaskType::TrafficViolation:
+        return "VIOL";
     case NpuTaskType::PlateCascade:
         return "PLATE";
     case NpuTaskType::Pedestrian:

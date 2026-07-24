@@ -1,16 +1,20 @@
 #include "npu/npu_inference_worker.h"
 
 #include "npu/vision.h"
+#include "npu/pedestrian_violation_engine.h"
 
 #include <algorithm>
 #include <atomic>
+#include <cctype>
 #include <chrono>
+#include <cmath>
 #include <condition_variable>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <deque>
 #include <limits.h>
+#include <map>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -41,6 +45,12 @@ static int64_t steadyNs()
 {
     using namespace std::chrono;
     return duration_cast<nanoseconds>(steady_clock::now().time_since_epoch()).count();
+}
+
+static int64_t systemMs()
+{
+    using namespace std::chrono;
+    return duration_cast<milliseconds>(system_clock::now().time_since_epoch()).count();
 }
 
 static int64_t steadyMs()
@@ -246,6 +256,7 @@ static bool loadModel(const std::string& path, demo::RknnModel* model, std::stri
     return true;
 }
 
+
 static NpuBox makeBox(const demo::Rect2f& r, float score, int classId,
                       const std::string& text = std::string(),
                       const std::string& label = std::string())
@@ -261,6 +272,770 @@ static NpuBox makeBox(const demo::Rect2f& r, float score, int classId,
     box.label = label;
     return box;
 }
+
+// 车牌检测模型逐帧输出的位置和OCR文本会有小幅抖动。这里复用旧版
+// app_pcie 中已经验证过的“OCR缓存 + 轨迹关联 + 框EMA + 文本投票”思路，
+// 但保留当前Qt工程的latest-only单工作线程、动态OCR batch和完整阶段计时。
+constexpr float kPlateOcrReuseIou = 0.55f;
+constexpr double kPlateOcrReuseSignatureDiff = 20.0;
+constexpr int64_t kPlateOcrReuseTtlMs = 900;
+constexpr int64_t kPlateOcrCacheKeepMs = 2500;
+constexpr std::size_t kPlateMaxTracks = 4;
+constexpr int kPlateMinConfirmedHits = 3;
+constexpr int kPlateTrackTtlMs = 600;
+constexpr float kPlateTrackIouMin = 0.25f;
+constexpr float kPlateTrackCenterDistanceMax = 0.50f;
+constexpr float kPlateStaticCenterDeadZonePx = 3.0f;
+constexpr float kPlateStaticSizeDeadZoneRatio = 0.03f;
+constexpr float kPlateSlowBoxAlpha = 0.25f;
+constexpr float kPlateFastBoxAlpha = 0.55f;
+constexpr float kPlateFastMotionDistance = 0.20f;
+constexpr int kPlateTextSwitchVoteMin = 3;
+
+// 车牌颜色使用轨迹级滑动窗口投票。领馆黑牌被偶发误判成蓝牌时，
+// 需要更强的反向证据才允许从Consulate切换到Blue。
+constexpr int kPlateColorVoteWindow = 7;
+constexpr int kPlateColorVoteMin = 4;
+constexpr int kPlateConsulateVoteMin = 3;
+constexpr int kPlateConsulateToBlueVoteMin = 5;
+constexpr int kPlateConsulateToBlueConsecutive = 3;
+
+// 当前应用场景中的行人均为站立姿态。使用原图框高宽比过滤明显扁平的
+// 非行人误检；保持上限较宽，避免远处细长目标或局部遮挡被过度过滤。
+constexpr float kStandingPedestrianMinHeightPx = 24.0f;
+constexpr float kStandingPedestrianMinHeightWidthRatio = 2.50f;
+constexpr float kStandingPedestrianMaxHeightWidthRatio = 6.00f;
+
+static bool isUnknownPlateText(const std::string& text)
+{
+    static const std::string kUnknown = "UNKNOWN";
+    if (text.size() != kUnknown.size()) {
+        return false;
+    }
+    for (std::size_t i = 0; i < text.size(); ++i) {
+        const unsigned char ch = static_cast<unsigned char>(text[i]);
+        if (static_cast<char>(std::toupper(ch)) != kUnknown[i]) {
+            return false;
+        }
+    }
+    return true;
+}
+
+static bool isDisplayablePlateText(const std::string& text)
+{
+    return !text.empty() && !isUnknownPlateText(text);
+}
+
+static std::string upperAscii(std::string text)
+{
+    for (char& ch : text) {
+        ch = static_cast<char>(std::toupper(static_cast<unsigned char>(ch)));
+    }
+    return text;
+}
+
+static bool plateTextImpliesConsulate(const std::string& plate,
+                                      const std::string& pinyin)
+{
+    // OCR对领馆牌会强制使用“领/LINGCON”后缀。该语义证据比单帧颜色
+    // 分类更可靠，可用于纠正黑色领馆牌偶发被分类成Blue的情况。
+    return plate.find(u8"领") != std::string::npos ||
+            upperAscii(pinyin).find("LINGCON") != std::string::npos;
+}
+
+static bool plateOcrColorsCompatible(int cachedColorId, int candidateColorId)
+{
+    if (cachedColorId == candidateColorId) {
+        return true;
+    }
+    // 仅允许“已确认领馆牌缓存 → 当前单帧误报Blue”的单向复用。
+    // 反向不复用，避免普通蓝牌错误继承领馆后缀。
+    return cachedColorId == demo::PLATE_CLASS_CONSULATE &&
+            candidateColorId == demo::PLATE_CLASS_BLUE;
+}
+
+static bool isStandingPedestrianBox(const demo::Rect2f& box)
+{
+    if (!std::isfinite(box.width) || !std::isfinite(box.height) ||
+        box.width <= 1.0f || box.height <= 1.0f) {
+        return false;
+    }
+    if (box.height < kStandingPedestrianMinHeightPx) {
+        return false;
+    }
+    const float ratio = box.height / box.width;
+    return ratio >= kStandingPedestrianMinHeightWidthRatio &&
+            ratio <= kStandingPedestrianMaxHeightWidthRatio;
+}
+
+static float plateRectIou(const demo::Rect2f& a, const demo::Rect2f& b)
+{
+    const float x1 = std::max(a.x, b.x);
+    const float y1 = std::max(a.y, b.y);
+    const float x2 = std::min(a.x + a.width, b.x + b.width);
+    const float y2 = std::min(a.y + a.height, b.y + b.height);
+    const float iw = std::max(0.0f, x2 - x1);
+    const float ih = std::max(0.0f, y2 - y1);
+    const float inter = iw * ih;
+    const float uni = a.width * a.height + b.width * b.height - inter;
+    return uni > 1.0e-6f ? inter / uni : 0.0f;
+}
+
+static float plateCenterDistanceNormalized(const demo::Rect2f& a,
+                                           const demo::Rect2f& b)
+{
+    const float ax = a.x + a.width * 0.5f;
+    const float ay = a.y + a.height * 0.5f;
+    const float bx = b.x + b.width * 0.5f;
+    const float by = b.y + b.height * 0.5f;
+    const float dx = ax - bx;
+    const float dy = ay - by;
+    const float diag = std::sqrt(std::max(1.0f,
+                                          a.width * a.width + a.height * a.height));
+    return std::sqrt(dx * dx + dy * dy) / diag;
+}
+
+static float clampPlateAlpha(float value)
+{
+    if (!std::isfinite(value)) {
+        return demo::DEFAULT_PLATE_BOX_EMA;
+    }
+    return std::max(0.01f, std::min(1.0f, value));
+}
+
+static demo::Rect2f plateEmaRect(const demo::Rect2f& oldBox,
+                                 const demo::Rect2f& newBox,
+                                 float alpha)
+{
+    const float a = clampPlateAlpha(alpha);
+    const float b = 1.0f - a;
+    return demo::Rect2f(oldBox.x * b + newBox.x * a,
+                        oldBox.y * b + newBox.y * a,
+                        oldBox.width * b + newBox.width * a,
+                        oldBox.height * b + newBox.height * a);
+}
+
+static float plateAdaptiveBoxAlpha(const demo::Rect2f& oldBox,
+                                   const demo::Rect2f& newBox)
+{
+    const float oldCx = oldBox.x + oldBox.width * 0.5f;
+    const float oldCy = oldBox.y + oldBox.height * 0.5f;
+    const float newCx = newBox.x + newBox.width * 0.5f;
+    const float newCy = newBox.y + newBox.height * 0.5f;
+    const float centerShift = std::sqrt((oldCx - newCx) * (oldCx - newCx) +
+                                        (oldCy - newCy) * (oldCy - newCy));
+    const float widthChange = std::fabs(newBox.width - oldBox.width) /
+            std::max(1.0f, oldBox.width);
+    const float heightChange = std::fabs(newBox.height - oldBox.height) /
+            std::max(1.0f, oldBox.height);
+
+    // 静态画面中检测框常有1～3像素波动。落在死区内时完全保持上一帧，
+    // 不再让每帧微小检测噪声传到HDMI OSD。
+    if (centerShift <= kPlateStaticCenterDeadZonePx &&
+        widthChange <= kPlateStaticSizeDeadZoneRatio &&
+        heightChange <= kPlateStaticSizeDeadZoneRatio) {
+        return 0.0f;
+    }
+
+    const float distance = plateCenterDistanceNormalized(oldBox, newBox);
+    return distance <= kPlateFastMotionDistance
+            ? kPlateSlowBoxAlpha : kPlateFastBoxAlpha;
+}
+
+// 对94x24 OCR裁剪图生成8x4灰度签名。相同位置且内容近似时复用最近OCR，
+// 既减少识别文本抖动，也减少不必要的第二级RKNN运行。
+static std::vector<uint8_t> plateCropSignature(const demo::Mat& crop)
+{
+    constexpr int kSignatureWidth = 8;
+    constexpr int kSignatureHeight = 4;
+    std::vector<uint8_t> signature(kSignatureWidth * kSignatureHeight, 0);
+    if (crop.empty() || crop.type() != CV_8UC3) {
+        return signature;
+    }
+
+    for (int gy = 0; gy < kSignatureHeight; ++gy) {
+        const int y0 = gy * crop.rows / kSignatureHeight;
+        const int y1 = std::max(y0 + 1, (gy + 1) * crop.rows / kSignatureHeight);
+        for (int gx = 0; gx < kSignatureWidth; ++gx) {
+            const int x0 = gx * crop.cols / kSignatureWidth;
+            const int x1 = std::max(x0 + 1, (gx + 1) * crop.cols / kSignatureWidth);
+            uint64_t sum = 0;
+            uint64_t count = 0;
+            for (int y = y0; y < y1; ++y) {
+                const cv::Vec3b* row = crop.ptr<cv::Vec3b>(y);
+                for (int x = x0; x < x1; ++x) {
+                    const cv::Vec3b& pixel = row[x];
+                    sum += (static_cast<uint64_t>(pixel[0]) +
+                            static_cast<uint64_t>(pixel[1]) * 2ULL +
+                            static_cast<uint64_t>(pixel[2])) / 4ULL;
+                    ++count;
+                }
+            }
+            signature[gy * kSignatureWidth + gx] =
+                    count ? static_cast<uint8_t>(sum / count) : 0;
+        }
+    }
+    return signature;
+}
+
+static double plateSignatureDifference(const std::vector<uint8_t>& a,
+                                       const std::vector<uint8_t>& b)
+{
+    if (a.empty() || b.empty() || a.size() != b.size()) {
+        return 999.0;
+    }
+    uint64_t sum = 0;
+    for (std::size_t i = 0; i < a.size(); ++i) {
+        sum += static_cast<uint64_t>(std::abs(static_cast<int>(a[i]) -
+                                             static_cast<int>(b[i])));
+    }
+    return static_cast<double>(sum) / static_cast<double>(a.size());
+}
+
+struct PlateTemporalCandidate
+{
+    demo::Rect2f inputBox;
+    demo::Rect2f origBox;
+    int colorId = -1;
+    std::string plate;
+    std::string pinyin;
+    std::vector<uint8_t> signature;
+    int cacheIndex = -1;
+    bool reusedOcr = false;
+};
+
+struct PlateOcrCacheEntry
+{
+    demo::Rect2f inputBox;
+    int colorId = -1;
+    std::string plate;
+    std::string pinyin;
+    std::vector<uint8_t> signature;
+    int64_t lastOcrMs = 0;
+    int64_t lastSeenMs = 0;
+};
+
+struct PlateTextVote
+{
+    std::string plate;
+    std::string pinyin;
+};
+
+struct PlateTemporalTrack
+{
+    bool active = false;
+    int slotId = 0;
+    demo::Rect2f inputBoxEma;
+    demo::Rect2f origBoxEma;
+    std::deque<PlateTextVote> textVotes;
+    std::string stablePlate;
+    std::string stablePinyin;
+    int stableColorId = -1;
+    std::deque<int> colorVotes;
+    int consecutiveBlueCount = 0;
+    int hitCount = 0;
+    int64_t lastSeenMs = 0;
+};
+
+class PlateTemporalPostprocessor
+{
+public:
+    void reset()
+    {
+        contextValid_ = false;
+        contextConfigRevision_ = 0;
+        contextSourceRevision_ = 0;
+        contextSourceChannel_ = -1;
+        ocrCache_.clear();
+        tracks_.clear();
+    }
+
+    void resetForContext(uint64_t configRevision,
+                         int sourceChannel,
+                         uint64_t sourceRevision)
+    {
+        if (!contextValid_ ||
+            contextConfigRevision_ != configRevision ||
+            contextSourceChannel_ != sourceChannel ||
+            contextSourceRevision_ != sourceRevision) {
+            ocrCache_.clear();
+            tracks_.clear();
+            contextValid_ = true;
+            contextConfigRevision_ = configRevision;
+            contextSourceChannel_ = sourceChannel;
+            contextSourceRevision_ = sourceRevision;
+        }
+    }
+
+    void prepareOcr(const std::vector<demo::Mat>& crops,
+                    const std::vector<demo::Rect2f>& boxes,
+                    const std::vector<int>& colorIds,
+                    int64_t nowMs,
+                    std::vector<PlateTemporalCandidate>* candidates,
+                    std::vector<demo::Mat>* ocrCrops,
+                    std::vector<demo::Rect2f>* ocrBoxes,
+                    std::vector<int>* ocrColorIds,
+                    std::vector<int>* ocrToCandidate)
+    {
+        candidates->clear();
+        ocrCrops->clear();
+        ocrBoxes->clear();
+        ocrColorIds->clear();
+        ocrToCandidate->clear();
+        pruneOcrCache(nowMs);
+
+        const std::size_t count = std::min(crops.size(),
+                                           std::min(boxes.size(), colorIds.size()));
+        candidates->reserve(count);
+        std::vector<bool> cacheUsed(ocrCache_.size(), false);
+
+        for (std::size_t i = 0; i < count; ++i) {
+            PlateTemporalCandidate candidate;
+            candidate.inputBox = boxes[i];
+            candidate.colorId = colorIds[i];
+            candidate.signature = plateCropSignature(crops[i]);
+
+            const int cacheIndex = findReusableOcr(candidate,
+                                                   cacheUsed,
+                                                   nowMs);
+            if (cacheIndex >= 0) {
+                const PlateOcrCacheEntry& cached =
+                        ocrCache_[static_cast<std::size_t>(cacheIndex)];
+                candidate.plate = cached.plate;
+                candidate.pinyin = cached.pinyin;
+                candidate.cacheIndex = cacheIndex;
+                candidate.reusedOcr = true;
+                cacheUsed[static_cast<std::size_t>(cacheIndex)] = true;
+            } else {
+                ocrToCandidate->push_back(static_cast<int>(candidates->size()));
+                ocrCrops->push_back(crops[i]);
+                ocrBoxes->push_back(boxes[i]);
+                ocrColorIds->push_back(colorIds[i]);
+            }
+            candidates->push_back(std::move(candidate));
+        }
+    }
+
+    void mergeOcrResults(const std::vector<std::string>& plates,
+                         const std::vector<std::string>& pinyins,
+                         const std::vector<int>& ocrToCandidate,
+                         std::vector<PlateTemporalCandidate>* candidates)
+    {
+        const std::size_t count = std::min(plates.size(), ocrToCandidate.size());
+        for (std::size_t i = 0; i < count; ++i) {
+            const int candidateIndex = ocrToCandidate[i];
+            if (candidateIndex < 0 ||
+                static_cast<std::size_t>(candidateIndex) >= candidates->size()) {
+                continue;
+            }
+            PlateTemporalCandidate& candidate =
+                    (*candidates)[static_cast<std::size_t>(candidateIndex)];
+            candidate.plate = plates[i];
+            candidate.pinyin = i < pinyins.size() ? pinyins[i] : std::string();
+        }
+    }
+
+    void stabilize(std::vector<PlateTemporalCandidate>* candidates,
+                   int frameWidth,
+                   int frameHeight,
+                   int64_t nowMs,
+                   std::vector<PlateTemporalCandidate>* stableOutput)
+    {
+        for (PlateTemporalCandidate& candidate : *candidates) {
+            demo::vision::convert_input_box_to_orig(candidate.inputBox,
+                                                    candidate.origBox,
+                                                    frameWidth,
+                                                    frameHeight);
+            if (plateTextImpliesConsulate(candidate.plate, candidate.pinyin)) {
+                candidate.colorId = demo::PLATE_CLASS_CONSULATE;
+            }
+        }
+        updateOcrCache(*candidates, nowMs);
+
+        std::stable_sort(candidates->begin(), candidates->end(),
+                         [](const PlateTemporalCandidate& a,
+                            const PlateTemporalCandidate& b) {
+            const float ay = a.origBox.y + a.origBox.height * 0.5f;
+            const float by = b.origBox.y + b.origBox.height * 0.5f;
+            if (std::fabs(ay - by) > 80.0f) {
+                return ay < by;
+            }
+            const float ax = a.origBox.x + a.origBox.width * 0.5f;
+            const float bx = b.origBox.x + b.origBox.width * 0.5f;
+            return ax < bx;
+        });
+
+        std::vector<bool> used(candidates->size(), false);
+        for (PlateTemporalTrack& track : tracks_) {
+            if (!track.active) {
+                continue;
+            }
+            int bestIndex = -1;
+            float bestScore = -1.0f;
+            for (std::size_t i = 0; i < candidates->size(); ++i) {
+                if (used[i]) {
+                    continue;
+                }
+                const float iou = plateRectIou(track.origBoxEma,
+                                               (*candidates)[i].origBox);
+                const float distance = plateCenterDistanceNormalized(
+                            track.origBoxEma, (*candidates)[i].origBox);
+                if (iou < kPlateTrackIouMin &&
+                    distance > kPlateTrackCenterDistanceMax) {
+                    continue;
+                }
+                const float score = iou * 1.20f - distance * 0.35f;
+                if (score > bestScore) {
+                    bestScore = score;
+                    bestIndex = static_cast<int>(i);
+                }
+            }
+            if (bestIndex >= 0) {
+                used[static_cast<std::size_t>(bestIndex)] = true;
+                updateTrack(track,
+                            (*candidates)[static_cast<std::size_t>(bestIndex)],
+                            nowMs,
+                            demo::DEFAULT_PLATE_BOX_EMA,
+                            demo::DEFAULT_PLATE_TEXT_VOTE_N,
+                            demo::DEFAULT_PLATE_COLOR_HOLD);
+            }
+        }
+
+        for (std::size_t i = 0; i < candidates->size(); ++i) {
+            if (used[i]) {
+                continue;
+            }
+            const int slot = firstFreeSlot();
+            if (slot < 0) {
+                continue;
+            }
+            PlateTemporalTrack track;
+            track.active = true;
+            track.slotId = slot;
+            track.inputBoxEma = (*candidates)[i].inputBox;
+            track.origBoxEma = (*candidates)[i].origBox;
+            updateTrack(track,
+                        (*candidates)[i],
+                        nowMs,
+                        1.0f,
+                        demo::DEFAULT_PLATE_TEXT_VOTE_N,
+                        demo::DEFAULT_PLATE_COLOR_HOLD);
+            tracks_.push_back(std::move(track));
+        }
+
+        const int ttlMs = kPlateTrackTtlMs;
+        tracks_.erase(std::remove_if(tracks_.begin(), tracks_.end(),
+                                     [nowMs, ttlMs](const PlateTemporalTrack& track) {
+            return !track.active || nowMs - track.lastSeenMs > ttlMs;
+        }), tracks_.end());
+
+        std::sort(tracks_.begin(), tracks_.end(),
+                  [](const PlateTemporalTrack& a, const PlateTemporalTrack& b) {
+            return a.slotId < b.slotId;
+        });
+
+        stableOutput->clear();
+        stableOutput->reserve(tracks_.size());
+        for (const PlateTemporalTrack& track : tracks_) {
+            if (!track.active ||
+                track.hitCount < kPlateMinConfirmedHits ||
+                nowMs - track.lastSeenMs > ttlMs ||
+                !isDisplayablePlateText(track.stablePlate)) {
+                continue;
+            }
+            PlateTemporalCandidate item;
+            item.plate = track.stablePlate;
+            item.pinyin = track.stablePinyin;
+            item.inputBox = track.inputBoxEma;
+            item.origBox = track.origBoxEma;
+            item.colorId = track.stableColorId;
+            stableOutput->push_back(std::move(item));
+        }
+    }
+
+private:
+    int findReusableOcr(const PlateTemporalCandidate& candidate,
+                        const std::vector<bool>& used,
+                        int64_t nowMs) const
+    {
+        int bestIndex = -1;
+        float bestIou = 0.0f;
+        for (std::size_t i = 0; i < ocrCache_.size(); ++i) {
+            if (i < used.size() && used[i]) {
+                continue;
+            }
+            const PlateOcrCacheEntry& entry = ocrCache_[i];
+            if (!isDisplayablePlateText(entry.plate) ||
+                !plateOcrColorsCompatible(entry.colorId, candidate.colorId) ||
+                nowMs - entry.lastOcrMs > kPlateOcrReuseTtlMs ||
+                plateSignatureDifference(candidate.signature, entry.signature) >
+                    kPlateOcrReuseSignatureDiff) {
+                continue;
+            }
+            const float iou = plateRectIou(candidate.inputBox, entry.inputBox);
+            if (iou > bestIou) {
+                bestIou = iou;
+                bestIndex = static_cast<int>(i);
+            }
+        }
+        return bestIou >= kPlateOcrReuseIou ? bestIndex : -1;
+    }
+
+    void pruneOcrCache(int64_t nowMs)
+    {
+        ocrCache_.erase(std::remove_if(ocrCache_.begin(), ocrCache_.end(),
+                                       [nowMs](const PlateOcrCacheEntry& entry) {
+            return nowMs - entry.lastSeenMs > kPlateOcrCacheKeepMs;
+        }), ocrCache_.end());
+        if (ocrCache_.size() > kPlateMaxTracks) {
+            ocrCache_.resize(kPlateMaxTracks);
+        }
+    }
+
+    void updateOcrCache(const std::vector<PlateTemporalCandidate>& candidates,
+                        int64_t nowMs)
+    {
+        std::vector<PlateOcrCacheEntry> next;
+        next.reserve(kPlateMaxTracks);
+        std::vector<bool> oldUsed(ocrCache_.size(), false);
+
+        for (const PlateTemporalCandidate& candidate : candidates) {
+            if (!isDisplayablePlateText(candidate.plate) ||
+                next.size() >= kPlateMaxTracks) {
+                continue;
+            }
+            PlateOcrCacheEntry entry;
+            entry.inputBox = candidate.inputBox;
+            entry.colorId = candidate.colorId;
+            entry.plate = candidate.plate;
+            entry.pinyin = candidate.pinyin;
+            entry.signature = candidate.signature;
+            entry.lastSeenMs = nowMs;
+            entry.lastOcrMs = nowMs;
+            if (candidate.reusedOcr && candidate.cacheIndex >= 0 &&
+                static_cast<std::size_t>(candidate.cacheIndex) < ocrCache_.size()) {
+                entry.lastOcrMs = ocrCache_[static_cast<std::size_t>(candidate.cacheIndex)].lastOcrMs;
+                oldUsed[static_cast<std::size_t>(candidate.cacheIndex)] = true;
+            }
+            next.push_back(std::move(entry));
+        }
+
+        for (std::size_t i = 0; i < ocrCache_.size() && next.size() < kPlateMaxTracks; ++i) {
+            if (oldUsed[i] || nowMs - ocrCache_[i].lastSeenMs > kPlateOcrCacheKeepMs) {
+                continue;
+            }
+            bool duplicate = false;
+            for (const PlateOcrCacheEntry& entry : next) {
+                if ((plateOcrColorsCompatible(entry.colorId, ocrCache_[i].colorId) ||
+                     plateOcrColorsCompatible(ocrCache_[i].colorId, entry.colorId)) &&
+                    plateRectIou(entry.inputBox, ocrCache_[i].inputBox) >= 0.25f) {
+                    duplicate = true;
+                    break;
+                }
+            }
+            if (!duplicate) {
+                next.push_back(ocrCache_[i]);
+            }
+        }
+        ocrCache_.swap(next);
+    }
+
+    static void pushTextVote(std::deque<PlateTextVote>* votes,
+                             const PlateTemporalCandidate& candidate,
+                             int voteCount)
+    {
+        if (!isDisplayablePlateText(candidate.plate)) {
+            return;
+        }
+        votes->push_back({candidate.plate, candidate.pinyin});
+        while (static_cast<int>(votes->size()) > voteCount) {
+            votes->pop_front();
+        }
+    }
+
+    static std::pair<std::string, int> majorityPlate(
+            const std::deque<PlateTextVote>& votes)
+    {
+        std::map<std::string, int> counts;
+        std::string best;
+        int bestCount = 0;
+        for (const PlateTextVote& vote : votes) {
+            const int count = ++counts[vote.plate];
+            if (count > bestCount) {
+                best = vote.plate;
+                bestCount = count;
+            }
+        }
+        return {best, bestCount};
+    }
+
+    static std::string latestPinyinForPlate(
+            const std::deque<PlateTextVote>& votes,
+            const std::string& plate)
+    {
+        for (auto it = votes.rbegin(); it != votes.rend(); ++it) {
+            if (it->plate == plate && !it->pinyin.empty()) {
+                return it->pinyin;
+            }
+        }
+        return {};
+    }
+
+    static std::pair<int, int> majorityColor(
+            const std::deque<int>& votes)
+    {
+        std::map<int, int> counts;
+        int bestColor = -1;
+        int bestCount = 0;
+        for (int colorId : votes) {
+            if (colorId < 0 || colorId >= demo::PLATE_CLASS_COUNT) {
+                continue;
+            }
+            const int count = ++counts[colorId];
+            if (count > bestCount) {
+                bestColor = colorId;
+                bestCount = count;
+            }
+        }
+        return {bestColor, bestCount};
+    }
+
+    static int colorVoteCount(const std::deque<int>& votes, int colorId)
+    {
+        return static_cast<int>(std::count(votes.begin(), votes.end(), colorId));
+    }
+
+    static void updateTrack(PlateTemporalTrack& track,
+                            const PlateTemporalCandidate& candidate,
+                            int64_t nowMs,
+                            float alpha,
+                            int voteCount,
+                            int colorHold)
+    {
+        voteCount = std::max(1, std::min(12, voteCount));
+        if (track.hitCount > 0) {
+            const float adaptiveAlpha = plateAdaptiveBoxAlpha(
+                        track.origBoxEma, candidate.origBox);
+            if (adaptiveAlpha > 0.0f) {
+                track.inputBoxEma = plateEmaRect(track.inputBoxEma,
+                                                 candidate.inputBox,
+                                                 adaptiveAlpha);
+                track.origBoxEma = plateEmaRect(track.origBoxEma,
+                                                candidate.origBox,
+                                                adaptiveAlpha);
+            }
+        } else {
+            track.inputBoxEma = candidate.inputBox;
+            track.origBoxEma = candidate.origBox;
+        }
+        (void)alpha;
+
+        pushTextVote(&track.textVotes, candidate, voteCount);
+        const std::pair<std::string, int> voted = majorityPlate(track.textVotes);
+        if (track.stablePlate.empty() && !voted.first.empty()) {
+            track.stablePlate = voted.first;
+            track.stablePinyin = latestPinyinForPlate(track.textVotes,
+                                                      track.stablePlate);
+        } else if (!voted.first.empty() && voted.first != track.stablePlate &&
+                   voted.second >= kPlateTextSwitchVoteMin) {
+            track.stablePlate = voted.first;
+            track.stablePinyin = latestPinyinForPlate(track.textVotes,
+                                                      track.stablePlate);
+        } else if (candidate.plate == track.stablePlate &&
+                   !candidate.pinyin.empty()) {
+            track.stablePinyin = candidate.pinyin;
+        }
+
+        (void)colorHold;
+
+        int observedColor = candidate.colorId;
+        const bool semanticConsulate =
+                plateTextImpliesConsulate(candidate.plate, candidate.pinyin);
+        if (semanticConsulate) {
+            observedColor = demo::PLATE_CLASS_CONSULATE;
+        }
+        if (observedColor >= 0 && observedColor < demo::PLATE_CLASS_COUNT) {
+            track.colorVotes.push_back(observedColor);
+            while (static_cast<int>(track.colorVotes.size()) >
+                   kPlateColorVoteWindow) {
+                track.colorVotes.pop_front();
+            }
+        }
+
+        const std::pair<int, int> votedColor = majorityColor(track.colorVotes);
+        const int consulateVotes = colorVoteCount(
+                    track.colorVotes, demo::PLATE_CLASS_CONSULATE);
+        const int blueVotes = colorVoteCount(
+                    track.colorVotes, demo::PLATE_CLASS_BLUE);
+
+        if (track.stableColorId < 0) {
+            track.stableColorId = observedColor;
+        }
+
+        if (semanticConsulate) {
+            track.stableColorId = demo::PLATE_CLASS_CONSULATE;
+            track.consecutiveBlueCount = 0;
+        } else if (track.stableColorId == demo::PLATE_CLASS_CONSULATE) {
+            if (observedColor == demo::PLATE_CLASS_BLUE) {
+                ++track.consecutiveBlueCount;
+            } else {
+                track.consecutiveBlueCount = 0;
+            }
+
+            // 已稳定的黑色领馆牌只有在窗口内Blue占绝对多数、且连续多帧
+            // 均为Blue时才允许回切，避免单帧颜色分类错误影响OSD。
+            if (blueVotes >= kPlateConsulateToBlueVoteMin &&
+                blueVotes > consulateVotes &&
+                track.consecutiveBlueCount >=
+                    kPlateConsulateToBlueConsecutive) {
+                track.stableColorId = demo::PLATE_CLASS_BLUE;
+                track.consecutiveBlueCount = 0;
+            } else if (votedColor.first >= 0 &&
+                       votedColor.first != demo::PLATE_CLASS_BLUE &&
+                       votedColor.first != demo::PLATE_CLASS_CONSULATE &&
+                       votedColor.second >= kPlateColorVoteMin) {
+                track.stableColorId = votedColor.first;
+                track.consecutiveBlueCount = 0;
+            }
+        } else {
+            track.consecutiveBlueCount = 0;
+            if (consulateVotes >= kPlateConsulateVoteMin) {
+                track.stableColorId = demo::PLATE_CLASS_CONSULATE;
+            } else if (votedColor.first >= 0 &&
+                       votedColor.first != track.stableColorId &&
+                       votedColor.second >= kPlateColorVoteMin) {
+                track.stableColorId = votedColor.first;
+            }
+        }
+
+        ++track.hitCount;
+        track.lastSeenMs = nowMs;
+    }
+
+    int firstFreeSlot() const
+    {
+        for (int slot = 0; slot < static_cast<int>(kPlateMaxTracks); ++slot) {
+            bool used = false;
+            for (const PlateTemporalTrack& track : tracks_) {
+                if (track.active && track.slotId == slot) {
+                    used = true;
+                    break;
+                }
+            }
+            if (!used) {
+                return slot;
+            }
+        }
+        return -1;
+    }
+
+    bool contextValid_ = false;
+    uint64_t contextConfigRevision_ = 0;
+    uint64_t contextSourceRevision_ = 0;
+    int contextSourceChannel_ = -1;
+    std::vector<PlateOcrCacheEntry> ocrCache_;
+    std::vector<PlateTemporalTrack> tracks_;
+};
 
 }  // namespace
 
@@ -292,6 +1067,10 @@ struct NpuInferenceWorker::Impl
     demo::RknnModel plateDet;
     demo::RknnModel plateReco;
     demo::RknnModel ped;
+    mutable std::mutex violationConfigMutex;
+    ViolationRuleConfig violationConfig;
+    PedestrianViolationEngine violationEngine;
+    PlateTemporalPostprocessor platePostprocessor;
     std::atomic<int> loadedTaskValue {-1};
     std::string modelError;
 
@@ -302,6 +1081,7 @@ struct NpuInferenceWorker::Impl
     Impl()
     {
         requestedConfig = sanitizeNpuTaskConfig(requestedConfig);
+        violationConfig = sanitizeViolationRuleConfig(violationConfig);
     }
 
     ~Impl()
@@ -315,6 +1095,7 @@ struct NpuInferenceWorker::Impl
         releaseModel(plateDet);
         releaseModel(plateReco);
         releaseModel(ped);
+        platePostprocessor.reset();
         loadedTaskValue.store(-1);
         modelsLoaded.store(false);
     }
@@ -323,6 +1104,22 @@ struct NpuInferenceWorker::Impl
     {
         std::lock_guard<std::mutex> lk(configMutex);
         return requestedConfig;
+    }
+
+    void updateViolationConfig(const ViolationRuleConfig& requested)
+    {
+        ViolationRuleConfig next = sanitizeViolationRuleConfig(requested);
+        std::lock_guard<std::mutex> lk(violationConfigMutex);
+        if (next.revision <= violationConfig.revision) {
+            next.revision = violationConfig.revision + 1;
+        }
+        violationConfig = next;
+    }
+
+    ViolationRuleConfig violationConfigSnapshot() const
+    {
+        std::lock_guard<std::mutex> lk(violationConfigMutex);
+        return violationConfig;
     }
 
     void updateConfig(const NpuTaskConfig& requested)
@@ -351,6 +1148,10 @@ struct NpuInferenceWorker::Impl
         state.configRevision = next.revision;
         state.modelsReady = modelsLoaded.load() &&
                 loadedTaskValue.load() == static_cast<int>(next.task);
+        if (next.task == NpuTaskType::TrafficViolation) {
+            state.violationConfig = violationConfigSnapshot();
+            state.violationRegionsConfigured = state.violationConfig.regionsValid();
+        }
         state.status = next.enabled ? "pending" : "off";
         state.processed = processed.load();
         state.dropped = droppedFrames.load();
@@ -408,6 +1209,10 @@ struct NpuInferenceWorker::Impl
         state.sourceRevision = sourceRevision;
         state.modelsReady = modelsLoaded.load() &&
                 loadedTaskValue.load() == static_cast<int>(cfg.task);
+        if (cfg.task == NpuTaskType::TrafficViolation) {
+            state.violationConfig = violationConfigSnapshot();
+            state.violationRegionsConfigured = state.violationConfig.regionsValid();
+        }
         state.status = cfg.enabled ? "pending" : "off";
         state.processed = processed.load();
         state.dropped = droppedFrames.load();
@@ -481,6 +1286,11 @@ struct NpuInferenceWorker::Impl
             const std::string plateRecoPath = findModelPath(kPlateRecoModel);
             ok = loadModel(plateDetPath, &plateDet, &error) &&
                  loadModel(plateRecoPath, &plateReco, &error);
+        } else if (task == NpuTaskType::TrafficViolation) {
+            // 违法检测第一轮只复用行人模型。交通灯状态由人工ROI内HSV判断，
+            // 不再额外运行车辆模型，降低NPU占用并提高规则刷新率。
+            const std::string pedPath = findModelPath(kPedModel);
+            ok = loadModel(pedPath, &ped, &error);
         } else {
             const std::string pedPath = findModelPath(kPedModel);
             ok = loadModel(pedPath, &ped, &error);
@@ -597,6 +1407,7 @@ struct NpuInferenceWorker::Impl
             result.error.clear();
             result.plates.clear();
             result.pedestrians.clear();
+            result.vehicles.clear();
         }
 
         std::lock_guard<std::mutex> lk(resultMutex);
@@ -656,6 +1467,10 @@ struct NpuInferenceWorker::Impl
         }
 
         if (cfg.task == NpuTaskType::PlateCascade) {
+            platePostprocessor.resetForContext(cfg.revision,
+                                               frame.sourceChannel,
+                                               frame.sourceRevision);
+
             std::vector<demo::Mat> crops;
             std::vector<demo::Rect2f> plateBoxesIn;
             std::vector<int> plateColorIds;
@@ -670,41 +1485,66 @@ struct NpuInferenceWorker::Impl
                                                   true,
                                                   &result.plateMs,
                                                   &plateTiming);
+            accumulateStageTiming(result, plateTiming);
 
-            std::vector<std::string> plateTexts;
-            std::vector<std::string> platePinyins;
-            std::vector<demo::Rect2f> plateBoxesOut;
-            std::vector<int> plateColorsOut;
-            if (!crops.empty()) {
+            const int64_t plateNowMs = steadyMs();
+            std::vector<PlateTemporalCandidate> candidates;
+            std::vector<demo::Mat> ocrCrops;
+            std::vector<demo::Rect2f> ocrBoxes;
+            std::vector<int> ocrColorIds;
+            std::vector<int> ocrToCandidate;
+            platePostprocessor.prepareOcr(crops,
+                                          plateBoxesIn,
+                                          plateColorIds,
+                                          plateNowMs,
+                                          &candidates,
+                                          &ocrCrops,
+                                          &ocrBoxes,
+                                          &ocrColorIds,
+                                          &ocrToCandidate);
+
+            if (!ocrCrops.empty()) {
+                std::vector<std::string> recognizedPlates;
+                std::vector<std::string> recognizedPinyins;
+                std::vector<demo::Rect2f> recognizedBoxes;
+                std::vector<int> recognizedColors;
                 double ocrMs = 0.0;
                 demo::vision::RknnStageTiming ocrTiming;
-                demo::vision::recognize_plate_crops(crops,
-                                                    plateBoxesIn,
-                                                    plateColorIds,
+                demo::vision::recognize_plate_crops(ocrCrops,
+                                                    ocrBoxes,
+                                                    ocrColorIds,
                                                     plateReco,
-                                                    plateTexts,
-                                                    platePinyins,
-                                                    plateBoxesOut,
-                                                    plateColorsOut,
+                                                    recognizedPlates,
+                                                    recognizedPinyins,
+                                                    recognizedBoxes,
+                                                    recognizedColors,
                                                     &ocrMs,
                                                     &ocrTiming);
                 result.plateMs += ocrMs;
                 accumulateStageTiming(result, ocrTiming);
+                // recognize_plate_crops保持输入batch顺序，按计划索引回填候选。
+                platePostprocessor.mergeOcrResults(recognizedPlates,
+                                                   recognizedPinyins,
+                                                   ocrToCandidate,
+                                                   &candidates);
             }
 
-            accumulateStageTiming(result, plateTiming);
-
-            const std::size_t plateCount = std::min(plateBoxesOut.size(), plateTexts.size());
-            for (std::size_t i = 0; i < plateCount; ++i) {
-                demo::Rect2f orig;
-                demo::vision::convert_input_box_to_orig(plateBoxesOut[i], orig,
-                                                        frame.width, frame.height);
-                const std::string label = (i < platePinyins.size())
-                        ? platePinyins[i] : plateTexts[i];
-                const int colorId = (i < plateColorsOut.size()) ? plateColorsOut[i] : 0;
-                // 当前plate接口未返回检测分数，使用负值明确表示“不可用”，
-                // UI显示为“--”，避免伪造1.0置信度。
-                result.plates.push_back(makeBox(orig, -1.0f, colorId, plateTexts[i], label));
+            std::vector<PlateTemporalCandidate> stablePlates;
+            platePostprocessor.stabilize(&candidates,
+                                         frame.width,
+                                         frame.height,
+                                         plateNowMs,
+                                         &stablePlates);
+            for (const PlateTemporalCandidate& plate : stablePlates) {
+                const std::string label = !plate.pinyin.empty()
+                        ? plate.pinyin : plate.plate;
+                // 车牌检测接口未返回最终检测分数，继续用负值表示不可用，
+                // 避免UI伪造1.0；位置、文字和颜色均为时序稳定结果。
+                result.plates.push_back(makeBox(plate.origBox,
+                                                -1.0f,
+                                                plate.colorId,
+                                                plate.plate,
+                                                label));
             }
         } else {
             std::vector<demo::Rect2f> pedBoxesIn;
@@ -728,8 +1568,29 @@ struct NpuInferenceWorker::Impl
                 demo::vision::convert_input_box_to_orig(pedBoxesIn[i], orig,
                                                         frame.width, frame.height);
                 const float score = (i < pedScores.size()) ? pedScores[i] : 0.0f;
+                if (!isStandingPedestrianBox(orig)) {
+                    continue;
+                }
                 result.pedestrians.push_back(
                             makeBox(orig, score, 0, std::string(), "person"));
+            }
+
+            if (cfg.task == NpuTaskType::TrafficViolation) {
+                ViolationRuleConfig violationSnapshot;
+                {
+                    std::lock_guard<std::mutex> lk(violationConfigMutex);
+                    violationSnapshot = violationConfig;
+                }
+                violationEngine.setConfig(violationSnapshot);
+                violationEngine.process(frame.data.data(),
+                                        frame.data.size(),
+                                        frame.width,
+                                        frame.height,
+                                        frame.id,
+                                        static_cast<std::uint64_t>(steadyMs()),
+                                        static_cast<std::uint64_t>(systemMs()),
+                                        &result.pedestrians,
+                                        &result);
             }
         }
 
@@ -841,6 +1702,17 @@ float NpuInferenceWorker::nmsThreshold() const
     return config().nmsThreshold;
 }
 
+
+void NpuInferenceWorker::setViolationConfig(const ViolationRuleConfig& config)
+{
+    m_impl->updateViolationConfig(config);
+}
+
+ViolationRuleConfig NpuInferenceWorker::violationConfig() const
+{
+    return m_impl->violationConfigSnapshot();
+}
+
 void NpuInferenceWorker::setInputSource(int sourceChannel, uint64_t sourceRevision)
 {
     m_impl->updateInputSource(sourceChannel, sourceRevision);
@@ -887,6 +1759,7 @@ NpuFrameResult NpuInferenceWorker::latestResult() const
         result.error.clear();
         result.plates.clear();
         result.pedestrians.clear();
+        result.vehicles.clear();
     }
     return result;
 }

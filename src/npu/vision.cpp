@@ -457,6 +457,24 @@ static void keep_topk_candidates(std::vector<ScoreCandidate>& cands, int topk) {
     std::sort(cands.begin(), cands.end(), [](const ScoreCandidate& a, const ScoreCandidate& b) { return a.score > b.score; });
 }
 
+struct YoloScoreCandidate {
+    int idx = -1;
+    float score = 0.0f;
+    int class_id = -1;
+};
+
+static void keep_topk_yolo_candidates(std::vector<YoloScoreCandidate>& cands, int topk) {
+    if (topk <= 0 || static_cast<int>(cands.size()) <= topk) return;
+    std::nth_element(cands.begin(),
+                     cands.begin() + topk,
+                     cands.end(),
+                     [](const YoloScoreCandidate& a, const YoloScoreCandidate& b) { return a.score > b.score; });
+    cands.resize(topk);
+    std::sort(cands.begin(), cands.end(), [](const YoloScoreCandidate& a, const YoloScoreCandidate& b) {
+        return a.score > b.score;
+    });
+}
+
 // 为动态输出形状构建中心点网格与步长表。
 // 不同模型可能输出 {8,16,32} 或 {4,8,16} 等组合。
 static bool build_grid(int num_preds, std::vector<Point2f>& grid, std::vector<int>& strides) {
@@ -1053,6 +1071,157 @@ void convert_input_box_to_orig(const Rect2f& in_box, Rect2f& out_box, int ow, in
     w = std::max(0.0f, std::min(w, static_cast<float>(ow) - x));
     h = std::max(0.0f, std::min(h, static_cast<float>(oh) - y));
     out_box = Rect2f(x, y, w, h);
+}
+
+bool detect_yolov8_objects(const Mat& mid_img,
+                           RknnModel& model,
+                           int class_count,
+                           float conf_thres,
+                           float iou_thres,
+                           std::vector<YoloObjectDetection>& detections,
+                           bool input_is_rgb,
+                           int topk_decode,
+                           int topk_nms,
+                           double* npu_ms,
+                           RknnStageTiming* timing) {
+    detections.clear();
+    if (npu_ms) *npu_ms = 0.0;
+    if (timing) timing->reset();
+    if (mid_img.empty() || class_count <= 0) return false;
+
+    static thread_local Mat rgb;
+    if (input_is_rgb) rgb = mid_img;
+    else {
+#ifdef USE_RGA
+        rga_cvt_bgr_to_rgb(mid_img, rgb);
+#else
+        cv::cvtColor(mid_img, rgb, cv::COLOR_BGR2RGB);
+#endif
+    }
+
+    rknn_input in[1];
+    memset(in, 0, sizeof(in));
+    in[0].index = 0;
+    in[0].type = RKNN_TENSOR_UINT8;
+    in[0].size = rgb.total() * rgb.elemSize();
+    in[0].fmt = RKNN_TENSOR_NHWC;
+    in[0].buf = rgb.data;
+    auto input_start = std::chrono::high_resolution_clock::now();
+    if (rknn_inputs_set(model.ctx, model.num_in, in) != RKNN_SUCC) return false;
+    if (timing) timing->input_ms += ms_since(input_start);
+
+    auto npu_start = std::chrono::high_resolution_clock::now();
+    double run_start_ms = steady_ms_now();
+    int run_ret = rknn_run(model.ctx, nullptr);
+    double run_end_ms = steady_ms_now();
+    if (npu_ms) *npu_ms = ms_since(npu_start);
+    if (timing) timing->run_ms += npu_ms ? *npu_ms : ms_since(npu_start);
+    if (run_ret >= 0) {
+        record_rknn_run_interval(4, run_start_ms, run_end_ms);
+        if (timing) timing->run_count += 1;
+    }
+    if (run_ret < 0) return false;
+
+    rknn_output out[1];
+    memset(out, 0, sizeof(out));
+    out[0].want_float = 1;
+    auto output_start = std::chrono::high_resolution_clock::now();
+    if (rknn_outputs_get(model.ctx, 1, out, nullptr) != RKNN_SUCC) return false;
+    if (timing) timing->output_ms += ms_since(output_start);
+
+    bool ok = false;
+    auto post_start = std::chrono::high_resolution_clock::now();
+    do {
+        float* p = static_cast<float*>(out[0].buf);
+        TensorCNView view;
+        if (!infer_cn_view(model.out_attrs[0], p, view)) break;
+
+        int num_preds = view.num_preds;
+        if (num_preds <= 0) break;
+
+        int cls_cnt = std::max(1, class_count);
+        bool dfl_mode = (view.channels >= 64 + cls_cnt) && first64_looks_like_dfl(view);
+        int cls_base = dfl_mode ? 64 : 4;
+        if (cls_base >= view.channels) break;
+
+        cls_cnt = std::min(cls_cnt, view.channels - cls_base);
+        if (cls_cnt <= 0) break;
+
+        bool cls_is_logit = cls_looks_like_logit(view, cls_base, cls_cnt);
+
+        const std::vector<Point2f>* grid = nullptr;
+        const std::vector<int>* strides = nullptr;
+        if (dfl_mode && !get_grid_cached(num_preds, grid, strides)) break;
+
+        std::vector<YoloScoreCandidate> cls_pass;
+        cls_pass.reserve(num_preds / 8 + 1);
+        for (int i = 0; i < num_preds; ++i) {
+            float max_score = -1.0f;
+            int best_class = -1;
+            for (int c = 0; c < cls_cnt; ++c) {
+                float s = view.at(cls_base + c, i);
+                if (cls_is_logit) s = sigmoidf(s);
+                if (s > max_score) {
+                    max_score = s;
+                    best_class = c;
+                }
+            }
+            if (max_score < conf_thres || best_class < 0) continue;
+            cls_pass.push_back({i, max_score, best_class});
+        }
+        if (cls_pass.empty()) break;
+
+        keep_topk_yolo_candidates(cls_pass, topk_decode);
+
+        std::vector<YoloObjectDetection> decoded;
+        decoded.reserve(cls_pass.size());
+        for (const auto& c : cls_pass) {
+            Rect2f b;
+            if (dfl_mode) b = decode_dfl_box(view, c.idx, (*grid)[c.idx], (*strides)[c.idx]);
+            else b = decode_xywh_box(view, c.idx);
+            if (b.width <= 0 || b.height <= 0) continue;
+
+            YoloObjectDetection det;
+            det.input_box = b;
+            det.score = c.score;
+            det.class_id = c.class_id;
+            decoded.push_back(det);
+        }
+        if (decoded.empty()) break;
+
+        std::sort(decoded.begin(), decoded.end(), [](const YoloObjectDetection& a, const YoloObjectDetection& b) {
+            return a.score > b.score;
+        });
+        if (topk_nms > 0 && static_cast<int>(decoded.size()) > topk_nms) {
+            decoded.resize(topk_nms);
+        }
+
+        for (int cls = 0; cls < cls_cnt; ++cls) {
+            std::vector<Rect2f> boxes;
+            std::vector<float> scores;
+            std::vector<int> map_idx;
+            for (size_t i = 0; i < decoded.size(); ++i) {
+                if (decoded[i].class_id != cls) continue;
+                boxes.push_back(decoded[i].input_box);
+                scores.push_back(decoded[i].score);
+                map_idx.push_back(static_cast<int>(i));
+            }
+            if (boxes.empty()) continue;
+            std::vector<int> keep = nms_indices(boxes, scores, iou_thres);
+            for (int idx : keep) {
+                detections.push_back(decoded[map_idx[idx]]);
+            }
+        }
+
+        std::sort(detections.begin(), detections.end(), [](const YoloObjectDetection& a, const YoloObjectDetection& b) {
+            return a.score > b.score;
+        });
+        ok = !detections.empty();
+    } while (false);
+    if (timing) timing->post_ms += ms_since(post_start);
+
+    rknn_outputs_release(model.ctx, 1, out);
+    return ok;
 }
 
 bool recognize_plate_crops(const std::vector<Mat>& crops,

@@ -25,9 +25,15 @@ struct RknnStageTiming {
 
 struct RknnRunInterval {
     uint64_t seq = 0;
-    int branch = 0;  // 1: plate detect, 2: plate OCR, 3: pedestrian detect.
+    int branch = 0;  // 1: plate detect, 2: plate OCR, 3: pedestrian detect, 4: vehicle/generic detect.
     double start_ms = 0.0;
     double end_ms = 0.0;
+};
+
+struct YoloObjectDetection {
+    Rect2f input_box;
+    float score = 0.0f;
+    int class_id = -1;
 };
 
 // Collect completed rknn_run intervals with sequence id greater than after_seq.
@@ -50,6 +56,19 @@ std::string current_preproc_mode_name(bool force_cpu = false);
 
 // Map a detector-input box back to original image coordinates.
 void convert_input_box_to_orig(const Rect2f& in_box, Rect2f& out_box, int ow, int oh);
+
+// Generic YOLOv8 object detector for DFL raw heads and noDFL decoded heads.
+bool detect_yolov8_objects(const Mat& mid_img,
+                           RknnModel& model,
+                           int class_count,
+                           float conf_thres,
+                           float iou_thres,
+                           std::vector<YoloObjectDetection>& detections,
+                           bool input_is_rgb = false,
+                           int topk_decode = DEFAULT_PED_TOPK_DECODE,
+                           int topk_nms = DEFAULT_PED_TOPK_NMS,
+                           double* npu_ms = nullptr,
+                           RknnStageTiming* timing = nullptr);
 
 // Stage 1: plate detection, geometry decode, NMS and perspective crops.
 bool detect_plate_candidates(const Mat& mid_img,

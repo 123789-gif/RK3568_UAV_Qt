@@ -123,3 +123,7 @@ dist          本地发布包，不进入 Git
 - HDMI HUD rows now use explicit equal-height SYS/FPS/LAT row geometry.
 - Stable plate labels now expire after short consecutive misses instead of lingering for about one second after scene changes.
 - Police and consulate plate labels use per-character color rendering: police prefixes are black with a red suffix, and consulate labels keep a white prefix with a red suffix.
+
+### Traffic violation vehicle detection v1
+
+This version adds a first-stage “违法检测（行人+车辆）” AI task. It loads the existing pedestrian model and the new `yolov8_car.rknn` model, then displays `person / car / bus / van / truck` detection results in the AI page and HDMI OSD. It is a model-integration baseline only; crosswalk ROI, signal-light state, and violation rule judgment are reserved for the next patch.

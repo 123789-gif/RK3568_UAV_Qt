@@ -3,6 +3,8 @@
 #include "ptz/ptz_capture_worker.h"
 #include "ptz/ptz_control_worker.h"
 #include "system/fan_controller.h"
+#include "ui/violation_preview_widget.h"
+#include "npu/violation_rule_config.h"
 
 #include <QApplication>
 #include <QVBoxLayout>
@@ -15,18 +17,16 @@
 #include <QScreen>
 #include <QStackedWidget>
 #include <QComboBox>
-#include <QCheckBox>
 #include <QSpinBox>
 #include <QDoubleSpinBox>
 #include <QAbstractSpinBox>
-#include <QTableWidget>
 #include <QScrollArea>
-#include <QHeaderView>
-#include <QAbstractItemView>
 #include <QSettings>
 #include <QCoreApplication>
 #include <QFrame>
 #include <QButtonGroup>
+#include <QAbstractButton>
+#include <QStyle>
 #include <QPixmap>
 #include <QSizePolicy>
 #include <QSlider>
@@ -469,10 +469,29 @@ QFileInfoList collectManualSnapshotFiles(const QString &manualDirectory,
 
 QString aiTaskDisplayName(NpuTaskType task)
 {
-    return task == NpuTaskType::PlateCascade
-            ? QStringLiteral("车牌识别")
-            : QStringLiteral("行人检测");
+    switch (task) {
+    case NpuTaskType::PlateCascade:
+        return QStringLiteral("车牌识别");
+    case NpuTaskType::TrafficViolation:
+        return QStringLiteral("违法检测");
+    case NpuTaskType::Pedestrian:
+    default:
+        return QStringLiteral("行人检测");
+    }
 }
+
+QString aiTaskButtonText(NpuTaskType task, bool active, bool pending)
+{
+    const QString name = aiTaskDisplayName(task);
+    if (pending) {
+        return QStringLiteral("● %1").arg(name);
+    }
+    if (active) {
+        return QStringLiteral("✓ %1").arg(name);
+    }
+    return name;
+}
+
 
 QString aiSettingsPath()
 {
@@ -480,6 +499,40 @@ QString aiSettingsPath()
     const QString configDir = QDir::cleanPath(binDir.filePath(QStringLiteral("../config")));
     QDir().mkpath(configDir);
     return QDir(configDir).filePath(QStringLiteral("ai_panel.ini"));
+}
+
+QString violationSettingsPath()
+{
+    QDir binDir(QCoreApplication::applicationDirPath());
+    const QString configDir = QDir::cleanPath(binDir.filePath(QStringLiteral("../config")));
+    QDir().mkpath(configDir);
+    return QDir(configDir).filePath(QStringLiteral("pedestrian_violation.ini"));
+}
+
+QString violationLightText(NpuTrafficLightState state)
+{
+    switch (state) {
+    case NpuTrafficLightState::Red:
+        return QStringLiteral("红灯");
+    case NpuTrafficLightState::Green:
+        return QStringLiteral("绿灯");
+    case NpuTrafficLightState::Unknown:
+    default:
+        return QStringLiteral("未知");
+    }
+}
+
+QString violationPedestrianStateText(NpuPedestrianState state)
+{
+    switch (state) {
+    case NpuPedestrianState::RedAccumulating:
+        return QStringLiteral("红灯区域累计中");
+    case NpuPedestrianState::RedViolation:
+        return QStringLiteral("闯红灯");
+    case NpuPedestrianState::Normal:
+    default:
+        return QStringLiteral("正常");
+    }
 }
 
 QString ptzSettingsPath()
@@ -510,13 +563,82 @@ QString ptzEndpointText(const PtzResolvedDevice &device)
             .arg(device.profile.usbProductId, 4, 16, QLatin1Char('0'));
 }
 
-QString aiBoxText(const NpuBox &box)
+
+QString fpgaModeName(quint32 mode)
 {
-    return QStringLiteral("%1,%2,%3,%4")
-            .arg(qRound(box.x))
-            .arg(qRound(box.y))
-            .arg(qRound(box.w))
-            .arg(qRound(box.h));
+    switch (mode) {
+    case 0U: return QStringLiteral("原始画面");
+    case 1U: return QStringLiteral("反色诊断");
+    case 2U: return QStringLiteral("固定色诊断");
+    case 3U: return QStringLiteral("暗光增强");
+    case 4U: return QStringLiteral("边缘检测");
+    case 5U: return QStringLiteral("图像去雾");
+    default: return QStringLiteral("未知");
+    }
+}
+
+QString fpgaModeButtonText(quint32 mode, bool active, bool pending)
+{
+    QString title;
+    QString subtitle;
+    switch (mode) {
+    case 0U:
+        title = QStringLiteral("原始画面");
+        subtitle = QStringLiteral("Bypass");
+        break;
+    case 3U:
+        title = QStringLiteral("暗光增强");
+        subtitle = QStringLiteral("Gamma");
+        break;
+    case 4U:
+        title = QStringLiteral("边缘检测");
+        subtitle = QStringLiteral("Sobel");
+        break;
+    case 5U:
+        title = QStringLiteral("图像去雾");
+        subtitle = QStringLiteral("Dehaze");
+        break;
+    default:
+        title = fpgaModeName(mode);
+        subtitle = QStringLiteral("Mode %1").arg(mode);
+        break;
+    }
+
+    // 按钮始终保持单行固定文字；切换中状态由橙色样式和下方状态栏表示，
+    // 避免文字换行或变长引起按钮高度、页面布局跳动。
+    Q_UNUSED(pending)
+    const QString text = QStringLiteral("%1 %2").arg(title, subtitle);
+    return active ? QStringLiteral("✓ %1").arg(text) : text;
+}
+
+QString fpgaIpVersionText(quint32 version)
+{
+    return QStringLiteral("%1.%2")
+            .arg((version >> 16) & 0xffffU)
+            .arg(version & 0xffffU);
+}
+
+QString ethernetOutputButtonText(bool enable, bool active, bool pending)
+{
+    const QString title = enable ? QStringLiteral("开启")
+                                 : QStringLiteral("关闭");
+    if (pending) {
+        return enable ? QStringLiteral("正在开启……")
+                      : QStringLiteral("正在关闭……");
+    }
+    if (active) {
+        return QStringLiteral("✓ %1").arg(title);
+    }
+    return title;
+}
+
+QString ipv4Text(quint32 ipv4)
+{
+    return QStringLiteral("%1.%2.%3.%4")
+            .arg((ipv4 >> 24) & 0xffU)
+            .arg((ipv4 >> 16) & 0xffU)
+            .arg((ipv4 >> 8) & 0xffU)
+            .arg(ipv4 & 0xffU);
 }
 
 } // namespace
@@ -527,7 +649,7 @@ ControlPanelWindow::ControlPanelWindow(QWidget *parent)
 {
     ui->setupUi(this);
 
-    setWindowTitle(QStringLiteral("智能交通感知系统控制台"));
+    setWindowTitle(QStringLiteral("智能交通感知控制台"));
 
     m_display = new DrmRgaDisplay(this);
     m_ptzCapture = new PtzCaptureWorker(this);
@@ -548,6 +670,22 @@ ControlPanelWindow::ControlPanelWindow(QWidget *parent)
 
     connect(m_display, &DrmRgaDisplay::aiStatsUpdated,
             this, &ControlPanelWindow::onDisplayAiStatsUpdated,
+            Qt::QueuedConnection);
+
+    connect(m_display, &DrmRgaDisplay::fpgaControlInfoUpdated,
+            this, &ControlPanelWindow::onFpgaControlInfoUpdated,
+            Qt::QueuedConnection);
+
+    connect(m_display, &DrmRgaDisplay::fpgaApplyFinished,
+            this, &ControlPanelWindow::onFpgaApplyFinished,
+            Qt::QueuedConnection);
+
+    connect(m_display, &DrmRgaDisplay::ethernetControlInfoUpdated,
+            this, &ControlPanelWindow::onEthernetControlInfoUpdated,
+            Qt::QueuedConnection);
+
+    connect(m_display, &DrmRgaDisplay::ethernetApplyFinished,
+            this, &ControlPanelWindow::onEthernetApplyFinished,
             Qt::QueuedConnection);
 
     connect(m_ptzCapture, &PtzCaptureWorker::stateChanged,
@@ -573,8 +711,23 @@ ControlPanelWindow::ControlPanelWindow(QWidget *parent)
     setupControlUi();
     applyStyle();
     loadAiSettings();
-    onApplyAiConfigClicked();
+    loadViolationSettings();
     loadPtzSettings();
+
+    connect(m_display, &DrmRgaDisplay::previewFrameReady,
+            this,
+            [this](const QImage &image,
+                   quint64 frameId,
+                   int sourceChannel,
+                   quint64 sourceRevision) {
+        Q_UNUSED(frameId)
+        Q_UNUSED(sourceChannel)
+        Q_UNUSED(sourceRevision)
+        if (m_violationPreview) {
+            m_violationPreview->setFrame(image);
+        }
+    },
+    Qt::QueuedConnection);
 
     m_statusTimer = new QTimer(this);
     connect(m_statusTimer, &QTimer::timeout,
@@ -678,7 +831,7 @@ void ControlPanelWindow::setupControlUi()
     root->setContentsMargins(14, 12, 14, 10);
     root->setSpacing(8);
 
-    QLabel *title = new QLabel(QStringLiteral("智能交通感知系统控制台"), central);
+    QLabel *title = new QLabel(QStringLiteral("智能交通感知控制台"), central);
     title->setObjectName("titleLabel");
     title->setAlignment(Qt::AlignCenter);
     root->addWidget(title);
@@ -694,6 +847,7 @@ void ControlPanelWindow::setupControlUi()
     m_stack->addWidget(createFpgaPage());
     m_stack->addWidget(createCpuPage());
     m_stack->addWidget(createAiPage());
+    m_stack->addWidget(createViolationPage());
     m_stack->addWidget(createStatusPage());
     body->addWidget(m_stack, 1);
 
@@ -714,10 +868,11 @@ QWidget *ControlPanelWindow::createNavPanel()
 
     QVBoxLayout *layout = new QVBoxLayout(nav);
     layout->setContentsMargins(10, 12, 10, 12);
-    layout->setSpacing(10);
+    layout->setSpacing(7);
 
     QStringList names;
-    names << "视频显示" << "PTZ控制" << "FPGA配置" << "CPU配置" << "AI推理" << "系统状态";
+    names << "视频显示" << "PTZ控制" << "FPGA配置" << "CPU配置"
+          << "AI推理" << "违法检测" << "系统状态";
 
     QButtonGroup *group = new QButtonGroup(nav);
     group->setExclusive(true);
@@ -725,7 +880,7 @@ QWidget *ControlPanelWindow::createNavPanel()
     for (int i = 0; i < names.size(); ++i) {
         QPushButton *btn = new QPushButton(names[i], nav);
         btn->setCheckable(true);
-        btn->setMinimumHeight(54);
+        btn->setMinimumHeight(50);
         btn->setObjectName("navButton");
         group->addButton(btn, i);
         layout->addWidget(btn);
@@ -1110,49 +1265,141 @@ QWidget *ControlPanelWindow::createFpgaPage()
 {
     QWidget *page = new QWidget(this);
     QVBoxLayout *layout = new QVBoxLayout(page);
-    layout->setContentsMargins(12, 8, 12, 8);
-    layout->setSpacing(12);
+    layout->setContentsMargins(12, 6, 12, 6);
+    layout->setSpacing(6);
 
-    QGroupBox *group = new QGroupBox("FPGA 功能配置", page);
+    QGroupBox *group = new QGroupBox(QStringLiteral("FPGA整帧预处理"), page);
     QGridLayout *grid = new QGridLayout(group);
-    grid->setContentsMargins(18, 22, 18, 16);
-    grid->setHorizontalSpacing(14);
-    grid->setVerticalSpacing(12);
+    grid->setContentsMargins(16, 20, 16, 10);
+    grid->setHorizontalSpacing(12);
+    grid->setVerticalSpacing(6);
+    grid->setColumnStretch(0, 1);
+    grid->setColumnStretch(1, 1);
 
-    m_sourceCombo = new QComboBox(group);
-    m_sourceCombo->addItems(QStringList() << "HDMI1" << "HDMI2" << "HDMI3" << "CMOS" << "SFP" << "测试图");
+    QLabel *description = new QLabel(
+                QStringLiteral("点击按钮直接应用；FPGA在帧边界切换整帧处理模式，"
+                               "不停止PCIe视频流。"),
+                group);
+    description->setWordWrap(true);
 
-    QStringList pp;
-    pp << "无" << "Gamma增强" << "边缘增强" << "车牌定位" << "Resize" << "BEV预留";
-    m_ch1PreprocCombo = new QComboBox(group);
-    m_ch2PreprocCombo = new QComboBox(group);
-    m_ch3PreprocCombo = new QComboBox(group);
-    m_ch4PreprocCombo = new QComboBox(group);
-    m_ch1PreprocCombo->addItems(pp);
-    m_ch2PreprocCombo->addItems(pp);
-    m_ch3PreprocCombo->addItems(pp);
-    m_ch4PreprocCombo->addItems(pp);
+    QLabel *inputValue = new QLabel(
+                QStringLiteral("视频输入：SFP整帧｜1920×1080 RGB565@60"), group);
+    inputValue->setObjectName(QStringLiteral("fpgaInputSummary"));
 
-    QPushButton *apply = new QPushButton("应用 FPGA 配置（预留 BAR/ioctl）", group);
+    m_fpgaPreprocButtonGroup = new QButtonGroup(this);
+    m_fpgaPreprocButtonGroup->setExclusive(false);
 
-    grid->addWidget(new QLabel("主输入源", group), 0, 0);
-    grid->addWidget(m_sourceCombo, 0, 1);
-    grid->addWidget(new QLabel("CH1预处理", group), 1, 0);
-    grid->addWidget(m_ch1PreprocCombo, 1, 1);
-    grid->addWidget(new QLabel("CH2预处理", group), 2, 0);
-    grid->addWidget(m_ch2PreprocCombo, 2, 1);
-    grid->addWidget(new QLabel("CH3预处理", group), 3, 0);
-    grid->addWidget(m_ch3PreprocCombo, 3, 1);
-    grid->addWidget(new QLabel("CH4预处理", group), 4, 0);
-    grid->addWidget(m_ch4PreprocCombo, 4, 1);
-    grid->addWidget(apply, 5, 0, 1, 2);
+    auto createModeButton = [this, group](const QString &text, quint32 mode) {
+        QPushButton *button = new QPushButton(text, group);
+        button->setObjectName(QStringLiteral("fpgaModeButton"));
+        button->setFixedHeight(58);
+        button->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+        button->setProperty("fpgaActive", false);
+        button->setProperty("fpgaPending", false);
+        m_fpgaPreprocButtonGroup->addButton(button, static_cast<int>(mode));
+        connect(button, &QPushButton::clicked, this,
+                [this, mode]() { requestFpgaMode(mode); });
+        return button;
+    };
+
+    QPushButton *bypassButton = createModeButton(
+                fpgaModeButtonText(0U, false, false), 0U);
+    QPushButton *gammaButton = createModeButton(
+                fpgaModeButtonText(3U, false, false), 3U);
+    QPushButton *sobelButton = createModeButton(
+                fpgaModeButtonText(4U, false, false), 4U);
+    QPushButton *dehazeButton = createModeButton(
+                fpgaModeButtonText(5U, false, false), 5U);
+
+    m_fpgaCapabilityLabel = new QLabel(
+                QStringLiteral("硬件能力：等待启动PCIe显示并读取FPGA……"), group);
+    m_fpgaCapabilityLabel->setWordWrap(true);
+    m_fpgaCapabilityLabel->setObjectName(QStringLiteral("fpgaInfoLabel"));
+
+    m_fpgaCurrentModeLabel = new QLabel(QStringLiteral("当前模式：未知"), group);
+    m_fpgaCurrentModeLabel->setWordWrap(true);
+    m_fpgaCurrentModeLabel->setObjectName(QStringLiteral("fpgaCurrentModeLabel"));
+
+    m_fpgaApplyStatusLabel = new QLabel(
+                QStringLiteral("配置状态：请先在“视频显示”页面启动HDMI显示"), group);
+    m_fpgaApplyStatusLabel->setWordWrap(true);
+    m_fpgaApplyStatusLabel->setObjectName(QStringLiteral("fpgaApplyStatusLabel"));
+
+    grid->addWidget(description, 0, 0, 1, 2);
+    grid->addWidget(inputValue, 1, 0, 1, 2);
+    grid->addWidget(bypassButton, 2, 0);
+    grid->addWidget(gammaButton, 2, 1);
+    grid->addWidget(sobelButton, 3, 0);
+    grid->addWidget(dehazeButton, 3, 1);
+    grid->addWidget(m_fpgaCurrentModeLabel, 4, 0, 1, 2);
+    grid->addWidget(m_fpgaApplyStatusLabel, 5, 0, 1, 2);
+    grid->addWidget(m_fpgaCapabilityLabel, 6, 0, 1, 2);
+
+    QGroupBox *ethernetGroup = new QGroupBox(
+                QStringLiteral("网络视频输出"), page);
+    QGridLayout *ethernetGrid = new QGridLayout(ethernetGroup);
+    ethernetGrid->setContentsMargins(18, 22, 18, 14);
+    ethernetGrid->setHorizontalSpacing(14);
+    ethernetGrid->setVerticalSpacing(8);
+    ethernetGrid->setColumnStretch(0, 1);
+    ethernetGrid->setColumnStretch(1, 1);
+
+    QLabel *ethernetDescription = new QLabel(
+                QStringLiteral("控制预处理后画面是否通过FPGA网口发送。"
+                               "关闭只停止H2/UDP视频帧，不复位PHY和网络协议栈。"),
+                ethernetGroup);
+    ethernetDescription->setWordWrap(true);
+
+    m_ethernetOutputButtonGroup = new QButtonGroup(this);
+    m_ethernetOutputButtonGroup->setExclusive(false);
+
+    auto createEthernetButton = [this, ethernetGroup](bool enable) {
+        QPushButton *button = new QPushButton(
+                    ethernetOutputButtonText(enable, false, false),
+                    ethernetGroup);
+        button->setObjectName(QStringLiteral("ethOutputButton"));
+        button->setMinimumHeight(58);
+        button->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
+        button->setProperty("ethActive", false);
+        button->setProperty("ethPending", false);
+        m_ethernetOutputButtonGroup->addButton(button, enable ? 1 : 0);
+        connect(button, &QPushButton::clicked, this,
+                [this, enable]() { requestEthernetOutput(enable); });
+        return button;
+    };
+
+    QPushButton *ethernetOffButton = createEthernetButton(false);
+    QPushButton *ethernetOnButton = createEthernetButton(true);
+
+    m_ethernetCurrentStateLabel = new QLabel(
+                QStringLiteral("当前状态：未知"), ethernetGroup);
+    m_ethernetCurrentStateLabel->setObjectName(
+                QStringLiteral("ethernetCurrentStateLabel"));
+
+    m_ethernetApplyStatusLabel = new QLabel(
+                QStringLiteral("配置状态：等待读取网口控制状态"), ethernetGroup);
+    m_ethernetApplyStatusLabel->setWordWrap(true);
+    m_ethernetApplyStatusLabel->setObjectName(
+                QStringLiteral("ethernetApplyStatusLabel"));
+
+    m_ethernetInfoLabel = new QLabel(
+                QStringLiteral("输出信息：等待读取FPGA……"), ethernetGroup);
+    m_ethernetInfoLabel->setWordWrap(true);
+    m_ethernetInfoLabel->setObjectName(QStringLiteral("ethernetInfoLabel"));
+
+    ethernetGrid->addWidget(ethernetDescription, 0, 0, 1, 2);
+    ethernetGrid->addWidget(ethernetOffButton, 1, 0);
+    ethernetGrid->addWidget(ethernetOnButton, 1, 1);
+    ethernetGrid->addWidget(m_ethernetCurrentStateLabel, 2, 0, 1, 2);
+    ethernetGrid->addWidget(m_ethernetApplyStatusLabel, 3, 0, 1, 2);
+    ethernetGrid->addWidget(m_ethernetInfoLabel, 4, 0, 1, 2);
 
     layout->addWidget(group);
+    layout->addWidget(ethernetGroup);
     layout->addStretch(1);
 
-    connect(apply, &QPushButton::clicked,
-            this, &ControlPanelWindow::onApplyFpgaConfigClicked);
-
+    updateFpgaModeButtons();
+    updateEthernetButtons();
     return page;
 }
 
@@ -1163,62 +1410,87 @@ QWidget *ControlPanelWindow::createCpuPage()
     layout->setContentsMargins(12, 8, 12, 8);
     layout->setSpacing(12);
 
-    QGroupBox *group = new QGroupBox("CPU与散热配置", page);
+    QGroupBox *group = new QGroupBox(QStringLiteral("CPU与散热配置"), page);
     QGridLayout *grid = new QGridLayout(group);
     grid->setContentsMargins(18, 22, 18, 16);
     grid->setHorizontalSpacing(14);
-    grid->setVerticalSpacing(14);
+    grid->setVerticalSpacing(16);
+    grid->setColumnStretch(0, 0);
+    grid->setColumnStretch(1, 1);
 
-    m_btnFanPower = new QPushButton("风扇关闭", group);
+    m_btnFanPower = new QPushButton(QStringLiteral("风扇关闭"), group);
     m_btnFanPower->setCheckable(true);
+    m_btnFanPower->setMinimumHeight(58);
 
-    m_fanPwmSlider = new QSlider(Qt::Horizontal, group);
-    m_fanPwmSlider->setRange(0, 100);
-    m_fanPwmSlider->setSingleStep(5);
-    m_fanPwmSlider->setPageStep(10);
-    m_fanPwmSlider->setValue(30);
+    auto makePwmButton = [group](const QString &text) {
+        QPushButton *button = new QPushButton(text, group);
+        button->setObjectName(QStringLiteral("fanPwmButton"));
+        button->setFixedSize(72, 58);
+        button->setAutoRepeat(true);
+        button->setAutoRepeatDelay(450);
+        button->setAutoRepeatInterval(180);
+        return button;
+    };
+
+    m_btnFanPwmMinus = makePwmButton(QStringLiteral("−"));
+    m_btnFanPwmPlus = makePwmButton(QStringLiteral("+"));
 
     m_fanPwmSpin = new QSpinBox(group);
     m_fanPwmSpin->setRange(0, 100);
     m_fanPwmSpin->setSingleStep(5);
     m_fanPwmSpin->setValue(30);
-    m_fanPwmSpin->setSuffix(" %");
+    m_fanPwmSpin->setSuffix(QStringLiteral(" %"));
+    m_fanPwmSpin->setButtonSymbols(QAbstractSpinBox::NoButtons);
+    m_fanPwmSpin->setReadOnly(true);
+    m_fanPwmSpin->setAlignment(Qt::AlignCenter);
+    m_fanPwmSpin->setFocusPolicy(Qt::NoFocus);
+    m_fanPwmSpin->setObjectName(QStringLiteral("fanPwmValue"));
+    m_fanPwmSpin->setMinimumSize(150, 58);
 
-    QPushButton *apply = new QPushButton("应用风扇设置", group);
+    QWidget *pwmAdjust = new QWidget(group);
+    QHBoxLayout *pwmLayout = new QHBoxLayout(pwmAdjust);
+    pwmLayout->setContentsMargins(0, 0, 0, 0);
+    pwmLayout->setSpacing(10);
+    pwmLayout->addWidget(m_btnFanPwmMinus);
+    pwmLayout->addWidget(m_fanPwmSpin, 1);
+    pwmLayout->addWidget(m_btnFanPwmPlus);
 
-    m_fanStatusLabel = new QLabel("正在检测PWM风扇...", group);
-    m_fanStatusLabel->setObjectName("ptzState");
+    m_fanStatusLabel = new QLabel(QStringLiteral("正在检测PWM风扇..."), group);
+    m_fanStatusLabel->setObjectName(QStringLiteral("ptzState"));
     m_fanStatusLabel->setWordWrap(true);
 
+    QLabel *hint = new QLabel(
+                QStringLiteral("点击 − / + 后立即写入PWM，占空比每次调整5%，无需再次确认。"),
+                group);
+    hint->setObjectName(QStringLiteral("navHint"));
+    hint->setWordWrap(true);
+
     QLabel *note = new QLabel(
-                "PWM节点：/sys/class/pwm/pwmchip0/pwm0\n"
-                "周期：200000 ns（约5 kHz）；Qt程序需具有PWM节点写权限。",
+                QStringLiteral("PWM节点：/sys/class/pwm/pwmchip0/pwm0\n"
+                               "周期：200000 ns（约5 kHz）；Qt程序需具有PWM节点写权限。"),
                 group);
     note->setWordWrap(true);
 
-    grid->addWidget(new QLabel("风扇开关", group), 0, 0);
-    grid->addWidget(m_btnFanPower, 0, 1, 1, 2);
-    grid->addWidget(new QLabel("PWM占空比", group), 1, 0);
-    grid->addWidget(m_fanPwmSlider, 1, 1);
-    grid->addWidget(m_fanPwmSpin, 1, 2);
-    grid->addWidget(apply, 2, 0, 1, 3);
-    grid->addWidget(m_fanStatusLabel, 3, 0, 1, 3);
-    grid->addWidget(note, 4, 0, 1, 3);
+    grid->addWidget(new QLabel(QStringLiteral("风扇开关"), group), 0, 0);
+    grid->addWidget(m_btnFanPower, 0, 1);
+    grid->addWidget(new QLabel(QStringLiteral("PWM占空比"), group), 1, 0);
+    grid->addWidget(pwmAdjust, 1, 1);
+    grid->addWidget(hint, 2, 1);
+    grid->addWidget(m_fanStatusLabel, 3, 0, 1, 2);
+    grid->addWidget(note, 4, 0, 1, 2);
 
     layout->addWidget(group);
     layout->addStretch(1);
 
     connect(m_btnFanPower, &QPushButton::clicked,
             this, &ControlPanelWindow::onFanPowerClicked);
-    connect(m_fanPwmSlider, &QSlider::valueChanged,
-            this, &ControlPanelWindow::onFanPwmChanged);
-    connect(m_fanPwmSlider, &QSlider::valueChanged,
-            m_fanPwmSpin, &QSpinBox::setValue);
+    connect(m_btnFanPwmMinus, &QPushButton::clicked,
+            m_fanPwmSpin, &QSpinBox::stepDown);
+    connect(m_btnFanPwmPlus, &QPushButton::clicked,
+            m_fanPwmSpin, &QSpinBox::stepUp);
     connect(m_fanPwmSpin,
             static_cast<void (QSpinBox::*)(int)>(&QSpinBox::valueChanged),
-            m_fanPwmSlider, &QSlider::setValue);
-    connect(apply, &QPushButton::clicked,
-            this, &ControlPanelWindow::onApplyFanConfigClicked);
+            this, &ControlPanelWindow::onFanPwmChanged);
 
     return page;
 }
@@ -1228,40 +1500,56 @@ QWidget *ControlPanelWindow::createAiPage()
     QWidget *page = new QWidget(this);
     QHBoxLayout *pageLayout = new QHBoxLayout(page);
     pageLayout->setContentsMargins(6, 4, 6, 4);
-    pageLayout->setSpacing(8);
+    pageLayout->setSpacing(10);
 
+    // 左侧保留原有参数配置，只适当加宽并把任务下拉框改为直达按钮。
     QWidget *leftPanel = new QWidget(page);
-    leftPanel->setFixedWidth(400);
+    leftPanel->setFixedWidth(455);
     QVBoxLayout *leftLayout = new QVBoxLayout(leftPanel);
     leftLayout->setContentsMargins(0, 0, 0, 0);
     leftLayout->setSpacing(8);
 
-    QGroupBox *configGroup = new QGroupBox("AI / NPU 单任务配置", leftPanel);
+    QGroupBox *configGroup = new QGroupBox(QStringLiteral("AI / NPU 单任务配置"), leftPanel);
     QGridLayout *grid = new QGridLayout(configGroup);
     grid->setContentsMargins(12, 18, 12, 10);
     grid->setHorizontalSpacing(8);
     grid->setVerticalSpacing(7);
-    // 压缩标签列，为三个触控数值框保留稳定且完整的显示宽度。
-    grid->setColumnMinimumWidth(0, 104);
+    grid->setColumnMinimumWidth(0, 94);
     grid->setColumnStretch(0, 0);
     grid->setColumnStretch(1, 1);
 
-    m_npuEnableCheck = new QCheckBox("启用 NPU 推理", configGroup);
-    m_npuEnableCheck->setMinimumHeight(42);
+    m_npuTaskButtonGroup = new QButtonGroup(this);
+    m_npuTaskButtonGroup->setExclusive(false);
 
-    m_npuTaskCombo = new QComboBox(configGroup);
-    m_npuTaskCombo->addItem("行人检测", static_cast<int>(NpuTaskType::Pedestrian));
-    m_npuTaskCombo->addItem("车牌识别（检测→识别）",
-                            static_cast<int>(NpuTaskType::PlateCascade));
-    m_npuTaskCombo->setMinimumHeight(46);
+    QWidget *taskWidget = new QWidget(configGroup);
+    QHBoxLayout *taskLayout = new QHBoxLayout(taskWidget);
+    taskLayout->setContentsMargins(0, 0, 0, 0);
+    taskLayout->setSpacing(6);
 
-    QLabel *sourceValue = new QLabel(QStringLiteral("视频显示页选定输入：总览全图或CH1~CH9"), configGroup);
-    sourceValue->setObjectName("ptzState");
+    auto createTaskButton = [this, configGroup, taskLayout](NpuTaskType task) {
+        QPushButton *button = new QPushButton(aiTaskDisplayName(task), configGroup);
+        button->setObjectName(QStringLiteral("aiTaskButton"));
+        button->setMinimumHeight(48);
+        button->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+        button->setProperty("aiActive", false);
+        button->setProperty("aiPending", false);
+        m_npuTaskButtonGroup->addButton(button, static_cast<int>(task));
+        taskLayout->addWidget(button, 1);
+        connect(button, &QPushButton::clicked, this,
+                [this, task]() { requestAiTask(task); });
+    };
+
+    createTaskButton(NpuTaskType::PlateCascade);
+    createTaskButton(NpuTaskType::Pedestrian);
+
+    QLabel *sourceValue = new QLabel(
+                QStringLiteral("视频显示页选定输入：总览全图或CH1~CH9"), configGroup);
+    sourceValue->setObjectName(QStringLiteral("ptzState"));
     sourceValue->setMinimumHeight(38);
 
     auto makeTouchButton = [configGroup](const QString &text) {
         QPushButton *button = new QPushButton(text, configGroup);
-        button->setObjectName("touchAdjustButton");
+        button->setObjectName(QStringLiteral("touchAdjustButton"));
         button->setFixedSize(50, 46);
         button->setAutoRepeat(true);
         button->setAutoRepeatDelay(350);
@@ -1273,7 +1561,7 @@ QWidget *ControlPanelWindow::createAiPage()
         spin->setButtonSymbols(QAbstractSpinBox::NoButtons);
         spin->setReadOnly(true);
         spin->setAlignment(Qt::AlignCenter);
-        spin->setObjectName("touchValueSpin");
+        spin->setObjectName(QStringLiteral("touchValueSpin"));
         spin->setMinimumSize(120, 46);
         spin->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
         spin->setFocusPolicy(Qt::NoFocus);
@@ -1283,7 +1571,7 @@ QWidget *ControlPanelWindow::createAiPage()
     m_npuFpsSpin->setRange(NPU_TARGET_FPS_MIN, NPU_TARGET_FPS_MAX);
     m_npuFpsSpin->setSingleStep(1);
     m_npuFpsSpin->setValue(NPU_TARGET_FPS_DEFAULT);
-    m_npuFpsSpin->setSuffix(" fps");
+    m_npuFpsSpin->setSuffix(QStringLiteral(" fps"));
     m_npuFpsSpin->setToolTip(
                 QStringLiteral("可设置范围：%1～%2 fps；默认：%3 fps")
                 .arg(NPU_TARGET_FPS_MIN)
@@ -1329,41 +1617,49 @@ QWidget *ControlPanelWindow::createAiPage()
         connect(plusButton, &QPushButton::clicked, this, increase);
     };
 
-    QPushButton *apply = new QPushButton("应用 AI 配置", configGroup);
-    apply->setMinimumHeight(50);
+    m_btnAiApply = new QPushButton(
+                QStringLiteral("应用参数并推理"), configGroup);
+    m_btnAiApply->setMinimumHeight(50);
 
-    grid->addWidget(m_npuEnableCheck, 0, 0, 1, 2);
-    grid->addWidget(new QLabel("推理任务", configGroup), 1, 0);
-    grid->addWidget(m_npuTaskCombo, 1, 1);
-    grid->addWidget(new QLabel("输入源", configGroup), 2, 0);
-    grid->addWidget(sourceValue, 2, 1);
+    m_btnAiStop = new QPushButton(QStringLiteral("关闭推理"), configGroup);
+    m_btnAiStop->setObjectName(QStringLiteral("aiStopButton"));
+    m_btnAiStop->setMinimumHeight(50);
 
-    addTouchAdjustRow(3,
+    grid->addWidget(new QLabel(QStringLiteral("推理任务"), configGroup), 0, 0);
+    grid->addWidget(taskWidget, 0, 1);
+    grid->addWidget(new QLabel(QStringLiteral("输入源"), configGroup), 1, 0);
+    grid->addWidget(sourceValue, 1, 1);
+
+    addTouchAdjustRow(2,
                       QStringLiteral("目标推理帧率"),
                       m_npuFpsSpin,
                       [this]() { m_npuFpsSpin->stepDown(); },
                       [this]() { m_npuFpsSpin->stepUp(); });
-    addTouchAdjustRow(4,
+    addTouchAdjustRow(3,
                       QStringLiteral("检测置信度"),
                       m_confSpin,
                       [this]() { m_confSpin->stepDown(); },
                       [this]() { m_confSpin->stepUp(); });
-    addTouchAdjustRow(5,
+    addTouchAdjustRow(4,
                       QStringLiteral("NMS阈值"),
                       m_nmsSpin,
                       [this]() { m_nmsSpin->stepDown(); },
                       [this]() { m_nmsSpin->stepUp(); });
 
-    grid->addWidget(apply, 6, 0, 1, 2);
+    grid->addWidget(m_btnAiApply, 5, 0, 1, 2);
+    grid->addWidget(m_btnAiStop, 6, 0, 1, 2);
 
     m_aiConfigSummaryLabel = new QLabel(configGroup);
     m_aiConfigSummaryLabel->setWordWrap(true);
-    m_aiConfigSummaryLabel->setObjectName("ptzState");
+    m_aiConfigSummaryLabel->setObjectName(QStringLiteral("ptzState"));
     m_aiConfigSummaryLabel->setMaximumHeight(52);
     grid->addWidget(m_aiConfigSummaryLabel, 7, 0, 1, 2);
 
-    QLabel *touchHint = new QLabel("参数使用大号 − / + 调节，支持长按连续调整。", configGroup);
-    touchHint->setObjectName("navHint");
+    QLabel *touchHint = new QLabel(
+                QStringLiteral("先选择任务和参数，再点击“应用参数并推理”；"
+                               "行人违法规则请使用独立“违法检测”页面。"),
+                configGroup);
+    touchHint->setObjectName(QStringLiteral("navHint"));
     touchHint->setWordWrap(true);
     grid->addWidget(touchHint, 8, 0, 1, 2);
 
@@ -1376,58 +1672,230 @@ QWidget *ControlPanelWindow::createAiPage()
     rightLayout->setContentsMargins(0, 0, 0, 0);
     rightLayout->setSpacing(8);
 
-    QGroupBox *runtimeGroup = new QGroupBox("运行状态", rightPanel);
-    runtimeGroup->setMaximumHeight(156);
+    QGroupBox *runtimeGroup = new QGroupBox(QStringLiteral("运行状态"), rightPanel);
+    runtimeGroup->setMaximumHeight(196);
     QVBoxLayout *runtimeLayout = new QVBoxLayout(runtimeGroup);
     runtimeLayout->setContentsMargins(10, 18, 10, 8);
-    m_aiRuntimeLabel = new QLabel("AI未启用", runtimeGroup);
-    m_aiRuntimeLabel->setObjectName("aiRuntimeStatus");
+    m_aiRuntimeLabel = new QLabel(QStringLiteral("AI未启用"), runtimeGroup);
+    m_aiRuntimeLabel->setObjectName(QStringLiteral("aiRuntimeStatus"));
     m_aiRuntimeLabel->setWordWrap(true);
     m_aiRuntimeLabel->setAlignment(Qt::AlignLeft | Qt::AlignTop);
     m_aiRuntimeLabel->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
     runtimeLayout->addWidget(m_aiRuntimeLabel);
     rightLayout->addWidget(runtimeGroup, 0);
 
-    QGroupBox *resultGroup = new QGroupBox("最近识别结果（最多50条）", rightPanel);
+    QGroupBox *resultGroup = new QGroupBox(QStringLiteral("当前结果"), rightPanel);
     QVBoxLayout *resultLayout = new QVBoxLayout(resultGroup);
-    resultLayout->setContentsMargins(8, 18, 8, 8);
+    resultLayout->setContentsMargins(10, 18, 10, 10);
     resultLayout->setSpacing(5);
 
-    m_aiResultTable = new QTableWidget(0, 7, resultGroup);
-    m_aiResultTable->setObjectName("aiResultTable");
-    m_aiResultTable->setHorizontalHeaderLabels(
-                QStringList() << "时间" << "帧号" << "任务" << "结果"
-                              << "置信度" << "目标框 x,y,w,h" << "耗时/ms");
-    m_aiResultTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
-    m_aiResultTable->setSelectionBehavior(QAbstractItemView::SelectRows);
-    m_aiResultTable->setSelectionMode(QAbstractItemView::SingleSelection);
-    m_aiResultTable->setAlternatingRowColors(true);
-    m_aiResultTable->verticalHeader()->setVisible(false);
-    m_aiResultTable->verticalHeader()->setDefaultSectionSize(34);
-    m_aiResultTable->horizontalHeader()->setStretchLastSection(false);
-    m_aiResultTable->horizontalHeader()->setMinimumSectionSize(54);
-    m_aiResultTable->horizontalHeader()->setSectionResizeMode(0, QHeaderView::ResizeToContents);
-    m_aiResultTable->horizontalHeader()->setSectionResizeMode(1, QHeaderView::ResizeToContents);
-    m_aiResultTable->horizontalHeader()->setSectionResizeMode(2, QHeaderView::ResizeToContents);
-    m_aiResultTable->horizontalHeader()->setSectionResizeMode(3, QHeaderView::Stretch);
-    m_aiResultTable->horizontalHeader()->setSectionResizeMode(4, QHeaderView::ResizeToContents);
-    m_aiResultTable->horizontalHeader()->setSectionResizeMode(5, QHeaderView::ResizeToContents);
-    m_aiResultTable->horizontalHeader()->setSectionResizeMode(6, QHeaderView::ResizeToContents);
-    resultLayout->addWidget(m_aiResultTable, 1);
-
-    QPushButton *clear = new QPushButton("清空结果", resultGroup);
-    clear->setObjectName("compactActionButton");
-    clear->setMinimumWidth(130);
-    resultLayout->addWidget(clear, 0, Qt::AlignRight);
+    m_aiCurrentResultLabel = new QLabel(
+                QStringLiteral("等待识别结果……"), resultGroup);
+    m_aiCurrentResultLabel->setObjectName(QStringLiteral("aiCurrentResult"));
+    m_aiCurrentResultLabel->setWordWrap(true);
+    m_aiCurrentResultLabel->setAlignment(Qt::AlignLeft | Qt::AlignTop);
+    m_aiCurrentResultLabel->setSizePolicy(QSizePolicy::Expanding,
+                                          QSizePolicy::Expanding);
+    resultLayout->addWidget(m_aiCurrentResultLabel, 1);
     rightLayout->addWidget(resultGroup, 1);
 
     pageLayout->addWidget(rightPanel, 1);
 
-    connect(apply, &QPushButton::clicked,
+    connect(m_btnAiApply, &QPushButton::clicked,
             this, &ControlPanelWindow::onApplyAiConfigClicked);
-    connect(clear, &QPushButton::clicked,
-            this, &ControlPanelWindow::clearAiResultTable);
+    connect(m_btnAiStop, &QPushButton::clicked,
+            this, &ControlPanelWindow::onStopAiInferenceClicked);
 
+    updateAiTaskButtons();
+    return page;
+}
+
+QWidget *ControlPanelWindow::createViolationPage()
+{
+    QWidget *page = new QWidget(this);
+    QHBoxLayout *pageLayout = new QHBoxLayout(page);
+    pageLayout->setContentsMargins(6, 4, 6, 4);
+    pageLayout->setSpacing(10);
+
+    QWidget *leftPanel = new QWidget(page);
+    QVBoxLayout *leftLayout = new QVBoxLayout(leftPanel);
+    leftLayout->setContentsMargins(0, 0, 0, 0);
+    leftLayout->setSpacing(7);
+
+    QGroupBox *previewGroup = new QGroupBox(QStringLiteral("场景预览与区域配置"), leftPanel);
+    QVBoxLayout *previewLayout = new QVBoxLayout(previewGroup);
+    previewLayout->setContentsMargins(9, 18, 9, 8);
+    previewLayout->setSpacing(6);
+
+    m_violationPreview = new ViolationPreviewWidget(previewGroup);
+    previewLayout->addWidget(m_violationPreview, 1);
+
+    QWidget *regionButtons = new QWidget(previewGroup);
+    QGridLayout *regionGrid = new QGridLayout(regionButtons);
+    regionGrid->setContentsMargins(0, 0, 0, 0);
+    regionGrid->setHorizontalSpacing(6);
+    regionGrid->setVerticalSpacing(5);
+
+    QPushButton *editLight = new QPushButton(QStringLiteral("交通灯区域"), regionButtons);
+    QPushButton *editCrosswalk = new QPushButton(QStringLiteral("斑马线区域"), regionButtons);
+    QPushButton *undo = new QPushButton(QStringLiteral("撤销"), regionButtons);
+    QPushButton *clear = new QPushButton(QStringLiteral("清除区域"), regionButtons);
+    QPushButton *save = new QPushButton(QStringLiteral("保存配置"), regionButtons);
+    for (QPushButton *button : {editLight, editCrosswalk, undo, clear, save}) {
+        button->setObjectName(QStringLiteral("violationCompactButton"));
+        button->setMinimumHeight(42);
+    }
+
+    regionGrid->addWidget(editLight, 0, 0);
+    regionGrid->addWidget(editCrosswalk, 0, 1);
+    regionGrid->addWidget(undo, 0, 2);
+    regionGrid->addWidget(clear, 1, 0);
+    regionGrid->addWidget(save, 1, 1, 1, 2);
+    previewLayout->addWidget(regionButtons);
+
+    m_violationEditStatusLabel = new QLabel(
+                QStringLiteral("先启动PCIe视频，再在预览中划定交通灯和斑马线区域。"),
+                previewGroup);
+    m_violationEditStatusLabel->setObjectName(QStringLiteral("violationEditStatus"));
+    m_violationEditStatusLabel->setWordWrap(true);
+    m_violationEditStatusLabel->setMinimumHeight(38);
+    previewLayout->addWidget(m_violationEditStatusLabel);
+    leftLayout->addWidget(previewGroup, 1);
+
+    QWidget *rightPanel = new QWidget(page);
+    rightPanel->setFixedWidth(385);
+    QVBoxLayout *rightLayout = new QVBoxLayout(rightPanel);
+    rightLayout->setContentsMargins(0, 0, 0, 0);
+    rightLayout->setSpacing(7);
+
+    QGroupBox *controlGroup = new QGroupBox(QStringLiteral("运行控制"), rightPanel);
+    QGridLayout *controlGrid = new QGridLayout(controlGroup);
+    controlGrid->setContentsMargins(10, 18, 10, 9);
+    controlGrid->setHorizontalSpacing(6);
+    controlGrid->setVerticalSpacing(6);
+
+    m_btnViolationStart = new QPushButton(QStringLiteral("开始检测"), controlGroup);
+    m_btnViolationStop = new QPushButton(QStringLiteral("停止检测"), controlGroup);
+    m_btnViolationStart->setObjectName(QStringLiteral("violationRunButton"));
+    m_btnViolationStop->setObjectName(QStringLiteral("violationRunButton"));
+    m_btnViolationStart->setMinimumHeight(48);
+    m_btnViolationStop->setMinimumHeight(48);
+
+    QLabel *lightModeLabel = new QLabel(QStringLiteral("信号灯状态"), controlGroup);
+    m_violationLightModeGroup = new QButtonGroup(this);
+    m_violationLightModeGroup->setExclusive(true);
+    QWidget *lightModeWidget = new QWidget(controlGroup);
+    QHBoxLayout *lightModeLayout = new QHBoxLayout(lightModeWidget);
+    lightModeLayout->setContentsMargins(0, 0, 0, 0);
+    lightModeLayout->setSpacing(5);
+
+    const auto addLightModeButton = [this, lightModeWidget, lightModeLayout](
+            const QString &text, ViolationLightMode mode) {
+        QPushButton *button = new QPushButton(text, lightModeWidget);
+        button->setCheckable(true);
+        button->setObjectName(QStringLiteral("violationLightButton"));
+        button->setMinimumHeight(40);
+        m_violationLightModeGroup->addButton(button, static_cast<int>(mode));
+        lightModeLayout->addWidget(button, 1);
+    };
+    addLightModeButton(QStringLiteral("自动"), ViolationLightMode::Auto);
+    addLightModeButton(QStringLiteral("红灯"), ViolationLightMode::ForceRed);
+    addLightModeButton(QStringLiteral("绿灯"), ViolationLightMode::ForceGreen);
+
+    QLabel *ruleHint = new QLabel(
+                QStringLiteral("规则：稳定红灯 + 行人脚点进入斑马线并持续600 ms，判定闯红灯。"),
+                controlGroup);
+    ruleHint->setObjectName(QStringLiteral("navHint"));
+    ruleHint->setWordWrap(true);
+
+    controlGrid->addWidget(m_btnViolationStart, 0, 0);
+    controlGrid->addWidget(m_btnViolationStop, 0, 1);
+    controlGrid->addWidget(lightModeLabel, 1, 0, 1, 2);
+    controlGrid->addWidget(lightModeWidget, 2, 0, 1, 2);
+    controlGrid->addWidget(ruleHint, 3, 0, 1, 2);
+    rightLayout->addWidget(controlGroup, 0);
+
+    QGroupBox *runtimeGroup = new QGroupBox(QStringLiteral("运行状态"), rightPanel);
+    QVBoxLayout *runtimeLayout = new QVBoxLayout(runtimeGroup);
+    runtimeLayout->setContentsMargins(9, 18, 9, 8);
+    m_violationRuntimeLabel = new QLabel(QStringLiteral("违法检测未启动"), runtimeGroup);
+    m_violationRuntimeLabel->setObjectName(QStringLiteral("violationRuntime"));
+    m_violationRuntimeLabel->setWordWrap(true);
+    m_violationRuntimeLabel->setAlignment(Qt::AlignLeft | Qt::AlignTop);
+    runtimeLayout->addWidget(m_violationRuntimeLabel);
+    rightLayout->addWidget(runtimeGroup, 0);
+
+    QGroupBox *resultGroup = new QGroupBox(QStringLiteral("当前结果"), rightPanel);
+    QVBoxLayout *resultLayout = new QVBoxLayout(resultGroup);
+    resultLayout->setContentsMargins(9, 18, 9, 8);
+    m_violationResultLabel = new QLabel(
+                QStringLiteral("当前未发现行人违法行为。"), resultGroup);
+    m_violationResultLabel->setObjectName(QStringLiteral("violationResult"));
+    m_violationResultLabel->setWordWrap(true);
+    m_violationResultLabel->setAlignment(Qt::AlignLeft | Qt::AlignTop);
+    m_violationResultLabel->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+    resultLayout->addWidget(m_violationResultLabel, 1);
+    rightLayout->addWidget(resultGroup, 1);
+
+    pageLayout->addWidget(leftPanel, 1);
+    pageLayout->addWidget(rightPanel, 0);
+
+    connect(editLight, &QPushButton::clicked,
+            m_violationPreview, &ViolationPreviewWidget::beginTrafficLightEdit);
+    connect(editCrosswalk, &QPushButton::clicked,
+            m_violationPreview, &ViolationPreviewWidget::beginCrosswalkEdit);
+    connect(undo, &QPushButton::clicked,
+            m_violationPreview, &ViolationPreviewWidget::undoLastPoint);
+    connect(clear, &QPushButton::clicked,
+            m_violationPreview, &ViolationPreviewWidget::clearRegions);
+    connect(save, &QPushButton::clicked, this, [this]() {
+        if (saveViolationSettings()) {
+            m_violationConfigDirty = false;
+            if (m_violationEditStatusLabel) {
+                m_violationEditStatusLabel->setText(
+                            QStringLiteral("区域与规则配置已保存到 pedestrian_violation.ini"));
+            }
+        }
+    });
+
+    connect(m_violationPreview, &ViolationPreviewWidget::configEdited,
+            this, [this](ViolationRuleConfig config) {
+        m_violationConfig = sanitizeViolationRuleConfig(config);
+        m_violationConfigDirty = true;
+        if (m_display) {
+            m_display->setViolationConfig(m_violationConfig);
+        }
+        updateViolationButtons();
+    });
+    connect(m_violationPreview, &ViolationPreviewWidget::statusMessage,
+            this, [this](const QString &message) {
+        if (m_violationEditStatusLabel) {
+            m_violationEditStatusLabel->setText(message);
+        }
+    });
+
+    connect(m_btnViolationStart, &QPushButton::clicked,
+            this, &ControlPanelWindow::startViolationDetection);
+    connect(m_btnViolationStop, &QPushButton::clicked,
+            this, [this]() { stopViolationDetection(true); });
+
+    connect(m_violationLightModeGroup,
+            static_cast<void (QButtonGroup::*)(int)>(&QButtonGroup::buttonClicked),
+            this, [this](int id) {
+        m_violationConfig.lightMode = static_cast<ViolationLightMode>(id);
+        ++m_violationConfig.revision;
+        m_violationConfig = sanitizeViolationRuleConfig(m_violationConfig);
+        m_violationConfigDirty = true;
+        if (m_violationPreview) {
+            m_violationPreview->setConfig(m_violationConfig);
+        }
+        if (m_display) {
+            m_display->setViolationConfig(m_violationConfig);
+        }
+        updateViolationButtons();
+    });
+
+    updateViolationButtons();
     return page;
 }
 
@@ -1490,7 +1958,6 @@ void ControlPanelWindow::onStartStopClicked()
 
     if (!m_display->isRunning()) {
         onApplyVideoConfigClicked();
-        onApplyAiConfigClicked();
         m_display->startDisplay();
     } else {
         m_display->stopDisplay();
@@ -1534,8 +2001,7 @@ void ControlPanelWindow::onApplyVideoConfigClicked()
     const VideoRoute oldRoute = m_display->videoRoute();
     m_display->setVideoRoute(route);
     if (oldRoute != route) {
-        clearAiResultTable();
-        m_lastAiResultFrameId = 0;
+        clearAiCurrentResult();
     }
 
     if (m_videoRouteSummaryLabel) {
@@ -1551,27 +2017,141 @@ void ControlPanelWindow::onApplyVideoConfigClicked()
     updateStatusText();
 }
 
-void ControlPanelWindow::onApplyFpgaConfigClicked()
+void ControlPanelWindow::requestFpgaMode(quint32 mode)
 {
-    m_lastAction = QString("FPGA配置预留: src=%1 CH1=%2 CH2=%3 CH3=%4 CH4=%5")
-            .arg(m_sourceCombo->currentText())
-            .arg(m_ch1PreprocCombo->currentText())
-            .arg(m_ch2PreprocCombo->currentText())
-            .arg(m_ch3PreprocCombo->currentText())
-            .arg(m_ch4PreprocCombo->currentText());
+    if (!m_display) {
+        return;
+    }
+
+    if (!m_display->isRunning()) {
+        m_lastError = QStringLiteral("请先启动HDMI/PCIe显示，再切换FPGA预处理");
+        if (m_fpgaApplyStatusLabel) {
+            m_fpgaApplyStatusLabel->setText(QStringLiteral("配置状态：%1").arg(m_lastError));
+        }
+        updateFpgaUiAvailability();
+        updateStatusText();
+        return;
+    }
+
+    if (!m_fpgaControlAvailable) {
+        m_lastError = QStringLiteral("FPGA预处理控制尚未就绪，请稍候");
+        if (m_fpgaApplyStatusLabel) {
+            m_fpgaApplyStatusLabel->setText(QStringLiteral("配置状态：%1").arg(m_lastError));
+        }
+        updateFpgaUiAvailability();
+        updateStatusText();
+        return;
+    }
+
+    if (mode >= 32U || !(m_fpgaAlgorithmBitmap & (1U << mode))) {
+        m_lastError = QStringLiteral("当前FPGA比特流不支持%1").arg(fpgaModeName(mode));
+        if (m_fpgaApplyStatusLabel) {
+            m_fpgaApplyStatusLabel->setText(QStringLiteral("配置状态：%1").arg(m_lastError));
+        }
+        updateFpgaUiAvailability();
+        updateStatusText();
+        return;
+    }
+
+    if (m_fpgaApplyPending) {
+        return;
+    }
+
+    if (mode == m_fpgaActiveMode) {
+        m_lastAction = QStringLiteral("FPGA预处理保持当前模式：%1")
+                .arg(fpgaModeName(mode));
+        m_lastError = QStringLiteral("none");
+        if (m_fpgaApplyStatusLabel) {
+            m_fpgaApplyStatusLabel->setText(
+                        QStringLiteral("配置状态：%1已经是当前模式")
+                        .arg(fpgaModeName(mode)));
+        }
+        updateFpgaUiAvailability();
+        updateStatusText();
+        return;
+    }
+
+    m_fpgaRequestedMode = mode;
+    m_fpgaApplyPending = true;
+    m_lastAction = QStringLiteral("请求FPGA预处理：%1").arg(fpgaModeName(mode));
+    m_lastError = QStringLiteral("none");
+    if (m_fpgaApplyStatusLabel) {
+        m_fpgaApplyStatusLabel->setText(
+                    QStringLiteral("配置状态：正在切换到%1，请稍候……")
+                    .arg(fpgaModeName(mode)));
+    }
+    updateFpgaUiAvailability();
     updateStatusText();
+
+    m_display->requestFpgaPreprocess(static_cast<int>(mode), 0U);
 }
 
 void ControlPanelWindow::onApplyAiConfigClicked()
 {
-    if (!m_display || !m_npuEnableCheck || !m_npuTaskCombo ||
+    if (!m_display || !m_npuTaskButtonGroup ||
         !m_npuFpsSpin || !m_confSpin || !m_nmsSpin) {
         return;
     }
 
+    if (m_violationRunning) {
+        stopViolationDetection(false);
+    }
+
     NpuTaskConfig config;
-    config.enabled = m_npuEnableCheck->isChecked();
-    config.task = static_cast<NpuTaskType>(m_npuTaskCombo->currentData().toInt());
+    config.enabled = true;
+    config.task = m_aiRequestedTask;
+    config.targetFps = m_npuFpsSpin->value();
+    config.confidence = static_cast<float>(m_confSpin->value());
+    config.nmsThreshold = static_cast<float>(m_nmsSpin->value());
+    config.resultHistoryDepth = 50;
+    config = sanitizeNpuTaskConfig(config);
+
+    const bool taskChanged = !m_aiEnabled || config.task != m_aiTask;
+    m_aiTaskSwitchPending = taskChanged;
+
+    m_display->setNpuConfig(config);
+    saveAiSettings(config);
+
+    m_aiEnabled = true;
+    m_aiReady = false;
+    m_aiStatus = taskChanged
+            ? QStringLiteral("switching")
+            : QStringLiteral("pending");
+
+    clearAiCurrentResult();
+    updateAiTaskButtons();
+
+    if (m_aiConfigSummaryLabel) {
+        m_aiConfigSummaryLabel->setText(
+                    QStringLiteral("正在应用：%1｜%2 fps｜conf=%3｜NMS=%4")
+                    .arg(aiTaskDisplayName(config.task))
+                    .arg(config.targetFps)
+                    .arg(config.confidence, 0, 'f', 2)
+                    .arg(config.nmsThreshold, 0, 'f', 2));
+    }
+
+    m_lastAction = QStringLiteral("启动AI推理：task=%1，fps=%2，conf=%3，nms=%4")
+            .arg(aiTaskDisplayName(config.task))
+            .arg(config.targetFps)
+            .arg(config.confidence, 0, 'f', 2)
+            .arg(config.nmsThreshold, 0, 'f', 2);
+    m_lastError = QStringLiteral("none");
+    updateStatusText();
+}
+
+void ControlPanelWindow::onStopAiInferenceClicked()
+{
+    if (!m_display || !m_npuFpsSpin || !m_confSpin || !m_nmsSpin) {
+        return;
+    }
+
+    if (m_violationRunning) {
+        stopViolationDetection(false);
+    }
+
+    NpuTaskConfig config;
+    config.enabled = false;
+    config.task = m_aiRequestedTask;
     config.targetFps = m_npuFpsSpin->value();
     config.confidence = static_cast<float>(m_confSpin->value());
     config.nmsThreshold = static_cast<float>(m_nmsSpin->value());
@@ -1581,48 +2161,42 @@ void ControlPanelWindow::onApplyAiConfigClicked()
     m_display->setNpuConfig(config);
     saveAiSettings(config);
 
-    m_aiEnabled = config.enabled;
-    m_aiTask = config.task;
-    m_aiStatus = config.enabled ? "pending" : "off";
-    m_aiHistoryDepth = config.resultHistoryDepth;
-    m_lastAiResultFrameId = 0;
-    clearAiResultTable();
+    m_aiEnabled = false;
+    m_aiReady = false;
+    m_aiTaskSwitchPending = false;
+    m_aiFps = 0.0;
+    m_aiPlateCount = 0;
+    m_aiPedestrianCount = 0;
+    m_aiVehicleCount = 0;
+    m_aiLastMs = 0.0;
+    m_aiPreMs = 0.0;
+    m_aiStatus = QStringLiteral("off");
 
-    if (!config.enabled) {
-        m_aiReady = false;
-        m_aiFps = 0.0;
-        m_aiPlateCount = 0;
-        m_aiPedestrianCount = 0;
-        m_aiLastMs = 0.0;
-        m_aiPreMs = 0.0;
-    }
+    clearAiCurrentResult();
+    updateAiTaskButtons();
 
     if (m_aiConfigSummaryLabel) {
         m_aiConfigSummaryLabel->setText(
-                    QStringLiteral("当前：%1｜%2 fps｜conf=%3｜NMS=%4")
+                    QStringLiteral("推理已关闭｜待执行：%1｜%2 fps｜conf=%3｜NMS=%4")
                     .arg(aiTaskDisplayName(config.task))
                     .arg(config.targetFps)
                     .arg(config.confidence, 0, 'f', 2)
                     .arg(config.nmsThreshold, 0, 'f', 2));
     }
 
-    m_lastAction = QStringLiteral("AI配置：%1，task=%2，fps=%3，conf=%4，nms=%5")
-            .arg(config.enabled ? QStringLiteral("ON") : QStringLiteral("OFF"))
-            .arg(aiTaskDisplayName(config.task))
-            .arg(config.targetFps)
-            .arg(config.confidence, 0, 'f', 2)
-            .arg(config.nmsThreshold, 0, 'f', 2);
+    m_lastAction = QStringLiteral("关闭NPU推理");
+    m_lastError = QStringLiteral("none");
     updateStatusText();
 }
 
 void ControlPanelWindow::onFanPowerClicked(bool checked)
 {
-    if (!m_fanController || !m_fanPwmSlider || !m_btnFanPower) {
+    if (!m_fanController || !m_fanPwmSpin || !m_btnFanPower) {
         return;
     }
 
     const bool oldEnabled = m_fanController->isEnabled();
-    if (!m_fanController->apply(checked, m_fanPwmSlider->value())) {
+    if (!m_fanController->apply(checked, m_fanPwmSpin->value())) {
         m_lastError = QStringLiteral("风扇控制：%1")
                 .arg(m_fanController->lastError());
         const QSignalBlocker blocker(m_btnFanPower);
@@ -1630,7 +2204,7 @@ void ControlPanelWindow::onFanPowerClicked(bool checked)
     } else {
         m_lastAction = QStringLiteral("风扇%1，PWM=%2%")
                 .arg(checked ? QStringLiteral("开启") : QStringLiteral("关闭"))
-                .arg(m_fanPwmSlider->value());
+                .arg(m_fanPwmSpin->value());
         m_lastError = QStringLiteral("none");
     }
 
@@ -1640,35 +2214,20 @@ void ControlPanelWindow::onFanPowerClicked(bool checked)
 
 void ControlPanelWindow::onFanPwmChanged(int value)
 {
-    if (m_fanStatusLabel) {
-        const QString runText = (m_btnFanPower && m_btnFanPower->isChecked())
-                ? QStringLiteral("开启") : QStringLiteral("关闭");
-        m_fanStatusLabel->setText(
-                    QStringLiteral("待应用：风扇%1，PWM占空比%2%")
-                    .arg(runText)
-                    .arg(value));
-    }
-}
-
-void ControlPanelWindow::onApplyFanConfigClicked()
-{
-    if (!m_fanController || !m_fanPwmSlider || !m_btnFanPower) {
+    if (!m_fanController || !m_btnFanPower || !m_fanPwmSpin) {
         return;
     }
 
     const bool requestedEnabled = m_btnFanPower->isChecked();
-    const int requestedDuty = m_fanPwmSlider->value();
-
-    if (!m_fanController->apply(requestedEnabled, requestedDuty)) {
-        m_lastError = QStringLiteral("风扇控制：%1")
+    if (!m_fanController->apply(requestedEnabled, value)) {
+        m_lastError = QStringLiteral("PWM占空比设置失败：%1")
                 .arg(m_fanController->lastError());
     } else {
-        m_lastAction = QStringLiteral("应用风扇设置：%1，PWM=%2%")
-                .arg(requestedEnabled ? QStringLiteral("ON") : QStringLiteral("OFF"))
-                .arg(requestedDuty);
+        m_lastAction = QStringLiteral("PWM占空比已设为%1%（立即生效）").arg(value);
         m_lastError = QStringLiteral("none");
     }
 
+    // 成功时显示硬件回读值；失败时恢复到上一次有效值。
     updateFanUi();
     updateStatusText();
 }
@@ -1687,6 +2246,7 @@ void ControlPanelWindow::onStatusTimer()
         m_ptzControlReady = m_ptzControl->isReady();
     }
 
+    updateFpgaUiAvailability();
     updateStatusText();
 }
 
@@ -1698,17 +2258,6 @@ void ControlPanelWindow::onAiUiTimer()
 
     const NpuFrameResult result = m_display->latestNpuResult();
     updateAiPanel(result);
-
-    const std::vector<NpuFrameResult> newResults =
-            m_display->npuResultsAfter(m_lastAiResultFrameId, 64);
-    for (const NpuFrameResult &item : newResults) {
-        if (item.frameId > m_lastAiResultFrameId) {
-            m_lastAiResultFrameId = item.frameId;
-        }
-        if (item.ready) {
-            appendAiResultRows(item);
-        }
-    }
 }
 
 void ControlPanelWindow::updateAiPanel(const NpuFrameResult &result)
@@ -1719,10 +2268,19 @@ void ControlPanelWindow::updateAiPanel(const NpuFrameResult &result)
     m_aiFps = result.fps;
     m_aiPlateCount = static_cast<int>(result.plates.size());
     m_aiPedestrianCount = static_cast<int>(result.pedestrians.size());
+    m_aiVehicleCount = static_cast<int>(result.vehicles.size());
     m_aiLastMs = result.lastMs;
     m_aiPreMs = result.preMs;
     m_aiProcessed = result.processed;
     m_aiDropped = result.dropped;
+
+    if (m_aiTaskSwitchPending &&
+        (result.task == m_aiRequestedTask ||
+         !result.enabled ||
+         !result.error.empty())) {
+        // 目标配置已进入结果流，或后台明确返回失败，解除按钮锁定。
+        m_aiTaskSwitchPending = false;
+    }
 
     const VideoRoute route = m_display ? m_display->videoRoute() : VideoRoute::Overview;
 
@@ -1730,6 +2288,8 @@ void ControlPanelWindow::updateAiPanel(const NpuFrameResult &result)
         m_aiStatus = QStringLiteral("off");
     } else if (!result.error.empty()) {
         m_aiStatus = QString::fromStdString(result.error);
+    } else if (m_aiTaskSwitchPending) {
+        m_aiStatus = QStringLiteral("switching");
     } else if (result.ready) {
         m_aiStatus = QStringLiteral("ready");
     } else if (!result.modelsReady) {
@@ -1739,158 +2299,694 @@ void ControlPanelWindow::updateAiPanel(const NpuFrameResult &result)
     }
 
     if (m_aiRuntimeLabel) {
-        const int resultCount = m_aiPlateCount + m_aiPedestrianCount;
+        const int resultCount = m_aiPlateCount + m_aiPedestrianCount + m_aiVehicleCount;
         m_aiRuntimeLabel->setText(
                     QStringLiteral("状态：%1｜输入：%2｜任务：%3\n"
-                                   "实际FPS：%4 / 目标%5｜总耗时：%6 ms｜拷贝：%7 ms｜预处理：%8 ms\n"
-                                   "RKNN in/run/out/post：%9/%10/%11/%12 ms｜runs=%13\n"
-                                   "本帧结果：%14｜已处理：%15｜覆盖丢帧：%16\n"
-                                   "最近错误：%17")
+                                   "实际FPS：%4 / 目标%5｜总耗时：%6 ms｜预处理：%7 ms\n"
+                                   "RKNN运行：%8 ms｜后处理：%9 ms｜runs=%10\n"
+                                   "本帧目标：%11｜已处理：%12｜覆盖丢帧：%13\n"
+                                   "最近错误：%14")
                     .arg(m_aiStatus)
                     .arg(isSingleChannelRoute(route)
-                         ? QString("CH%1").arg(videoRouteChannel(route))
+                         ? QStringLiteral("CH%1").arg(videoRouteChannel(route))
                          : QStringLiteral("总览全图"))
                     .arg(aiTaskDisplayName(result.task))
                     .arg(result.fps, 0, 'f', 1)
                     .arg(result.targetFps)
                     .arg(result.lastMs, 0, 'f', 1)
-                    .arg(result.copyMs, 0, 'f', 2)
                     .arg(result.preMs, 0, 'f', 1)
-                    .arg(result.rknnInputMs, 0, 'f', 1)
                     .arg(result.rknnRunMs, 0, 'f', 1)
-                    .arg(result.rknnOutputMs, 0, 'f', 1)
                     .arg(result.rknnPostMs, 0, 'f', 1)
                     .arg(static_cast<qulonglong>(result.rknnRunCount))
                     .arg(resultCount)
                     .arg(result.processed)
                     .arg(result.dropped)
                     .arg(result.error.empty()
-                         ? QStringLiteral("none")
+                         ? QStringLiteral("无")
                          : QString::fromStdString(result.error)));
     }
+
+    updateAiCurrentResult(result);
+    updateViolationPanel(result);
+    updateAiTaskButtons();
 }
 
-void ControlPanelWindow::appendAiResultRows(const NpuFrameResult &result)
+void ControlPanelWindow::updateAiCurrentResult(const NpuFrameResult &result)
 {
-    if (!m_aiResultTable) {
+    if (!m_aiCurrentResultLabel) {
         return;
     }
 
-    struct RowData
-    {
-        QString resultText;
-        QString confidenceText;
-        QString boxText;
-    };
+    if (!result.enabled) {
+        m_aiCurrentResultLabel->setText(QStringLiteral("NPU推理未启用。"));
+        return;
+    }
+    if (!result.error.empty()) {
+        m_aiCurrentResultLabel->setText(
+                    QStringLiteral("推理异常：%1")
+                    .arg(QString::fromStdString(result.error)));
+        return;
+    }
+    if (!result.ready) {
+        m_aiCurrentResultLabel->setText(
+                    m_aiTaskSwitchPending
+                    ? QStringLiteral("正在切换到%1，请稍候……")
+                      .arg(aiTaskDisplayName(m_aiRequestedTask))
+                    : QStringLiteral("模型正在加载或等待第一帧结果……"));
+        return;
+    }
 
-    QList<RowData> rows;
+    const QString timeText = QDateTime::currentDateTime().toString(QStringLiteral("HH:mm:ss"));
+    const QString sourceText = result.sourceChannel > 0
+            ? QStringLiteral("CH%1").arg(result.sourceChannel)
+            : QStringLiteral("总览全图");
+
+    QStringList lines;
+    lines << QStringLiteral("更新时间：%1｜帧号：%2｜输入：%3")
+             .arg(timeText)
+             .arg(static_cast<qulonglong>(result.frameId))
+             .arg(sourceText);
+    lines << QStringLiteral("当前任务：%1").arg(aiTaskDisplayName(result.task));
+
     if (result.task == NpuTaskType::PlateCascade) {
-        for (const NpuBox &box : result.plates) {
-            const QString plate = !box.text.empty()
-                    ? QString::fromStdString(box.text)
-                    : QString::fromStdString(box.label);
-            RowData row;
-            row.resultText = plate.isEmpty() ? QStringLiteral("车牌") : plate;
-            row.confidenceText = box.score >= 0.0f
-                    ? QString::number(box.score, 'f', 2)
-                    : QStringLiteral("--");
-            row.boxText = aiBoxText(box);
-            rows.push_back(row);
+        if (result.plates.empty()) {
+            lines << QStringLiteral("本帧未识别到车牌");
+        } else {
+            lines << QStringLiteral("识别到车牌：%1个").arg(static_cast<int>(result.plates.size()));
+            const int showCount = qMin(4, static_cast<int>(result.plates.size()));
+            for (int i = 0; i < showCount; ++i) {
+                const NpuBox &box = result.plates[static_cast<std::size_t>(i)];
+                const QString plate = !box.text.empty()
+                        ? QString::fromStdString(box.text)
+                        : (!box.label.empty()
+                           ? QString::fromStdString(box.label)
+                           : QStringLiteral("未识别字符"));
+                lines << QStringLiteral("%1. %2｜置信度 %3")
+                         .arg(i + 1)
+                         .arg(plate)
+                         .arg(box.score, 0, 'f', 2);
+            }
+        }
+    } else if (result.task == NpuTaskType::Pedestrian) {
+        lines << QStringLiteral("检测到行人：%1个").arg(static_cast<int>(result.pedestrians.size()));
+        if (!result.pedestrians.empty()) {
+            float maxScore = 0.0f;
+            for (const NpuBox &box : result.pedestrians) {
+                maxScore = qMax(maxScore, box.score);
+            }
+            lines << QStringLiteral("最高置信度：%1").arg(maxScore, 0, 'f', 2);
         }
     } else {
-        for (const NpuBox &box : result.pedestrians) {
-            RowData row;
-            row.resultText = QStringLiteral("person");
-            row.confidenceText = QString::number(box.score, 'f', 2);
-            row.boxText = aiBoxText(box);
-            rows.push_back(row);
+        lines << QStringLiteral("检测到行人：%1个｜有效轨迹：%2")
+                 .arg(static_cast<int>(result.pedestrians.size()))
+                 .arg(result.activeTrackCount);
+        lines << QStringLiteral("信号灯：%1｜区域：%2")
+                 .arg(violationLightText(result.trafficLight))
+                 .arg(result.violationRegionsConfigured
+                      ? QStringLiteral("已配置")
+                      : QStringLiteral("未完成"));
+        lines << QStringLiteral("当前违法轨迹：%1｜累计事件：%2")
+                 .arg(result.activeViolationCount)
+                 .arg(static_cast<qulonglong>(result.violationEventCount));
+        if (result.hasRecentViolation) {
+            lines << QStringLiteral("最近事件：行人 #%1 闯红灯，持续%2 ms")
+                     .arg(result.recentViolation.trackId)
+                     .arg(result.recentViolation.accumulatedMs, 0, 'f', 0);
         }
     }
 
-    // 无目标帧不写入历史表，避免5~15 fps下用“无目标”快速淹没有效记录。
-    if (rows.isEmpty()) {
-        return;
-    }
+    m_aiCurrentResultLabel->setText(lines.join(QLatin1Char('\n')));
+}
 
-    const QString timeText = QDateTime::currentDateTime().toString(QStringLiteral("HH:mm:ss.zzz"));
-    const QString frameText = QString::number(result.frameId);
-    const QString taskText = result.sourceChannel > 0
-            ? QString("CH%1 %2").arg(result.sourceChannel).arg(aiTaskDisplayName(result.task))
-            : QStringLiteral("ALL %1").arg(aiTaskDisplayName(result.task));
-    const QString latencyText = QString::number(result.lastMs, 'f', 1);
-
-    for (const RowData &row : rows) {
-        m_aiResultTable->insertRow(0);
-        const QStringList values {
-            timeText,
-            frameText,
-            taskText,
-            row.resultText,
-            row.confidenceText,
-            row.boxText,
-            latencyText
-        };
-        for (int column = 0; column < values.size(); ++column) {
-            QTableWidgetItem *item = new QTableWidgetItem(values[column]);
-            const int alignment = column == 3
-                    ? static_cast<int>(Qt::AlignLeft | Qt::AlignVCenter)
-                    : static_cast<int>(Qt::AlignCenter);
-            item->setTextAlignment(alignment);
-            m_aiResultTable->setItem(0, column, item);
-        }
-    }
-
-    while (m_aiResultTable->rowCount() > m_aiHistoryDepth) {
-        m_aiResultTable->removeRow(m_aiResultTable->rowCount() - 1);
+void ControlPanelWindow::clearAiCurrentResult()
+{
+    if (m_aiCurrentResultLabel) {
+        m_aiCurrentResultLabel->setText(QStringLiteral("等待识别结果……"));
     }
 }
 
-void ControlPanelWindow::clearAiResultTable()
+void ControlPanelWindow::requestAiTask(NpuTaskType task)
 {
-    if (m_aiResultTable) {
-        m_aiResultTable->setRowCount(0);
+    if (!m_npuTaskButtonGroup) {
+        return;
+    }
+
+    if (m_aiTaskSwitchPending) {
+        return;
+    }
+
+    m_aiRequestedTask = task;
+    m_lastAction = QStringLiteral("选择AI任务：%1，等待应用")
+            .arg(aiTaskDisplayName(task));
+    clearAiCurrentResult();
+    updateAiTaskButtons();
+
+    if (m_aiConfigSummaryLabel) {
+        m_aiConfigSummaryLabel->setText(
+                    QStringLiteral("待应用：%1｜%2 fps｜conf=%3｜NMS=%4")
+                    .arg(aiTaskDisplayName(task))
+                    .arg(m_npuFpsSpin ? m_npuFpsSpin->value()
+                                     : NPU_TARGET_FPS_DEFAULT)
+                    .arg(m_confSpin ? m_confSpin->value() : 0.50, 0, 'f', 2)
+                    .arg(m_nmsSpin ? m_nmsSpin->value() : 0.45, 0, 'f', 2));
+    }
+    updateStatusText();
+}
+
+void ControlPanelWindow::updateAiTaskButtons()
+{
+    if (!m_npuTaskButtonGroup) {
+        return;
+    }
+
+    const QList<QAbstractButton *> buttons = m_npuTaskButtonGroup->buttons();
+    for (QAbstractButton *button : buttons) {
+        if (!button) {
+            continue;
+        }
+
+        const NpuTaskType task = static_cast<NpuTaskType>(
+                    m_npuTaskButtonGroup->id(button));
+        const bool active = m_aiEnabled &&
+                !m_aiTaskSwitchPending &&
+                task == m_aiTask;
+        const bool pending = task == m_aiRequestedTask && !active;
+
+        button->setText(aiTaskButtonText(task, active, pending));
+        button->setProperty("aiActive", active);
+        button->setProperty("aiPending", pending);
+        button->setEnabled(!m_aiTaskSwitchPending);
+        button->style()->unpolish(button);
+        button->style()->polish(button);
+        button->update();
+    }
+
+    if (m_btnAiApply) {
+        m_btnAiApply->setEnabled(!m_aiTaskSwitchPending);
+    }
+    if (m_btnAiStop) {
+        m_btnAiStop->setEnabled(m_aiEnabled || m_aiTaskSwitchPending);
     }
 }
 
 void ControlPanelWindow::loadAiSettings()
 {
-    if (!m_npuEnableCheck || !m_npuTaskCombo || !m_npuFpsSpin ||
+    if (!m_npuTaskButtonGroup || !m_npuFpsSpin ||
         !m_confSpin || !m_nmsSpin) {
         return;
     }
 
     QSettings settings(aiSettingsPath(), QSettings::IniFormat);
-    const bool enabled = settings.value(QStringLiteral("ai/enabled"), false).toBool();
     const int taskValue = settings.value(
                 QStringLiteral("ai/task"),
                 static_cast<int>(NpuTaskType::Pedestrian)).toInt();
     const int fps = settings.value(QStringLiteral("ai/target_fps"),
                                    NPU_TARGET_FPS_DEFAULT).toInt();
-    const double confidence = settings.value(QStringLiteral("ai/confidence"), 0.50).toDouble();
-    const double nms = settings.value(QStringLiteral("ai/nms"), 0.45).toDouble();
+    const double confidence = settings.value(
+                QStringLiteral("ai/confidence"), 0.50).toDouble();
+    const double nms = settings.value(
+                QStringLiteral("ai/nms"), 0.45).toDouble();
 
-    m_npuEnableCheck->setChecked(enabled);
-    int taskIndex = m_npuTaskCombo->findData(taskValue);
-    if (taskIndex < 0) {
-        taskIndex = 0;
-    }
-    m_npuTaskCombo->setCurrentIndex(taskIndex);
+    const NpuTaskType savedTask = m_npuTaskButtonGroup->button(taskValue)
+            ? static_cast<NpuTaskType>(taskValue)
+            : NpuTaskType::Pedestrian;
+    m_aiRequestedTask = savedTask;
+    m_aiTask = savedTask;
+    m_aiEnabled = false;
+    m_aiReady = false;
+    m_aiTaskSwitchPending = false;
+
     m_npuFpsSpin->setValue(qBound(NPU_TARGET_FPS_MIN,
-                                      fps,
-                                      NPU_TARGET_FPS_MAX));
+                                  fps,
+                                  NPU_TARGET_FPS_MAX));
     m_confSpin->setValue(qBound(0.10, confidence, 0.95));
     m_nmsSpin->setValue(qBound(0.10, nms, 0.90));
+
+    if (m_aiConfigSummaryLabel) {
+        m_aiConfigSummaryLabel->setText(
+                    QStringLiteral("推理未启动｜待执行：%1｜%2 fps｜conf=%3｜NMS=%4")
+                    .arg(aiTaskDisplayName(savedTask))
+                    .arg(m_npuFpsSpin->value())
+                    .arg(m_confSpin->value(), 0, 'f', 2)
+                    .arg(m_nmsSpin->value(), 0, 'f', 2));
+    }
+    updateAiTaskButtons();
 }
 
 void ControlPanelWindow::saveAiSettings(const NpuTaskConfig &config)
 {
     QSettings settings(aiSettingsPath(), QSettings::IniFormat);
-    settings.setValue(QStringLiteral("ai/enabled"), config.enabled);
+    // 新交互要求每次程序启动时NPU默认关闭，只恢复任务和参数。
+    settings.setValue(QStringLiteral("ai/enabled"), false);
     settings.setValue(QStringLiteral("ai/task"), static_cast<int>(config.task));
     settings.setValue(QStringLiteral("ai/target_fps"), config.targetFps);
     settings.setValue(QStringLiteral("ai/confidence"), config.confidence);
     settings.setValue(QStringLiteral("ai/nms"), config.nmsThreshold);
     settings.sync();
+}
+
+void ControlPanelWindow::loadViolationSettings()
+{
+    QString error;
+    ViolationRuleConfig config;
+    if (!loadViolationRuleConfig(violationSettingsPath(), &config, &error)) {
+        m_lastError = error;
+        config = ViolationRuleConfig();
+    }
+    m_violationConfig = sanitizeViolationRuleConfig(config);
+    m_violationConfigDirty = false;
+
+    if (m_violationPreview) {
+        m_violationPreview->setConfig(m_violationConfig);
+    }
+    if (m_display) {
+        m_display->setViolationConfig(m_violationConfig);
+    }
+    updateViolationButtons();
+
+    if (m_violationEditStatusLabel) {
+        m_violationEditStatusLabel->setText(m_violationConfig.regionsValid()
+                ? QStringLiteral("已加载交通灯和斑马线区域，可直接开始检测。")
+                : QStringLiteral("尚未完成区域配置：请先框选交通灯并点击4个斑马线顶点。"));
+    }
+}
+
+bool ControlPanelWindow::saveViolationSettings()
+{
+    ++m_violationConfig.revision;
+    m_violationConfig = sanitizeViolationRuleConfig(m_violationConfig);
+    QString error;
+    if (!saveViolationRuleConfig(violationSettingsPath(), m_violationConfig, &error)) {
+        m_lastError = error;
+        QMessageBox::warning(this, QStringLiteral("保存失败"), error);
+        return false;
+    }
+    if (m_violationPreview) {
+        m_violationPreview->setConfig(m_violationConfig);
+    }
+    if (m_display) {
+        m_display->setViolationConfig(m_violationConfig);
+    }
+    m_violationConfigDirty = false;
+    m_lastAction = QStringLiteral("已保存行人违法检测区域与规则配置");
+    m_lastError = QStringLiteral("none");
+    updateStatusText();
+    return true;
+}
+
+void ControlPanelWindow::startViolationDetection()
+{
+    if (!m_display || !m_display->isRunning()) {
+        m_lastError = QStringLiteral("请先在“视频显示”页面启动PCIe视频");
+        if (m_violationRuntimeLabel) {
+            m_violationRuntimeLabel->setText(QStringLiteral("启动失败：%1").arg(m_lastError));
+        }
+        updateStatusText();
+        return;
+    }
+    if (!m_violationConfig.regionsValid()) {
+        m_lastError = QStringLiteral("交通灯区域或斑马线区域尚未配置完整");
+        if (m_violationRuntimeLabel) {
+            m_violationRuntimeLabel->setText(QStringLiteral("启动失败：%1").arg(m_lastError));
+        }
+        updateViolationButtons();
+        updateStatusText();
+        return;
+    }
+
+    if (!m_violationRunning) {
+        m_violationPreviousAiConfig = m_display->npuConfig();
+        m_violationPreviousAiConfigValid = true;
+    }
+
+    if (m_violationConfigDirty) {
+        (void)saveViolationSettings();
+    }
+    m_display->setViolationConfig(m_violationConfig);
+
+    NpuTaskConfig config = m_display->npuConfig();
+    config.enabled = true;
+    config.task = NpuTaskType::TrafficViolation;
+    config.targetFps = m_npuFpsSpin ? m_npuFpsSpin->value() : NPU_TARGET_FPS_DEFAULT;
+    config.confidence = m_confSpin ? static_cast<float>(m_confSpin->value()) : 0.50f;
+    config.nmsThreshold = m_nmsSpin ? static_cast<float>(m_nmsSpin->value()) : 0.45f;
+    config = sanitizeNpuTaskConfig(config);
+    m_display->setNpuConfig(config);
+
+    m_violationRunning = true;
+    m_violationLastEventId = 0;
+    m_lastAction = QStringLiteral("启动行人闯红灯检测");
+    m_lastError = QStringLiteral("none");
+    if (m_violationRuntimeLabel) {
+        m_violationRuntimeLabel->setText(QStringLiteral("正在加载行人模型并等待第一帧规则结果……"));
+    }
+    updateViolationButtons();
+    updateStatusText();
+}
+
+void ControlPanelWindow::stopViolationDetection(bool restorePreviousConfig)
+{
+    if (!m_display) {
+        return;
+    }
+
+    if (restorePreviousConfig && m_violationPreviousAiConfigValid) {
+        m_display->setNpuConfig(m_violationPreviousAiConfig);
+        m_aiRequestedTask = m_violationPreviousAiConfig.task == NpuTaskType::TrafficViolation
+                ? NpuTaskType::Pedestrian
+                : m_violationPreviousAiConfig.task;
+    } else if (m_display->npuConfig().task == NpuTaskType::TrafficViolation) {
+        NpuTaskConfig config = m_display->npuConfig();
+        config.enabled = false;
+        config.task = NpuTaskType::Pedestrian;
+        m_display->setNpuConfig(config);
+    }
+
+    m_violationRunning = false;
+    m_violationPreviousAiConfigValid = false;
+    m_lastAction = QStringLiteral("停止行人违法检测");
+    if (m_violationRuntimeLabel) {
+        m_violationRuntimeLabel->setText(QStringLiteral("违法检测已停止，区域配置仍保留。"));
+    }
+    updateViolationButtons();
+    updateAiTaskButtons();
+    updateStatusText();
+}
+
+void ControlPanelWindow::updateViolationButtons()
+{
+    if (m_btnViolationStart) {
+        m_btnViolationStart->setEnabled(!m_violationRunning && m_violationConfig.regionsValid());
+        m_btnViolationStart->setProperty("violationActive", m_violationRunning);
+        m_btnViolationStart->style()->unpolish(m_btnViolationStart);
+        m_btnViolationStart->style()->polish(m_btnViolationStart);
+    }
+    if (m_btnViolationStop) {
+        m_btnViolationStop->setEnabled(m_violationRunning);
+    }
+
+    if (m_violationLightModeGroup) {
+        if (QAbstractButton *button = m_violationLightModeGroup->button(
+                    static_cast<int>(m_violationConfig.lightMode))) {
+            const QSignalBlocker blocker(m_violationLightModeGroup);
+            button->setChecked(true);
+        }
+    }
+}
+
+void ControlPanelWindow::updateViolationPanel(const NpuFrameResult &result)
+{
+    if (m_violationPreview) {
+        m_violationPreview->setResult(result);
+    }
+
+    if (result.task != NpuTaskType::TrafficViolation || !result.enabled) {
+        if (m_violationRunning && result.task != NpuTaskType::TrafficViolation) {
+            m_violationRunning = false;
+            m_violationPreviousAiConfigValid = false;
+            updateViolationButtons();
+        }
+        if (!m_violationRunning && m_violationRuntimeLabel) {
+            m_violationRuntimeLabel->setText(QStringLiteral("违法检测未启动｜区域：%1")
+                    .arg(m_violationConfig.regionsValid()
+                         ? QStringLiteral("已配置")
+                         : QStringLiteral("未完成")));
+        }
+        return;
+    }
+
+    m_violationRunning = true;
+    updateViolationButtons();
+
+    const QString regionText = result.violationRegionsConfigured
+            ? QStringLiteral("已配置") : QStringLiteral("未完成");
+    if (m_violationRuntimeLabel) {
+        m_violationRuntimeLabel->setText(
+                    QStringLiteral("状态：%1｜区域：%2\n"
+                                   "信号灯：%3｜行人：%4｜轨迹：%5\n"
+                                   "推理FPS：%6｜单帧耗时：%7 ms")
+                    .arg(result.ready ? QStringLiteral("运行中") : QStringLiteral("准备中"))
+                    .arg(regionText)
+                    .arg(violationLightText(result.trafficLight))
+                    .arg(static_cast<int>(result.pedestrians.size()))
+                    .arg(result.activeTrackCount)
+                    .arg(result.fps, 0, 'f', 1)
+                    .arg(result.lastMs, 0, 'f', 1));
+    }
+
+    if (!m_violationResultLabel) {
+        return;
+    }
+    if (!result.error.empty()) {
+        m_violationResultLabel->setText(
+                    QStringLiteral("违法检测异常：%1")
+                    .arg(QString::fromStdString(result.error)));
+        return;
+    }
+    if (!result.ready) {
+        m_violationResultLabel->setText(QStringLiteral("等待行人模型和规则引擎输出……"));
+        return;
+    }
+
+    QStringList lines;
+    lines << QStringLiteral("当前违法轨迹：%1")
+             .arg(result.activeViolationCount);
+    lines << QStringLiteral("累计违法事件：%1")
+             .arg(static_cast<qulonglong>(result.violationEventCount));
+
+    int accumulating = 0;
+    for (const NpuBox &box : result.pedestrians) {
+        if (box.pedestrianState == NpuPedestrianState::RedAccumulating) {
+            ++accumulating;
+        }
+    }
+    lines << QStringLiteral("红灯区域累计中：%1人").arg(accumulating);
+
+    if (result.hasRecentViolation) {
+        const NpuViolationEvent &event = result.recentViolation;
+        const QDateTime eventTime = QDateTime::fromMSecsSinceEpoch(
+                    static_cast<qint64>(event.wallClockMs));
+        lines << QStringLiteral("最近事件：行人 #%1 闯红灯")
+                 .arg(event.trackId);
+        lines << QStringLiteral("判定持续：%1 ms｜时间：%2")
+                 .arg(event.accumulatedMs, 0, 'f', 0)
+                 .arg(eventTime.toString(QStringLiteral("HH:mm:ss")));
+        if (event.eventId != m_violationLastEventId) {
+            m_violationLastEventId = event.eventId;
+            m_lastAction = QStringLiteral("检测到行人 #%1 闯红灯").arg(event.trackId);
+        }
+    } else {
+        lines << QStringLiteral("当前未发现行人违法行为。");
+    }
+
+    m_violationResultLabel->setText(lines.join(QLatin1Char('\n')));
+}
+
+void ControlPanelWindow::onFpgaControlInfoUpdated(bool available,
+                                                        quint32 ipVersion,
+                                                        quint32 capability,
+                                                        quint32 algorithmBitmap,
+                                                        quint32 streamCount,
+                                                        quint32 activeMode,
+                                                        quint32 ackSequence,
+                                                        quint32 status,
+                                                        quint32 errorStatus,
+                                                        quint32 frameCount,
+                                                        quint32 lastApplyFrame,
+                                                        QString message)
+{
+    m_fpgaControlAvailable = available;
+    if (!available) {
+        m_fpgaApplyPending = false;
+    }
+    m_fpgaIpVersion = ipVersion;
+    m_fpgaCapability = capability;
+    m_fpgaAlgorithmBitmap = algorithmBitmap;
+    m_fpgaActiveMode = activeMode;
+    if (!m_fpgaApplyPending) {
+        m_fpgaRequestedMode = activeMode;
+    }
+    m_fpgaAckSequence = ackSequence;
+    m_fpgaStatus = status;
+    m_fpgaErrorStatus = errorStatus;
+    m_fpgaFrameCount = frameCount;
+    m_fpgaLastApplyFrame = lastApplyFrame;
+
+    if (m_fpgaCapabilityLabel) {
+        m_fpgaCapabilityLabel->setText(available
+                ? QStringLiteral("硬件能力：IP %1｜caps 0x%2｜algorithms 0x%3｜streams %4")
+                  .arg(fpgaIpVersionText(ipVersion))
+                  .arg(capability, 8, 16, QLatin1Char('0'))
+                  .arg(algorithmBitmap, 8, 16, QLatin1Char('0'))
+                  .arg(streamCount)
+                : QStringLiteral("硬件能力：不可用｜%1").arg(message));
+    }
+
+    if (m_fpgaCurrentModeLabel) {
+        // 当前模式只显示简短中文，避免状态字段过长引发布局跳动。
+        m_fpgaCurrentModeLabel->setText(available
+                ? QStringLiteral("当前模式：%1").arg(fpgaModeName(activeMode))
+                : QStringLiteral("当前模式：未知"));
+    }
+
+    if (m_fpgaApplyStatusLabel && !m_fpgaApplyPending) {
+        m_fpgaApplyStatusLabel->setText(
+                    QStringLiteral("配置状态：%1").arg(message));
+    }
+
+    updateFpgaUiAvailability();
+    updateStatusText();
+}
+
+void ControlPanelWindow::onFpgaApplyFinished(bool success,
+                                               quint32 requestedMode,
+                                               quint32 activeMode,
+                                               quint32 sequence,
+                                               quint32 ackSequence,
+                                               quint32 status,
+                                               quint32 errorStatus,
+                                               quint32 latencyUs,
+                                               quint32 lastApplyFrame,
+                                               QString message)
+{
+    Q_UNUSED(sequence)
+    Q_UNUSED(ackSequence)
+    Q_UNUSED(status)
+    Q_UNUSED(errorStatus)
+    Q_UNUSED(latencyUs)
+    Q_UNUSED(lastApplyFrame)
+
+    m_fpgaApplyPending = false;
+    m_fpgaActiveMode = activeMode;
+    m_fpgaRequestedMode = activeMode;
+
+    if (m_fpgaApplyStatusLabel) {
+        m_fpgaApplyStatusLabel->setText(
+                    QStringLiteral("配置状态：%1").arg(message));
+    }
+
+    if (success) {
+        m_lastAction = QStringLiteral("FPGA预处理已切换：%1")
+                .arg(fpgaModeName(activeMode));
+        m_lastError = QStringLiteral("none");
+    } else {
+        m_lastAction = QStringLiteral("FPGA预处理切换失败：请求%1，保持%2")
+                .arg(fpgaModeName(requestedMode), fpgaModeName(activeMode));
+        m_lastError = message;
+    }
+
+    updateFpgaUiAvailability();
+    updateStatusText();
+}
+
+void ControlPanelWindow::onEthernetControlInfoUpdated(bool available,
+                                                        quint32 ipVersion,
+                                                        quint32 capability,
+                                                        quint32 outputWidth,
+                                                        quint32 outputHeight,
+                                                        quint32 outputFps,
+                                                        quint32 destinationIpv4,
+                                                        quint32 destinationPort,
+                                                        bool requestedEnable,
+                                                        bool activeEnable,
+                                                        quint32 ackSequence,
+                                                        quint32 status,
+                                                        quint32 errorStatus,
+                                                        quint32 frameCount,
+                                                        quint32 lastApplyFrame,
+                                                        QString message)
+{
+    m_ethernetControlAvailable = available;
+    if (!available) {
+        m_ethernetApplyPending = false;
+    }
+    m_ethernetIpVersion = ipVersion;
+    m_ethernetCapability = capability;
+    m_ethernetOutputWidth = outputWidth;
+    m_ethernetOutputHeight = outputHeight;
+    m_ethernetOutputFps = outputFps;
+    m_ethernetDestinationIpv4 = destinationIpv4;
+    m_ethernetDestinationPort = destinationPort;
+    m_ethernetRequestedEnable = requestedEnable;
+    m_ethernetActiveEnable = activeEnable;
+    m_ethernetAckSequence = ackSequence;
+    m_ethernetStatus = status;
+    m_ethernetErrorStatus = errorStatus;
+    m_ethernetFrameCount = frameCount;
+    m_ethernetLastApplyFrame = lastApplyFrame;
+
+    if (m_ethernetCurrentStateLabel) {
+        m_ethernetCurrentStateLabel->setText(available
+                ? QStringLiteral("当前状态：%1")
+                  .arg(activeEnable ? QStringLiteral("已开启")
+                                    : QStringLiteral("已关闭"))
+                : QStringLiteral("当前状态：未知"));
+    }
+
+    if (m_ethernetInfoLabel) {
+        m_ethernetInfoLabel->setText(available
+                ? QStringLiteral("输出信息：IP %1｜caps 0x%2｜%3×%4@%5｜目标 %6:%7｜发送帧 %8")
+                  .arg(fpgaIpVersionText(ipVersion))
+                  .arg(capability, 8, 16, QLatin1Char('0'))
+                  .arg(outputWidth)
+                  .arg(outputHeight)
+                  .arg(outputFps)
+                  .arg(ipv4Text(destinationIpv4))
+                  .arg(destinationPort)
+                  .arg(frameCount)
+                : QStringLiteral("输出信息：不可用｜%1").arg(message));
+    }
+
+    if (m_ethernetApplyStatusLabel && !m_ethernetApplyPending) {
+        m_ethernetApplyStatusLabel->setText(
+                    QStringLiteral("配置状态：%1").arg(message));
+    }
+
+    updateFpgaUiAvailability();
+    updateStatusText();
+}
+
+void ControlPanelWindow::onEthernetApplyFinished(bool success,
+                                                 bool requestedEnable,
+                                                 bool activeEnable,
+                                                 quint32 sequence,
+                                                 quint32 ackSequence,
+                                                 quint32 status,
+                                                 quint32 errorStatus,
+                                                 quint32 latencyUs,
+                                                 quint32 lastApplyFrame,
+                                                 QString message)
+{
+    Q_UNUSED(sequence)
+    Q_UNUSED(ackSequence)
+    Q_UNUSED(status)
+    Q_UNUSED(errorStatus)
+    Q_UNUSED(latencyUs)
+    Q_UNUSED(lastApplyFrame)
+
+    m_ethernetApplyPending = false;
+    m_ethernetActiveEnable = activeEnable;
+    m_ethernetRequestedEnable = activeEnable;
+
+    if (m_ethernetApplyStatusLabel) {
+        m_ethernetApplyStatusLabel->setText(
+                    QStringLiteral("配置状态：%1").arg(message));
+    }
+
+    if (success) {
+        m_lastAction = activeEnable
+                ? QStringLiteral("网络视频输出已开启")
+                : QStringLiteral("网络视频输出已关闭");
+        m_lastError = QStringLiteral("none");
+    } else {
+        m_lastAction = QStringLiteral("网络视频输出切换失败：请求%1，保持%2")
+                .arg(requestedEnable ? QStringLiteral("开启") : QStringLiteral("关闭"),
+                     activeEnable ? QStringLiteral("开启") : QStringLiteral("关闭"));
+        m_lastError = message;
+    }
+
+    updateFpgaUiAvailability();
+    updateStatusText();
 }
 
 void ControlPanelWindow::onDisplayStateChanged(QString state)
@@ -1901,6 +2997,7 @@ void ControlPanelWindow::onDisplayStateChanged(QString state)
         m_displayRunning = m_display->isRunning();
     }
 
+    updateFpgaUiAvailability();
     updateStatusText();
 }
 
@@ -1944,6 +3041,7 @@ void ControlPanelWindow::onDisplayAiStatsUpdated(bool enabled,
                                                  double fps,
                                                  int plateCount,
                                                  int pedestrianCount,
+                                                 int vehicleCount,
                                                  QString status)
 {
     m_aiEnabled = enabled;
@@ -1951,6 +3049,7 @@ void ControlPanelWindow::onDisplayAiStatsUpdated(bool enabled,
     m_aiFps = fps;
     m_aiPlateCount = plateCount;
     m_aiPedestrianCount = pedestrianCount;
+    m_aiVehicleCount = vehicleCount;
     m_aiStatus = status;
 
     updateStatusText();
@@ -2338,6 +3437,65 @@ bool ControlPanelWindow::applyPtzProfileSelection(bool restartActiveServices)
     return reconcilePtzDevice(true, restartActiveServices);
 }
 
+void ControlPanelWindow::requestEthernetOutput(bool enable)
+{
+    if (!m_display || !m_display->isRunning()) {
+        m_lastError = QStringLiteral("请先启动HDMI/PCIe显示，再切换网络视频输出");
+        if (m_ethernetApplyStatusLabel) {
+            m_ethernetApplyStatusLabel->setText(
+                        QStringLiteral("配置状态：%1").arg(m_lastError));
+        }
+        updateFpgaUiAvailability();
+        updateStatusText();
+        return;
+    }
+
+    if (!m_ethernetControlAvailable) {
+        m_lastError = QStringLiteral("网络视频输出控制尚未就绪，请稍候");
+        if (m_ethernetApplyStatusLabel) {
+            m_ethernetApplyStatusLabel->setText(
+                        QStringLiteral("配置状态：%1").arg(m_lastError));
+        }
+        updateFpgaUiAvailability();
+        updateStatusText();
+        return;
+    }
+
+    if (m_ethernetApplyPending) {
+        return;
+    }
+
+    if (enable == m_ethernetActiveEnable) {
+        m_lastAction = enable
+                ? QStringLiteral("网络视频输出已经开启")
+                : QStringLiteral("网络视频输出已经关闭");
+        if (m_ethernetApplyStatusLabel) {
+            m_ethernetApplyStatusLabel->setText(
+                        QStringLiteral("配置状态：%1").arg(m_lastAction));
+        }
+        updateFpgaUiAvailability();
+        updateStatusText();
+        return;
+    }
+
+    m_ethernetRequestedEnable = enable;
+    m_ethernetApplyPending = true;
+    m_lastAction = enable
+            ? QStringLiteral("请求开启网络视频输出")
+            : QStringLiteral("请求关闭网络视频输出");
+    m_lastError = QStringLiteral("none");
+
+    if (m_ethernetApplyStatusLabel) {
+        m_ethernetApplyStatusLabel->setText(enable
+                ? QStringLiteral("配置状态：正在开启网络视频输出……")
+                : QStringLiteral("配置状态：正在关闭网络视频输出……"));
+    }
+
+    updateFpgaUiAvailability();
+    updateStatusText();
+    m_display->requestEthernetOutput(enable);
+}
+
 void ControlPanelWindow::onApplyPtzProfileClicked()
 {
     const bool anyServiceRunning = (m_ptzCapture && m_ptzCapture->isRunning())
@@ -2721,20 +3879,14 @@ void ControlPanelWindow::updateFanUi()
     const bool available = m_fanController->isAvailable();
     const bool enabled = available && m_fanController->isEnabled();
     const int duty = available ? m_fanController->dutyPercent()
-                               : (m_fanPwmSlider ? m_fanPwmSlider->value() : 30);
+                               : (m_fanPwmSpin ? m_fanPwmSpin->value() : 30);
 
     if (m_btnFanPower) {
         const QSignalBlocker blocker(m_btnFanPower);
         m_btnFanPower->setEnabled(available);
         m_btnFanPower->setChecked(enabled);
         m_btnFanPower->setText(enabled ? QStringLiteral("风扇开启")
-                                           : QStringLiteral("风扇关闭"));
-    }
-
-    if (m_fanPwmSlider) {
-        const QSignalBlocker blocker(m_fanPwmSlider);
-        m_fanPwmSlider->setEnabled(available);
-        m_fanPwmSlider->setValue(duty);
+                                       : QStringLiteral("风扇关闭"));
     }
 
     if (m_fanPwmSpin) {
@@ -2743,9 +3895,102 @@ void ControlPanelWindow::updateFanUi()
         m_fanPwmSpin->setValue(duty);
     }
 
+    if (m_btnFanPwmMinus) {
+        m_btnFanPwmMinus->setEnabled(available && duty > 0);
+    }
+    if (m_btnFanPwmPlus) {
+        m_btnFanPwmPlus->setEnabled(available && duty < 100);
+    }
+
     if (m_fanStatusLabel) {
         m_fanStatusLabel->setText(m_fanController->statusText());
     }
+}
+
+void ControlPanelWindow::updateFpgaModeButtons()
+{
+    if (!m_fpgaPreprocButtonGroup) {
+        return;
+    }
+
+    const bool displayRunning = m_display && m_display->isRunning();
+    const QList<QAbstractButton *> buttons = m_fpgaPreprocButtonGroup->buttons();
+    for (QAbstractButton *button : buttons) {
+        if (!button) {
+            continue;
+        }
+
+        const int buttonId = m_fpgaPreprocButtonGroup->id(button);
+        if (buttonId < 0) {
+            continue;
+        }
+
+        const quint32 mode = static_cast<quint32>(buttonId);
+        const bool supported = mode < 32U
+                && (m_fpgaAlgorithmBitmap & (1U << mode));
+        const bool active = m_fpgaControlAvailable && mode == m_fpgaActiveMode;
+        const bool pending = m_fpgaApplyPending && mode == m_fpgaRequestedMode;
+
+        button->setEnabled(displayRunning
+                           && m_fpgaControlAvailable
+                           && supported
+                           && !m_fpgaApplyPending);
+        button->setText(fpgaModeButtonText(mode, active, pending));
+        button->setProperty("fpgaActive", active);
+        button->setProperty("fpgaPending", pending);
+
+        // 动态属性改变后立即刷新QSS，使ACK前后高亮状态准确同步。
+        if (button->style()) {
+            button->style()->unpolish(button);
+            button->style()->polish(button);
+        }
+        button->update();
+    }
+}
+
+void ControlPanelWindow::updateEthernetButtons()
+{
+    if (!m_ethernetOutputButtonGroup) {
+        return;
+    }
+
+    const bool displayRunning = m_display && m_display->isRunning();
+    const QList<QAbstractButton *> buttons = m_ethernetOutputButtonGroup->buttons();
+    for (QAbstractButton *button : buttons) {
+        if (!button) {
+            continue;
+        }
+
+        const int buttonId = m_ethernetOutputButtonGroup->id(button);
+        if (buttonId != 0 && buttonId != 1) {
+            continue;
+        }
+
+        const bool enable = (buttonId == 1);
+        const bool active = m_ethernetControlAvailable
+                && enable == m_ethernetActiveEnable;
+        const bool pending = m_ethernetApplyPending
+                && enable == m_ethernetRequestedEnable;
+
+        button->setEnabled(displayRunning
+                           && m_ethernetControlAvailable
+                           && !m_ethernetApplyPending);
+        button->setText(ethernetOutputButtonText(enable, active, pending));
+        button->setProperty("ethActive", active);
+        button->setProperty("ethPending", pending);
+
+        if (button->style()) {
+            button->style()->unpolish(button);
+            button->style()->polish(button);
+        }
+        button->update();
+    }
+}
+
+void ControlPanelWindow::updateFpgaUiAvailability()
+{
+    updateFpgaModeButtons();
+    updateEthernetButtons();
 }
 
 void ControlPanelWindow::updateStatusText()
@@ -2766,11 +4011,18 @@ void ControlPanelWindow::updateStatusText()
     const QString aiShort = m_aiEnabled
             ? (m_aiReady ? "ON" : "WAIT")
             : "OFF";
-    const QString aiTaskShort = m_aiTask == NpuTaskType::PlateCascade ? "PLATE" : "PED";
+    const QString aiTaskShort = m_aiTask == NpuTaskType::PlateCascade
+            ? "PLATE"
+            : (m_aiTask == NpuTaskType::TrafficViolation ? "VIOL" : "PED");
 
-    QString bottom = QString("HDMI:%1 VIEW:%2  PTZ-V:%3  PTZ-C:%4  FAN:%5  RX:%6  FLIP:%7  PTZ:%8  AI:%9/%10 P:%11 D:%12  TEMP:%13  FAIL:%14")
+    const QString ethernetShort = m_ethernetControlAvailable
+            ? (m_ethernetActiveEnable ? QStringLiteral("ON") : QStringLiteral("OFF"))
+            : QStringLiteral("NA");
+
+    QString bottom = QString("HDMI:%1 VIEW:%2  NET:%3  PTZ-V:%4  PTZ-C:%5  FAN:%6  RX:%7  FLIP:%8  PTZ:%9  AI:%10/%11 P:%12 D:%13 V:%14  TEMP:%15  FAIL:%16")
             .arg(m_displayRunning ? "ON" : "OFF")
             .arg(routeText)
+            .arg(ethernetShort)
             .arg(m_ptzCaptureRunning ? "ON" : "OFF")
             .arg(m_ptzControlReady ? "ON" : "OFF")
             .arg(fanText)
@@ -2781,6 +4033,7 @@ void ControlPanelWindow::updateStatusText()
             .arg(aiTaskShort)
             .arg(m_aiPlateCount)
             .arg(m_aiPedestrianCount)
+            .arg(m_aiVehicleCount)
             .arg(tempText)
             .arg(m_failCount + m_ptzDecodeFail);
 
@@ -2801,7 +4054,27 @@ void ControlPanelWindow::updateStatusText()
     detail += QString("性能HUD  : ON\n");
     detail += QString("AI结果OSD: %1\n").arg(m_osdEnabled ? "ON" : "OFF");
     detail += QString("当前页面 : %1\n").arg(m_currentPage);
-    detail += QString("运行时间 : %1 s\n\n").arg(m_seconds);
+    detail += QString("运行时间 : %1 s\n").arg(m_seconds);
+    detail += QString("FPGA控制 : %1\n").arg(m_fpgaControlAvailable ? "READY" : "OFFLINE");
+    detail += QString("FPGA IP   : %1\n").arg(fpgaIpVersionText(m_fpgaIpVersion));
+    detail += QString("FPGA模式  : %1\n").arg(fpgaModeName(m_fpgaActiveMode));
+    detail += QString("FPGA bitmap: 0x%1\n").arg(m_fpgaAlgorithmBitmap, 8, 16, QLatin1Char('0'));
+    detail += QString("FPGA ack/frame: %1 / %2\n\n")
+            .arg(m_fpgaAckSequence)
+            .arg(m_fpgaFrameCount);
+    detail += QString("Ethernet控制: %1\n")
+            .arg(m_ethernetControlAvailable ? "READY" : "OFFLINE");
+    detail += QString("Ethernet状态: %1\n")
+            .arg(m_ethernetActiveEnable ? "ON" : "OFF");
+    detail += QString("Ethernet输出: %1x%2@%3 -> %4:%5\n")
+            .arg(m_ethernetOutputWidth)
+            .arg(m_ethernetOutputHeight)
+            .arg(m_ethernetOutputFps)
+            .arg(ipv4Text(m_ethernetDestinationIpv4))
+            .arg(m_ethernetDestinationPort);
+    detail += QString("Ethernet ack/frame: %1 / %2\n\n")
+            .arg(m_ethernetAckSequence)
+            .arg(m_ethernetFrameCount);
 
     detail += QString("PCIe read_fps  : %1\n").arg(m_readFps, 0, 'f', 1);
     detail += QString("PCIe valid_fps : %1\n").arg(m_validFps, 0, 'f', 1);
@@ -2845,6 +4118,7 @@ void ControlPanelWindow::updateStatusText()
     detail += QString("ai_fps    : %1\n").arg(m_aiFps, 0, 'f', 1);
     detail += QString("ai_plate  : %1\n").arg(m_aiPlateCount);
     detail += QString("ai_ped    : %1\n").arg(m_aiPedestrianCount);
+    detail += QString("ai_vehicle: %1\n").arg(m_aiVehicleCount);
     detail += QString("ai_status : %1\n").arg(m_aiStatus);
 
     detail += QString("cpu_load  : %1\n").arg(cpuText);
@@ -2876,7 +4150,30 @@ void ControlPanelWindow::applyStyle()
         "#videoRouteButton { min-height: 54px; font-size: 22px; font-weight: 700; }"
         "#videoRouteButton:checked { background: #0A84FF; color: white; border: 2px solid #85C7FF; }"
         "#videoRouteButton:pressed { background: #1260B3; }"
+        "#fpgaModeButton { min-height: 58px; max-height: 58px; font-size: 18px; font-weight: 700; padding: 4px 8px; }"
+        "#fpgaModeButton:disabled { background: #1A2530; color: #788794; border: 1px solid #2A3A4A; }"
+        "#fpgaModeButton[fpgaActive=\"true\"] { background: #0A84FF; color: white; border: 2px solid #85C7FF; }"
+        "#fpgaModeButton[fpgaPending=\"true\"] { background: #8A6500; color: white; border: 2px solid #FFD166; }"
+        "#fpgaModeButton:pressed { background: #1260B3; }"
+        "#fpgaCurrentModeLabel { background: #06111C; color: #85C7FF; border-radius: 8px; padding: 7px 9px; font-size: 16px; font-weight: 700; }"
+        "#fpgaApplyStatusLabel { background: #06111C; color: #E8EEF2; border-radius: 8px; padding: 7px 9px; font-size: 16px; }"
+        "#fpgaInfoLabel, #fpgaInputSummary { color: #AAB7C4; font-size: 15px; }"
+        "#ethOutputButton { min-height: 58px; font-size: 19px; font-weight: 700; padding: 6px; }"
+        "#ethOutputButton:disabled { background: #1A2530; color: #788794; border: 1px solid #2A3A4A; }"
+        "#ethOutputButton[ethActive=\"true\"] { background: #0A84FF; color: white; border: 2px solid #85C7FF; }"
+        "#ethOutputButton[ethPending=\"true\"] { background: #8A6500; color: white; border: 2px solid #FFD166; }"
+        "#ethOutputButton:pressed { background: #1260B3; }"
+        "#ethernetCurrentStateLabel { background: #06111C; color: #85C7FF; border-radius: 8px; padding: 6px 9px; font-size: 16px; font-weight: 700; }"
+        "#ethernetApplyStatusLabel { background: #06111C; color: #E8EEF2; border-radius: 8px; padding: 6px 9px; font-size: 16px; }"
+        "#ethernetInfoLabel { color: #AAB7C4; font-size: 15px; }"
         "#touchAdjustButton { min-width: 54px; max-width: 54px; min-height: 46px; max-height: 46px; border-radius: 10px; font-size: 28px; font-weight: 700; padding: 0px; }"
+        "#fanPwmButton { min-width: 72px; max-width: 72px; min-height: 58px; max-height: 58px; border-radius: 12px; font-size: 34px; font-weight: 700; padding: 0px; }"
+        "#fanPwmValue { min-height: 58px; font-size: 24px; font-weight: 700; padding: 0px 6px; }"
+        "#aiTaskButton { min-height: 48px; font-size: 17px; font-weight: 700; padding: 4px 5px; }"
+        "#aiTaskButton[aiActive=\"true\"] { background: #0A84FF; color: white; border: 2px solid #85C7FF; }"
+        "#aiTaskButton[aiPending=\"true\"] { background: #8A6500; color: white; border: 2px solid #FFD166; }"
+        "#aiStopButton { background: #6B1E1E; color: white; border: 2px solid #FF8A80; font-weight: 700; }"
+        "#aiStopButton:disabled { background: #24303B; color: #73808C; border-color: #3D4A56; }"
         "#touchValueSpin { min-height: 46px; font-size: 20px; font-weight: 700; padding: 0px 4px; }"
         "#compactActionButton { min-height: 40px; max-height: 42px; font-size: 17px; padding: 0 12px; }"
         "#ptzButton { min-height: 44px; font-size: 18px; }"
@@ -2884,14 +4181,22 @@ void ControlPanelWindow::applyStyle()
         "QSlider::groove:horizontal { height: 10px; background: #0F151C; border: 1px solid #3F5871; border-radius: 5px; }"
         "QSlider::sub-page:horizontal { background: #0A84FF; border-radius: 5px; }"
         "QSlider::handle:horizontal { width: 24px; margin: -8px 0; background: #FFFFFF; border: 2px solid #0A84FF; border-radius: 12px; }"
-        "QCheckBox { font-size: 19px; min-height: 42px; }"
         "QLabel { color: #E8EEF2; }"
         "#ptzPreview { background: #000000; color: #90A0AE; border: 1px solid #3F5871; border-radius: 8px; font-size: 20px; }"
         "#ptzState { background: #0F151C; color: #85C7FF; border-radius: 6px; padding: 5px; font-size: 15px; }"
         "#ptzStats { background: #06111C; color: #00FF66; border-radius: 6px; padding: 5px; font-family: 'Monospace'; font-size: 15px; }"
         "#bottomStatus { background: #06111C; color: #00FF66; border: 1px solid #17482A; border-radius: 10px; padding-left: 12px; font-size: 16px; font-weight: 700; }"
         "#aiRuntimeStatus { background: #06111C; color: #DCEEFF; border-radius: 8px; padding: 6px 8px; font-size: 15px; }"
-        "#aiResultTable { font-size: 14px; }"
+        "#aiCurrentResult { background: #06111C; color: #E8EEF2; border-radius: 8px; padding: 10px 12px; font-size: 17px; line-height: 1.35; }"
+        "#violationPreview { background: #000000; border: 1px solid #3F5871; border-radius: 8px; }"
+        "#violationCompactButton { min-height: 42px; max-height: 44px; font-size: 16px; padding: 0 8px; }"
+        "#violationRunButton { min-height: 48px; font-size: 18px; font-weight: 700; }"
+        "#violationRunButton[violationActive=\"true\"] { background: #C0392B; color: white; border: 2px solid #FF8A80; }"
+        "#violationLightButton { min-height: 40px; font-size: 16px; padding: 0 5px; }"
+        "#violationLightButton:checked { background: #0A84FF; color: white; border: 2px solid #85C7FF; }"
+        "#violationEditStatus { background: #06111C; color: #AFC9DD; border-radius: 7px; padding: 5px 8px; font-size: 14px; }"
+        "#violationRuntime { background: #06111C; color: #DCEEFF; border-radius: 8px; padding: 7px 9px; font-size: 15px; }"
+        "#violationResult { background: #06111C; color: #E8EEF2; border-radius: 8px; padding: 9px 10px; font-size: 16px; }"
         "#statusScrollArea { background: #06111C; border-radius: 10px; }"
         "#statusScrollArea QWidget { background: #06111C; }"
         "#statusDetail { background: #06111C; color: #00FF66; border-radius: 10px; padding: 8px; font-family: 'Monospace'; font-size: 14px; }"

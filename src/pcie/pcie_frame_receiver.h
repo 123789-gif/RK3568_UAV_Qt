@@ -36,6 +36,72 @@ public:
         int bufferIndex = -1;
     };
 
+
+    struct FpgaCaps {
+        bool valid = false;
+        std::uint32_t ipVersion = 0;
+        std::uint32_t capability = 0;
+        std::uint32_t algorithmBitmap = 0;
+        std::uint32_t streamCount = 0;
+    };
+
+    struct FpgaStatus {
+        bool valid = false;
+        std::uint32_t status = 0;
+        std::uint32_t activeMode = 0;
+        std::uint32_t ackSequence = 0;
+        std::uint32_t errorStatus = 0;
+        std::uint32_t frameCount = 0;
+        std::uint32_t lastApplyFrame = 0;
+    };
+
+    struct FpgaApplyResult {
+        bool success = false;
+        int systemError = 0;
+        std::uint32_t requestedMode = 0;
+        std::uint32_t sequence = 0;
+        std::uint32_t activeMode = 0;
+        std::uint32_t ackSequence = 0;
+        std::uint32_t status = 0;
+        std::uint32_t errorStatus = 0;
+        std::uint32_t latencyUs = 0;
+    };
+
+    struct EthernetCaps {
+        bool valid = false;
+        std::uint32_t ipVersion = 0;
+        std::uint32_t capability = 0;
+        std::uint32_t outputWidth = 0;
+        std::uint32_t outputHeight = 0;
+        std::uint32_t outputFps = 0;
+        std::uint32_t destinationIpv4 = 0;
+        std::uint32_t destinationPort = 0;
+    };
+
+    struct EthernetStatus {
+        bool valid = false;
+        std::uint32_t status = 0;
+        bool requestedEnable = false;
+        bool activeEnable = false;
+        std::uint32_t ackSequence = 0;
+        std::uint32_t errorStatus = 0;
+        std::uint32_t frameCount = 0;
+        std::uint32_t lastApplyFrame = 0;
+    };
+
+    struct EthernetApplyResult {
+        bool success = false;
+        int systemError = 0;
+        bool requestedEnable = false;
+        std::uint32_t sequence = 0;
+        bool activeEnable = false;
+        std::uint32_t ackSequence = 0;
+        std::uint32_t status = 0;
+        std::uint32_t errorStatus = 0;
+        std::uint32_t latencyUs = 0;
+        std::uint32_t lastApplyFrame = 0;
+    };
+
     enum class WaitResult {
         FrameReady,
         NoFrame,
@@ -57,6 +123,25 @@ public:
     bool isOpen() const;
     bool isReady() const;
     bool pioControlActive() const;
+
+    // FPGA预处理控制复用当前视频接收fd，不额外open设备节点。
+    bool getFpgaCaps(FpgaCaps &caps, std::string *errorMessage = nullptr) const;
+    bool getFpgaStatus(FpgaStatus &status, std::string *errorMessage = nullptr) const;
+    bool applyFpgaPreprocess(std::uint32_t mode,
+                             std::uint32_t param0,
+                             std::uint32_t timeoutMs,
+                             FpgaApplyResult &result,
+                             std::string *errorMessage = nullptr) const;
+
+    // Ethernet H2/UDP视频输出控制同样复用当前视频接收fd。
+    bool getEthernetCaps(EthernetCaps &caps,
+                         std::string *errorMessage = nullptr) const;
+    bool getEthernetStatus(EthernetStatus &status,
+                           std::string *errorMessage = nullptr) const;
+    bool setEthernetOutput(bool enable,
+                           std::uint32_t timeoutMs,
+                           EthernetApplyResult &result,
+                           std::string *errorMessage = nullptr) const;
 
     const LinkInfo &linkInfo() const;
     const std::string &lastError() const;

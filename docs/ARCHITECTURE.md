@@ -259,3 +259,9 @@ HDMI 性能 HUD 在保持 `SYS / FPS / LAT` 三行三列结构的基础上做轻
 
 ### HUD and Plate Label Rendering v6
 The HDMI performance HUD keeps the compact three-row layout, but row blocks are now equal-height. Plate label rendering remains cached RGB565, with fast stale-slot eviction on unmatched detections and per-suffix red rendering for police/consulate plates.
+
+### Traffic violation task v1
+
+The AI page now exposes a “违法检测（行人+车辆）” task. The first implementation reuses the existing 768x448 letterbox preprocessing path and serially runs the pedestrian detector plus the new four-class vehicle detector (`car`, `bus`, `van`, `truck`). The output is merged into one `NpuFrameResult` as `pedestrians` and `vehicles`, so the AI table and HDMI OSD can verify model loading, coordinate mapping and runtime performance before the rule engine is enabled.
+
+The rule layer is intentionally not enabled in this patch. Crosswalk ROI configuration, red/green-light state, and event definitions such as pedestrian red-light crossing or vehicle occupying a crosswalk should be added after this dual-model detection path is stable on the board.

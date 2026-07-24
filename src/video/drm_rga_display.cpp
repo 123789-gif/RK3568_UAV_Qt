@@ -13,6 +13,7 @@
 #include <QString>
 
 #include <algorithm>
+#include <chrono>
 #include <cerrno>
 #include <cinttypes>
 #include <cstdio>
@@ -56,6 +57,25 @@ static constexpr int PCIE_FRAME_W = PcieFrameReceiver::kFrameWidth;
 static constexpr int PCIE_FRAME_H = PcieFrameReceiver::kFrameHeight;
 static constexpr int PCIE_BPP = PcieFrameReceiver::kBytesPerPixel;
 static constexpr std::size_t PCIE_FRAME_SIZE = PcieFrameReceiver::kFrameBytes;
+
+static QString fpga_mode_name(std::uint32_t mode)
+{
+    switch (mode) {
+    case 0U: return QStringLiteral("原始画面");
+    case 1U: return QStringLiteral("反色诊断");
+    case 2U: return QStringLiteral("固定色诊断");
+    case 3U: return QStringLiteral("Gamma暗光增强");
+    case 4U: return QStringLiteral("Sobel边缘检测");
+    case 5U: return QStringLiteral("图像去雾");
+    default: return QStringLiteral("未知模式%1").arg(mode);
+    }
+}
+
+static QString ethernet_output_name(bool enable)
+{
+    return enable ? QStringLiteral("开启网络视频输出")
+                  : QStringLiteral("关闭网络视频输出");
+}
 
 static int rga_crop_scale_rgb565(const void *srcPtr,
                                   int srcW,
@@ -814,230 +834,78 @@ static void blit_plate_label_rgb565(void *fb, int pitchBytes, int fbW, int fbH,
     }
 }
 
-struct StablePlateOsdSlot {
-    bool active = false;
-    uint64_t lastSeenNs = 0;
-    int sourceChannel = -999;
-    uint64_t sourceRevision = 0;
-    int classId = 0;
-    float x = 0.0f;
-    float y = 0.0f;
-    float w = 0.0f;
-    float h = 0.0f;
-    QString stableText;
-    QString pendingText;
-    int pendingCount = 0;
-    int missedFrames = 0;
-    QString cachedText;
-    int cachedClassId = -1000;
-    int cachedFbW = 0;
-    CachedRgb565Label cachedLabel;
+struct DirectPlateLabelCacheEntry {
+    QString text;
+    int classId = -1000;
+    int fbW = 0;
+    uint64_t useSerial = 0;
+    CachedRgb565Label label;
 };
 
-static std::vector<StablePlateOsdSlot>& stable_plate_slots()
+static const CachedRgb565Label* cached_plate_label(int fbW,
+                                                    const QString& text,
+                                                    int classId)
 {
-    static std::vector<StablePlateOsdSlot> plateSlots;
-    return plateSlots;
-}
+    static std::vector<DirectPlateLabelCacheEntry> cache;
+    static uint64_t serial = 0;
+    ++serial;
 
-static float rect_iou(float ax, float ay, float aw, float ah,
-                      float bx, float by, float bw, float bh)
-{
-    const float x1 = std::max(ax, bx);
-    const float y1 = std::max(ay, by);
-    const float x2 = std::min(ax + aw, bx + bw);
-    const float y2 = std::min(ay + ah, by + bh);
-    const float iw = std::max(0.0f, x2 - x1);
-    const float ih = std::max(0.0f, y2 - y1);
-    const float inter = iw * ih;
-    const float uni = aw * ah + bw * bh - inter;
-    return uni > 1.0f ? inter / uni : 0.0f;
-}
-
-static int find_plate_slot(const NpuBox &box, const std::vector<bool> &used)
-{
-    auto &plateSlots = stable_plate_slots();
-    int best = -1;
-    float bestScore = 0.0f;
-    for (std::size_t i = 0; i < plateSlots.size(); ++i) {
-        if (i < used.size() && used[i]) continue;
-        const StablePlateOsdSlot &s = plateSlots[i];
-        if (!s.active) continue;
-        const float iou = rect_iou(box.x, box.y, box.w, box.h, s.x, s.y, s.w, s.h);
-        const float cx0 = box.x + box.w * 0.5f;
-        const float cy0 = box.y + box.h * 0.5f;
-        const float cx1 = s.x + s.w * 0.5f;
-        const float cy1 = s.y + s.h * 0.5f;
-        const float dist = std::sqrt((cx0 - cx1) * (cx0 - cx1) + (cy0 - cy1) * (cy0 - cy1));
-        const float diag = std::max(12.0f, std::sqrt(box.w * box.w + box.h * box.h));
-        const float score = iou + std::max(0.0f, 1.0f - dist / (diag * 1.6f)) * 0.25f;
-        if ((iou >= 0.12f || dist <= diag * 0.8f) && score > bestScore) {
-            bestScore = score;
-            best = static_cast<int>(i);
-        }
-    }
-    return best;
-}
-
-static int allocate_plate_slot()
-{
-    auto &plateSlots = stable_plate_slots();
-    constexpr std::size_t kMaxSlots = 4;
-    for (std::size_t i = 0; i < plateSlots.size(); ++i) {
-        if (!plateSlots[i].active) return static_cast<int>(i);
-    }
-    if (plateSlots.size() < kMaxSlots) {
-        plateSlots.emplace_back();
-        return static_cast<int>(plateSlots.size() - 1);
-    }
-    std::size_t oldest = 0;
-    for (std::size_t i = 1; i < plateSlots.size(); ++i) {
-        if (plateSlots[i].lastSeenNs < plateSlots[oldest].lastSeenNs) oldest = i;
-    }
-    return static_cast<int>(oldest);
-}
-
-static void clear_stable_plate_slots()
-{
-    stable_plate_slots().clear();
-}
-
-static void deactivate_plate_slot(StablePlateOsdSlot &slot)
-{
-    slot.active = false;
-    slot.stableText.clear();
-    slot.pendingText.clear();
-    slot.pendingCount = 0;
-    slot.missedFrames = 0;
-    slot.cachedText.clear();
-    slot.cachedClassId = -1000;
-    slot.cachedFbW = 0;
-    slot.cachedLabel.clear();
-}
-
-static void update_stable_plate_slots(const NpuFrameResult &result)
-{
-    auto &plateSlots = stable_plate_slots();
-    const uint64_t now = now_ns();
-    constexpr uint64_t kExpireNs = 250000000ULL;
-    constexpr int kConfirmCount = 3;
-    constexpr int kExpireMissedFrames = 2;
-
-    static int s_lastChannel = -1000;
-    static uint64_t s_lastRevision = 0;
-    static NpuTaskType s_lastTask = NpuTaskType::Pedestrian;
-    if (s_lastChannel != result.sourceChannel ||
-        s_lastRevision != result.sourceRevision ||
-        s_lastTask != result.task) {
-        clear_stable_plate_slots();
-        s_lastChannel = result.sourceChannel;
-        s_lastRevision = result.sourceRevision;
-        s_lastTask = result.task;
-    }
-
-    for (StablePlateOsdSlot &slot : plateSlots) {
-        if (slot.active && now - slot.lastSeenNs > kExpireNs) {
-            deactivate_plate_slot(slot);
+    for (DirectPlateLabelCacheEntry& entry : cache) {
+        if (entry.fbW == fbW && entry.classId == classId && entry.text == text) {
+            entry.useSerial = serial;
+            return &entry.label;
         }
     }
 
-    std::vector<bool> used(plateSlots.size(), false);
-    for (const NpuBox &box : result.plates) {
+    DirectPlateLabelCacheEntry* target = nullptr;
+    constexpr std::size_t kMaxCacheEntries = 16;
+    if (cache.size() < kMaxCacheEntries) {
+        cache.push_back(DirectPlateLabelCacheEntry());
+        target = &cache.back();
+    } else {
+        target = &*std::min_element(
+                    cache.begin(), cache.end(),
+                    [](const DirectPlateLabelCacheEntry& a,
+                       const DirectPlateLabelCacheEntry& b) {
+            return a.useSerial < b.useSerial;
+        });
+    }
+
+    target->text = text;
+    target->classId = classId;
+    target->fbW = fbW;
+    target->useSerial = serial;
+    target->label = render_plate_label_rgb565(fbW, text, classId);
+    return &target->label;
+}
+
+static void draw_plate_labels_from_result(void *fb,
+                                          int pitchBytes,
+                                          int fbW,
+                                          int fbH,
+                                          int sourceW,
+                                          int sourceH,
+                                          const NpuFrameResult& result)
+{
+    // 位置、文字和颜色全部直接使用NPU线程输出的同一份稳定结果。DRM层只
+    // 缓存文字位图，不再进行第二次轨迹关联、EMA或文字投票。
+    for (const NpuBox& box : result.plates) {
         const QString text = format_plate_text_for_osd(box);
         if (text.isEmpty() || box.w <= 1.0f || box.h <= 1.0f) {
             continue;
         }
 
-        int idx = find_plate_slot(box, used);
-        if (idx < 0) idx = allocate_plate_slot();
-        if (idx < 0) continue;
-        if (static_cast<std::size_t>(idx) >= used.size()) used.resize(plateSlots.size(), false);
-        used[static_cast<std::size_t>(idx)] = true;
-
-        StablePlateOsdSlot &slot = plateSlots[static_cast<std::size_t>(idx)];
-        const bool wasActive = slot.active;
-        slot.active = true;
-        slot.lastSeenNs = now;
-        slot.sourceChannel = result.sourceChannel;
-        slot.sourceRevision = result.sourceRevision;
-        slot.classId = box.classId;
-        slot.missedFrames = 0;
-        if (!wasActive) {
-            slot.x = box.x;
-            slot.y = box.y;
-            slot.w = box.w;
-            slot.h = box.h;
-            slot.stableText = text;
-            slot.pendingText = text;
-            slot.pendingCount = kConfirmCount;
-        } else {
-            constexpr float kAlpha = 0.22f;
-            slot.x = slot.x * (1.0f - kAlpha) + box.x * kAlpha;
-            slot.y = slot.y * (1.0f - kAlpha) + box.y * kAlpha;
-            slot.w = slot.w * (1.0f - kAlpha) + box.w * kAlpha;
-            slot.h = slot.h * (1.0f - kAlpha) + box.h * kAlpha;
-            if (slot.pendingText == text) {
-                if (slot.pendingCount < kConfirmCount) ++slot.pendingCount;
-            } else {
-                slot.pendingText = text;
-                slot.pendingCount = 1;
-            }
-            if (slot.pendingCount >= kConfirmCount && slot.stableText != text) {
-                slot.stableText = text;
-                slot.cachedText.clear();
-                slot.cachedClassId = -1000;
-                slot.cachedFbW = 0;
-                slot.cachedLabel.clear();
-            }
-        }
-    }
-
-    for (std::size_t i = 0; i < plateSlots.size(); ++i) {
-        StablePlateOsdSlot &slot = plateSlots[i];
-        if (!slot.active) {
+        const CachedRgb565Label* label =
+                cached_plate_label(fbW, text, box.classId);
+        if (!label || label->empty()) {
             continue;
         }
-        const bool seenThisFrame = i < used.size() && used[i];
-        if (seenThisFrame) {
-            slot.missedFrames = 0;
-            continue;
-        }
-        ++slot.missedFrames;
-        if (slot.missedFrames >= kExpireMissedFrames || now - slot.lastSeenNs > kExpireNs) {
-            deactivate_plate_slot(slot);
-        }
-    }
-}
 
-static void draw_stable_plate_labels(void *fb, int pitchBytes, int fbW, int fbH,
-                                     int sourceW, int sourceH)
-{
-    const uint64_t now = now_ns();
-    constexpr uint64_t kExpireNs = 250000000ULL;
-    constexpr int kDrawMissTolerance = 0;
-    for (StablePlateOsdSlot &slot : stable_plate_slots()) {
-        if (!slot.active || slot.stableText.isEmpty() ||
-            now - slot.lastSeenNs > kExpireNs ||
-            slot.missedFrames > kDrawMissTolerance) {
-            continue;
-        }
-        if (slot.cachedText != slot.stableText ||
-            slot.cachedClassId != slot.classId ||
-            slot.cachedFbW != fbW ||
-            slot.cachedLabel.empty()) {
-            slot.cachedLabel = render_plate_label_rgb565(fbW, slot.stableText, slot.classId);
-            slot.cachedText = slot.stableText;
-            slot.cachedClassId = slot.classId;
-            slot.cachedFbW = fbW;
-        }
-
-        const int x = scale_capture_x(slot.x, fbW, sourceW);
-        const int y = scale_capture_y(slot.y, fbH, sourceH);
-        const int w = std::max(2, scale_capture_x(slot.w, fbW, sourceW));
-        const int anchorX = x + w / 2;
-        const int anchorY = y;
+        const int x = scale_capture_x(box.x, fbW, sourceW);
+        const int y = scale_capture_y(box.y, fbH, sourceH);
+        const int w = std::max(2, scale_capture_x(box.w, fbW, sourceW));
         blit_plate_label_rgb565(fb, pitchBytes, fbW, fbH,
-                                 anchorX, anchorY, slot.cachedLabel);
+                                x + w / 2, y, *label);
     }
 }
 
@@ -1222,6 +1090,101 @@ static int scale_capture_y(float y, int fbH, int sourceH)
     return static_cast<int>(y * static_cast<float>(fbH) / static_cast<float>(sourceH) + 0.5f);
 }
 
+static void draw_line_rgb565(void *fb,
+                             int pitchBytes,
+                             int fbW,
+                             int fbH,
+                             int x0,
+                             int y0,
+                             int x1,
+                             int y1,
+                             int thickness,
+                             uint16_t color)
+{
+    int dx = std::abs(x1 - x0);
+    int sx = x0 < x1 ? 1 : -1;
+    int dy = -std::abs(y1 - y0);
+    int sy = y0 < y1 ? 1 : -1;
+    int error = dx + dy;
+    const int radius = std::max(0, thickness / 2);
+
+    for (;;) {
+        for (int oy = -radius; oy <= radius; ++oy) {
+            for (int ox = -radius; ox <= radius; ++ox) {
+                const int x = x0 + ox;
+                const int y = y0 + oy;
+                if (x >= 0 && x < fbW && y >= 0 && y < fbH) {
+                    uint16_t *row = reinterpret_cast<uint16_t *>(
+                                static_cast<uint8_t *>(fb) + y * pitchBytes);
+                    row[x] = color;
+                }
+            }
+        }
+        if (x0 == x1 && y0 == y1) {
+            break;
+        }
+        const int twiceError = 2 * error;
+        if (twiceError >= dy) {
+            error += dy;
+            x0 += sx;
+        }
+        if (twiceError <= dx) {
+            error += dx;
+            y0 += sy;
+        }
+    }
+}
+
+static uint16_t violation_light_color(NpuTrafficLightState state)
+{
+    switch (state) {
+    case NpuTrafficLightState::Red:
+        return rgb565(255, 60, 60);
+    case NpuTrafficLightState::Green:
+        return rgb565(40, 230, 100);
+    case NpuTrafficLightState::Unknown:
+    default:
+        return rgb565(60, 180, 255);
+    }
+}
+
+static void draw_violation_regions(void *fb,
+                                   int pitchBytes,
+                                   int fbW,
+                                   int fbH,
+                                   const NpuFrameResult& result)
+{
+    if (result.task != NpuTaskType::TrafficViolation) {
+        return;
+    }
+
+    const ViolationRuleConfig& config = result.violationConfig;
+    const uint16_t lightColor = violation_light_color(result.trafficLight);
+    const uint16_t crosswalkColor = rgb565(255, 220, 30);
+
+    if (config.lightRoiValid) {
+        const int x = static_cast<int>(config.lightX * fbW + 0.5f);
+        const int y = static_cast<int>(config.lightY * fbH + 0.5f);
+        const int w = std::max(2, static_cast<int>(config.lightW * fbW + 0.5f));
+        const int h = std::max(2, static_cast<int>(config.lightH * fbH + 0.5f));
+        draw_rect_outline_rgb565(fb, pitchBytes, fbW, fbH, x, y, w, h, 3, lightColor);
+    }
+
+    if (config.crosswalkValid) {
+        int px[4] = {};
+        int py[4] = {};
+        for (int i = 0; i < 4; ++i) {
+            px[i] = static_cast<int>(config.crosswalk[static_cast<std::size_t>(i)].x * fbW + 0.5f);
+            py[i] = static_cast<int>(config.crosswalk[static_cast<std::size_t>(i)].y * fbH + 0.5f);
+        }
+        for (int i = 0; i < 4; ++i) {
+            const int next = (i + 1) % 4;
+            draw_line_rgb565(fb, pitchBytes, fbW, fbH,
+                             px[i], py[i], px[next], py[next], 3, crosswalkColor);
+        }
+    }
+}
+
 static const char* npu_status_text(const NpuFrameResult& result)
 {
     if (!result.enabled) return "AI OFF";
@@ -1245,6 +1208,28 @@ static std::string osd_ascii_label(const std::string& label, const char* fallbac
     return out.empty() ? fallback : out;
 }
 
+static const char* vehicle_osd_label(int classId)
+{
+    switch (classId) {
+    case 0: return "CAR";
+    case 1: return "BUS";
+    case 2: return "VAN";
+    case 3: return "TRUCK";
+    default: return "VEH";
+    }
+}
+
+static uint16_t vehicle_osd_color(int classId)
+{
+    switch (classId) {
+    case 0: return rgb565(0, 210, 255);
+    case 1: return rgb565(255, 190, 0);
+    case 2: return rgb565(130, 230, 80);
+    case 3: return rgb565(255, 90, 0);
+    default: return rgb565(220, 220, 220);
+    }
+}
+
 static void draw_npu_boxes(void *fb, int pitchBytes, int fbW, int fbH,
                            int sourceW, int sourceH,
                            const NpuFrameResult &result,
@@ -1260,7 +1245,6 @@ static void draw_npu_boxes(void *fb, int pitchBytes, int fbW, int fbH,
     const uint16_t red = rgb565(255, 48, 48);
     const uint16_t white = rgb565(255, 255, 255);
 
-    update_stable_plate_slots(result);
     for (const NpuBox& box : result.plates) {
         const int x = scale_capture_x(box.x, fbW, sourceW);
         const int y = scale_capture_y(box.y, fbH, sourceH);
@@ -1270,21 +1254,53 @@ static void draw_npu_boxes(void *fb, int pitchBytes, int fbW, int fbH,
         draw_rect_outline_rgb565(fb, pitchBytes, fbW, fbH, x, y, w, h, 3, st.frameColor);
     }
     const uint64_t plateLabelBeginNs = now_ns();
-    draw_stable_plate_labels(fb, pitchBytes, fbW, fbH, sourceW, sourceH);
+    draw_plate_labels_from_result(fb, pitchBytes, fbW, fbH,
+                                  sourceW, sourceH, result);
     if (plateLabelNs) {
         *plateLabelNs += now_ns() - plateLabelBeginNs;
     }
+
+    draw_violation_regions(fb, pitchBytes, fbW, fbH, result);
 
     for (const NpuBox& box : result.pedestrians) {
         const int x = scale_capture_x(box.x, fbW, sourceW);
         const int y = scale_capture_y(box.y, fbH, sourceH);
         const int w = std::max(2, scale_capture_x(box.w, fbW, sourceW));
         const int h = std::max(2, scale_capture_y(box.h, fbH, sourceH));
-        draw_rect_outline_rgb565(fb, pitchBytes, fbW, fbH, x, y, w, h, 3, red);
 
-        char label[48];
-        snprintf(label, sizeof(label), "PED %.2F", box.score);
+        uint16_t pedestrianColor = rgb565(40, 230, 100);
+        const char *stateLabel = "PED";
+        if (box.pedestrianState == NpuPedestrianState::RedAccumulating) {
+            pedestrianColor = rgb565(255, 215, 30);
+            stateLabel = "WAIT";
+        } else if (box.pedestrianState == NpuPedestrianState::RedViolation) {
+            pedestrianColor = red;
+            stateLabel = "VIOL";
+        }
+        draw_rect_outline_rgb565(fb, pitchBytes, fbW, fbH, x, y, w, h, 3, pedestrianColor);
+
+        char label[64];
+        if (result.task == NpuTaskType::TrafficViolation && box.trackId >= 0) {
+            snprintf(label, sizeof(label), "%s ID%d %.2F", stateLabel, box.trackId, box.score);
+        } else {
+            snprintf(label, sizeof(label), "PED %.2F", box.score);
+        }
         const int ty = std::max(2, y - lineH - 2);
+        draw_text_shadow_rgb565(fb, pitchBytes, fbW, fbH, x, ty, label, scale, white, shadow);
+    }
+
+
+    for (const NpuBox& box : result.vehicles) {
+        const int x = scale_capture_x(box.x, fbW, sourceW);
+        const int y = scale_capture_y(box.y, fbH, sourceH);
+        const int w = std::max(2, scale_capture_x(box.w, fbW, sourceW));
+        const int h = std::max(2, scale_capture_y(box.h, fbH, sourceH));
+        const uint16_t color = vehicle_osd_color(box.classId);
+        draw_rect_outline_rgb565(fb, pitchBytes, fbW, fbH, x, y, w, h, 3, color);
+
+        char label[64];
+        snprintf(label, sizeof(label), "%s %.2F", vehicle_osd_label(box.classId), box.score);
+        const int ty = std::min(fbH - lineH - 2, std::max(2, y + h + 2));
         draw_text_shadow_rgb565(fb, pitchBytes, fbW, fbH, x, ty, label, scale, white, shadow);
     }
 }
@@ -1552,6 +1568,10 @@ bool DrmRgaDisplay::startDisplay()
         return true;
     }
     m_stopReq.store(false);
+    {
+        std::lock_guard<std::mutex> lock(m_fpgaControlMutex);
+        m_fpgaRequestPending = false;
+    }
     m_running.store(true);
     if (m_npuWorker) {
         m_npuWorker->start();
@@ -1570,6 +1590,7 @@ void DrmRgaDisplay::stopDisplay()
         return;
     }
     m_stopReq.store(true);
+    m_fpgaControlCv.notify_all();
     if (m_thread.joinable()) m_thread.join();
     if (m_npuWorker) {
         m_npuWorker->stop();
@@ -1608,6 +1629,52 @@ void DrmRgaDisplay::setVideoRoute(VideoRoute route)
 VideoRoute DrmRgaDisplay::videoRoute() const
 {
     return decodeVideoRoute(m_videoRouteState.load());
+}
+
+void DrmRgaDisplay::requestFpgaPreprocess(int mode, std::uint32_t param0)
+{
+    if (mode < 0 || mode >= 32) {
+        emit fpgaApplyFinished(false,
+                               static_cast<quint32>(mode < 0 ? 0 : mode),
+                               0, 0, 0, 0, 0, 0, 0,
+                               QStringLiteral("非法FPGA预处理模式"));
+        return;
+    }
+
+    if (!m_running.load()) {
+        emit fpgaApplyFinished(false,
+                               static_cast<quint32>(mode),
+                               0, 0, 0, 0, 0, 0, 0,
+                               QStringLiteral("请先启动HDMI/PCIe显示，再应用FPGA预处理"));
+        return;
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(m_fpgaControlMutex);
+        m_fpgaRequestedMode = static_cast<std::uint32_t>(mode);
+        m_fpgaRequestedParam0 = param0;
+        m_fpgaRequestPending = true;
+    }
+    m_fpgaControlCv.notify_one();
+}
+
+void DrmRgaDisplay::requestEthernetOutput(bool enable)
+{
+    if (!m_running.load()) {
+        emit ethernetApplyFinished(false,
+                                   enable,
+                                   false,
+                                   0, 0, 0, 0, 0, 0,
+                                   QStringLiteral("请先启动HDMI/PCIe显示，再切换网络视频输出"));
+        return;
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(m_fpgaControlMutex);
+        m_ethRequestedEnable = enable;
+        m_ethRequestPending = true;
+    }
+    m_fpgaControlCv.notify_one();
 }
 
 bool DrmRgaDisplay::setOutputResolution(int width, int height)
@@ -1675,6 +1742,18 @@ void DrmRgaDisplay::setNpuTask(NpuTaskType task)
     }
 }
 
+void DrmRgaDisplay::setViolationConfig(const ViolationRuleConfig &config)
+{
+    if (m_npuWorker) {
+        m_npuWorker->setViolationConfig(config);
+    }
+}
+
+ViolationRuleConfig DrmRgaDisplay::violationConfig() const
+{
+    return m_npuWorker ? m_npuWorker->violationConfig() : ViolationRuleConfig();
+}
+
 NpuFrameResult DrmRgaDisplay::latestNpuResult() const
 {
     return m_npuWorker ? m_npuWorker->latestResult() : NpuFrameResult();
@@ -1707,6 +1786,8 @@ void DrmRgaDisplay::workerMain()
     PcieFrameReceiver pcie;
     DrmState drm;
     bool drmInited = false;
+    std::atomic<bool> fpgaControlStop {false};
+    std::thread fpgaControlThread;
 
     emit stateChanged("Opening PCIe driver");
     if (!pcie.open(devPath)) {
@@ -1744,6 +1825,282 @@ void DrmRgaDisplay::workerMain()
         emit stateChanged(QString("Warning: %1").arg(warning));
     }
 
+    // FPGA预处理与Ethernet输出控制共用一个控制线程和同一个设备fd，
+    // 避免第二次open/close触发驱动释放DMA缓冲。
+    // 视频read()与控制ioctl可并行；驱动内部对控制ioctl进行串行化。
+    fpgaControlThread = std::thread([this, &pcie, &fpgaControlStop]() {
+        auto publishFpgaStatus = [this, &pcie](const QString &prefix) -> bool {
+            PcieFrameReceiver::FpgaCaps caps;
+            PcieFrameReceiver::FpgaStatus status;
+            std::string capsError;
+            std::string statusError;
+
+            const bool capsOk = pcie.getFpgaCaps(caps, &capsError);
+            const bool statusOk = pcie.getFpgaStatus(status, &statusError);
+            if (!capsOk || !statusOk) {
+                QString message = prefix;
+                if (!capsOk) {
+                    message += QStringLiteral(" GET_CAPS失败：%1")
+                            .arg(QString::fromStdString(capsError));
+                }
+                if (!statusOk) {
+                    message += QStringLiteral(" GET_STATUS失败：%1")
+                            .arg(QString::fromStdString(statusError));
+                }
+                emit fpgaControlInfoUpdated(false,
+                                            0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                                            message.trimmed());
+                return false;
+            }
+
+            emit fpgaControlInfoUpdated(true,
+                                        caps.ipVersion,
+                                        caps.capability,
+                                        caps.algorithmBitmap,
+                                        caps.streamCount,
+                                        status.activeMode,
+                                        status.ackSequence,
+                                        status.status,
+                                        status.errorStatus,
+                                        status.frameCount,
+                                        status.lastApplyFrame,
+                                        prefix);
+            return true;
+        };
+
+        auto publishEthernetStatus = [this, &pcie](const QString &prefix) -> bool {
+            PcieFrameReceiver::EthernetCaps caps;
+            PcieFrameReceiver::EthernetStatus status;
+            std::string capsError;
+            std::string statusError;
+
+            const bool capsOk = pcie.getEthernetCaps(caps, &capsError);
+            const bool statusOk = pcie.getEthernetStatus(status, &statusError);
+            if (!capsOk || !statusOk) {
+                QString message = prefix;
+                if (!capsOk) {
+                    message += QStringLiteral(" GET_ETH_CAPS失败：%1")
+                            .arg(QString::fromStdString(capsError));
+                }
+                if (!statusOk) {
+                    message += QStringLiteral(" GET_ETH_STATUS失败：%1")
+                            .arg(QString::fromStdString(statusError));
+                }
+                emit ethernetControlInfoUpdated(false,
+                                                0, 0, 0, 0, 0, 0, 0,
+                                                false, false,
+                                                0, 0, 0, 0, 0,
+                                                message.trimmed());
+                return false;
+            }
+
+            emit ethernetControlInfoUpdated(true,
+                                            caps.ipVersion,
+                                            caps.capability,
+                                            caps.outputWidth,
+                                            caps.outputHeight,
+                                            caps.outputFps,
+                                            caps.destinationIpv4,
+                                            caps.destinationPort,
+                                            status.requestedEnable,
+                                            status.activeEnable,
+                                            status.ackSequence,
+                                            status.status,
+                                            status.errorStatus,
+                                            status.frameCount,
+                                            status.lastApplyFrame,
+                                            prefix);
+            return true;
+        };
+
+        bool fpgaControlReady = publishFpgaStatus(
+                    QStringLiteral("FPGA预处理控制已就绪"));
+        bool ethernetControlReady = publishEthernetStatus(
+                    QStringLiteral("网络视频输出控制已就绪"));
+
+        while (!fpgaControlStop.load()) {
+            bool processFpgaRequest = false;
+            bool processEthernetRequest = false;
+            std::uint32_t requestedMode = 0;
+            std::uint32_t requestedParam0 = 0;
+            bool requestedEthernetEnable = false;
+
+            {
+                std::unique_lock<std::mutex> lock(m_fpgaControlMutex);
+                const bool allReady = fpgaControlReady && ethernetControlReady;
+                auto wakePredicate = [this, &fpgaControlStop]() {
+                    return fpgaControlStop.load()
+                            || m_fpgaRequestPending
+                            || m_ethRequestPending;
+                };
+
+                if (allReady) {
+                    m_fpgaControlCv.wait(lock, wakePredicate);
+                } else {
+                    // 初次读取失败时每秒重试，避免驱动/FPGA刚就绪的短暂竞态
+                    // 让某一组按钮永久不可用。
+                    (void)m_fpgaControlCv.wait_for(
+                                lock,
+                                std::chrono::seconds(1),
+                                wakePredicate);
+                }
+
+                if (fpgaControlStop.load()) {
+                    break;
+                }
+
+                processFpgaRequest = m_fpgaRequestPending;
+                if (processFpgaRequest) {
+                    requestedMode = m_fpgaRequestedMode;
+                    requestedParam0 = m_fpgaRequestedParam0;
+                    m_fpgaRequestPending = false;
+                }
+
+                processEthernetRequest = m_ethRequestPending;
+                if (processEthernetRequest) {
+                    requestedEthernetEnable = m_ethRequestedEnable;
+                    m_ethRequestPending = false;
+                }
+            }
+
+            if (!processFpgaRequest && !processEthernetRequest) {
+                if (!fpgaControlReady) {
+                    fpgaControlReady = publishFpgaStatus(
+                                QStringLiteral("正在重试FPGA预处理控制状态"));
+                }
+                if (!ethernetControlReady) {
+                    ethernetControlReady = publishEthernetStatus(
+                                QStringLiteral("正在重试网络视频输出控制状态"));
+                }
+                continue;
+            }
+
+            if (processFpgaRequest) {
+                PcieFrameReceiver::FpgaApplyResult result;
+                std::string applyError;
+                // 正常情况下在一个帧周期内完成；250ms兼容偶发坏帧重同步。
+                const bool success = pcie.applyFpgaPreprocess(requestedMode,
+                                                              requestedParam0,
+                                                              250U,
+                                                              result,
+                                                              &applyError);
+
+                PcieFrameReceiver::FpgaStatus afterStatus;
+                std::string statusError;
+                const bool statusOk = pcie.getFpgaStatus(afterStatus, &statusError);
+                const std::uint32_t activeMode = statusOk
+                        ? afterStatus.activeMode : result.activeMode;
+                const std::uint32_t ackSequence = statusOk
+                        ? afterStatus.ackSequence : result.ackSequence;
+                const std::uint32_t statusValue = statusOk
+                        ? afterStatus.status : result.status;
+                const std::uint32_t errorStatus = statusOk
+                        ? afterStatus.errorStatus : result.errorStatus;
+                const std::uint32_t applyFrame = statusOk
+                        ? afterStatus.lastApplyFrame : 0U;
+
+                QString message;
+                if (success) {
+                    message = QStringLiteral("已应用%1：seq=%2 ack=%3，耗时%4 us，生效帧%5")
+                            .arg(fpga_mode_name(requestedMode))
+                            .arg(result.sequence)
+                            .arg(ackSequence)
+                            .arg(result.latencyUs)
+                            .arg(applyFrame);
+                } else {
+                    message = QStringLiteral("应用%1失败：%2；active=%3 seq=%4 ack=%5 status=0x%6 error=0x%7")
+                            .arg(fpga_mode_name(requestedMode),
+                                 QString::fromStdString(applyError),
+                                 fpga_mode_name(activeMode))
+                            .arg(result.sequence)
+                            .arg(ackSequence)
+                            .arg(statusValue, 8, 16, QLatin1Char('0'))
+                            .arg(errorStatus, 8, 16, QLatin1Char('0'));
+                    if (!statusOk && !statusError.empty()) {
+                        message += QStringLiteral("；状态读取失败：%1")
+                                .arg(QString::fromStdString(statusError));
+                    }
+                }
+
+                emit fpgaApplyFinished(success,
+                                       requestedMode,
+                                       activeMode,
+                                       result.sequence,
+                                       ackSequence,
+                                       statusValue,
+                                       errorStatus,
+                                       result.latencyUs,
+                                       applyFrame,
+                                       message);
+
+                fpgaControlReady = publishFpgaStatus(success
+                        ? QStringLiteral("FPGA预处理状态已刷新")
+                        : QStringLiteral("FPGA预处理应用失败后状态已刷新"));
+            }
+
+            if (processEthernetRequest) {
+                PcieFrameReceiver::EthernetApplyResult result;
+                std::string applyError;
+                const bool success = pcie.setEthernetOutput(requestedEthernetEnable,
+                                                            250U,
+                                                            result,
+                                                            &applyError);
+
+                PcieFrameReceiver::EthernetStatus afterStatus;
+                std::string statusError;
+                const bool statusOk = pcie.getEthernetStatus(afterStatus, &statusError);
+                const bool activeEnable = statusOk
+                        ? afterStatus.activeEnable : result.activeEnable;
+                const std::uint32_t ackSequence = statusOk
+                        ? afterStatus.ackSequence : result.ackSequence;
+                const std::uint32_t statusValue = statusOk
+                        ? afterStatus.status : result.status;
+                const std::uint32_t errorStatus = statusOk
+                        ? afterStatus.errorStatus : result.errorStatus;
+                const std::uint32_t applyFrame = statusOk
+                        ? afterStatus.lastApplyFrame : result.lastApplyFrame;
+
+                QString message;
+                if (success) {
+                    message = QStringLiteral("%1成功：seq=%2 ack=%3，耗时%4 us，生效帧%5")
+                            .arg(ethernet_output_name(requestedEthernetEnable))
+                            .arg(result.sequence)
+                            .arg(ackSequence)
+                            .arg(result.latencyUs)
+                            .arg(applyFrame);
+                } else {
+                    message = QStringLiteral("%1失败：%2；active=%3 seq=%4 ack=%5 status=0x%6 error=0x%7")
+                            .arg(ethernet_output_name(requestedEthernetEnable),
+                                 QString::fromStdString(applyError),
+                                 activeEnable ? QStringLiteral("开启") : QStringLiteral("关闭"))
+                            .arg(result.sequence)
+                            .arg(ackSequence)
+                            .arg(statusValue, 8, 16, QLatin1Char('0'))
+                            .arg(errorStatus, 8, 16, QLatin1Char('0'));
+                    if (!statusOk && !statusError.empty()) {
+                        message += QStringLiteral("；状态读取失败：%1")
+                                .arg(QString::fromStdString(statusError));
+                    }
+                }
+
+                emit ethernetApplyFinished(success,
+                                           requestedEthernetEnable,
+                                           activeEnable,
+                                           result.sequence,
+                                           ackSequence,
+                                           statusValue,
+                                           errorStatus,
+                                           result.latencyUs,
+                                           applyFrame,
+                                           message);
+
+                ethernetControlReady = publishEthernetStatus(success
+                        ? QStringLiteral("网络视频输出状态已刷新")
+                        : QStringLiteral("网络视频输出切换失败后状态已刷新"));
+            }
+        }
+    });
+
     emit stateChanged("Initializing DRM");
     if (!drm_init(drm, drmPath, reqW, reqH)) {
         setLastError("DRM init failed");
@@ -1771,6 +2128,8 @@ void DrmRgaDisplay::workerMain()
         uint64_t npuCropFailTotal = 0;
         OsdStats osdStats {};
         std::vector<uint8_t> npuTileBuffer(640u * 360u * PCIE_BPP);
+        std::vector<uint8_t> previewBuffer(640u * 360u * PCIE_BPP);
+        uint64_t lastPreviewNs = 0;
 
         while (!m_stopReq.load()) {
             PcieFrameReceiver::FrameView frame;
@@ -1906,6 +2265,33 @@ void DrmRgaDisplay::workerMain()
                                                  npuCropFailTotal);
                     npuPrepareCounter.addNs(now_ns() - npuPrepareBeginNs);
                 }
+
+                // DSI配置预览只以5 Hz生成，并且放在当前HDMI帧完成page flip之后，
+                // 保持主显示链路优先。预览使用当前视频选路的同一640x360坐标系。
+                const uint64_t previewNowNs = now_ns();
+                if (lastPreviewNs == 0 || previewNowNs - lastPreviewNs >= 200000000ULL) {
+                    const int previewRet = rga_crop_scale_rgb565(frame.data,
+                                                                 PCIE_FRAME_W,
+                                                                 PCIE_FRAME_H,
+                                                                 sourceRoi,
+                                                                 previewBuffer.data(),
+                                                                 640,
+                                                                 360,
+                                                                 640,
+                                                                 360);
+                    if (previewRet == 0) {
+                        const QImage view(previewBuffer.data(),
+                                          640,
+                                          360,
+                                          640 * PCIE_BPP,
+                                          QImage::Format_RGB16);
+                        emit previewFrameReady(view.copy(),
+                                               static_cast<quint64>(validCnt),
+                                               sourceChannel,
+                                               static_cast<quint64>(routeRevision));
+                        lastPreviewNs = previewNowNs;
+                    }
+                }
             } else {
                 failCnt++;
                 failTotal++;
@@ -1945,6 +2331,7 @@ void DrmRgaDisplay::workerMain()
                     double aiFps = ai.fps;
                     int plateCount = static_cast<int>(ai.plates.size());
                     int pedestrianCount = static_cast<int>(ai.pedestrians.size());
+                    int vehicleCount = static_cast<int>(ai.vehicles.size());
                     if (!ai.enabled) {
                         aiStatus = "off";
                     } else if (!ai.error.empty()) {
@@ -1964,6 +2351,7 @@ void DrmRgaDisplay::workerMain()
                                         aiFps,
                                         plateCount,
                                         pedestrianCount,
+                                        vehicleCount,
                                         aiStatus);
                 }
 
@@ -1978,6 +2366,24 @@ void DrmRgaDisplay::workerMain()
 
 cleanup:
     emit stateChanged("RGA/DRM cleanup");
+    fpgaControlStop.store(true);
+    m_fpgaControlCv.notify_all();
+    if (fpgaControlThread.joinable()) {
+        fpgaControlThread.join();
+    }
+    {
+        std::lock_guard<std::mutex> lock(m_fpgaControlMutex);
+        m_fpgaRequestPending = false;
+        m_ethRequestPending = false;
+    }
+    emit fpgaControlInfoUpdated(false,
+                                0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                                QStringLiteral("PCIe显示已停止，FPGA控制不可用"));
+    emit ethernetControlInfoUpdated(false,
+                                    0, 0, 0, 0, 0, 0, 0,
+                                    false, false,
+                                    0, 0, 0, 0, 0,
+                                    QStringLiteral("PCIe显示已停止，网络视频输出控制不可用"));
     pcie.close();
     if (drmInited) drm_cleanup(drm);
     if (m_npuWorker) m_npuWorker->stop();
