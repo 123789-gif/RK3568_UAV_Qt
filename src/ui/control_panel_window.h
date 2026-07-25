@@ -24,12 +24,6 @@ class PtzCaptureWorker;
 class PtzControlWorker;
 class ViolationPreviewWidget;
 
-QT_BEGIN_NAMESPACE
-namespace Ui {
-class ControlPanelWindow;
-}
-QT_END_NAMESPACE
-
 class ControlPanelWindow : public QMainWindow
 {
     Q_OBJECT
@@ -185,8 +179,6 @@ private:
     void applyStyle();
 
 private:
-    Ui::ControlPanelWindow *ui = nullptr;
-
     DrmRgaDisplay *m_display = nullptr;
     PtzCaptureWorker *m_ptzCapture = nullptr;
     PtzControlWorker *m_ptzControl = nullptr;

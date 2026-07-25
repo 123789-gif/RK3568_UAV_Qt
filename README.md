@@ -57,6 +57,9 @@ dist/           本地发布包，不进入Git
 
 `.backup_*`、`out/`、`dist/`和`*.pro.user`均不属于源码，不应进入源码压缩包。
 
+`src/ui/control_panel_window_*.cpp`按视频、FPGA、AI、违法规则、PTZ、系统状态和样式拆分；
+`control_panel_window_internal.h`仅供这些实现文件共享私有辅助函数，不属于模块公共接口。
+
 ## 标准流程
 
 Qt Creator重新构建后：
@@ -81,12 +84,16 @@ cd /home/simba/Projects/RK3568_PTZ_Qt
 - [架构说明](docs/ARCHITECTURE.md)
 - [故障排查](docs/TROUBLESHOOTING.md)
 - [清理版交接说明](docs/CLEANUP_HANDOVER.md)
+- [控制窗口拆分说明](docs/UI_REFACTOR.md)
 
 ## 当前已知工程债务
 
-- `ControlPanelWindow`、`DrmRgaDisplay`和`NpuInferenceWorker`文件较大，后续应分阶段拆分；
+- `ControlPanelWindow`成员实现已按职责拆分，但共享私有辅助函数仍集中在
+  `control_panel_window_internal.h`；后续只应在板端回归后继续缩小该私有头；
+- `DrmRgaDisplay`和`NpuInferenceWorker`文件仍较大，后续应分阶段拆分；
 - 运行配置仍写在版本化发布目录中，版本切换时不能自动继承；
 - `yolov8_car.rknn`当前未接入运行链路；
 - `QMAKE_LFLAGS`使用`--allow-shlib-undefined`，每次发布必须依赖板端`ldd`和运行检查兜底。
 
-在完成当前基线提交和板端回归前，不要同时进行构建系统迁移或大范围源码重构。
+本轮控制窗口拆分必须先完成Qt Creator全量重新构建和板端回归，再提交为新基线；
+在此之前不要同时迁移构建系统或修改PCIe、RGA/DRM、NPU和PTZ工作线程。

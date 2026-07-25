@@ -1,0 +1,24 @@
+ControlPanelWindow source refactor validation
+Date: 2026-07-25
+Branch: refactor/control-panel-window-split-v1
+
+Completed checks:
+- 72 original ControlPanelWindow member definitions found.
+- 72 split ControlPanelWindow member definitions found.
+- No missing, extra, or duplicate member definitions.
+- All 72 definitions match the uploaded source exactly after accounting for removal
+  of the empty Ui::ControlPanelWindow object lifecycle.
+- All 8 implementation files are present in rk_dual_screen_video.pro.
+- No remaining ui_control_panel_window.h, Ui::ControlPanelWindow, ui->, FORMS, or
+  control_panel_window.ui references in the build inputs.
+- git diff --check passed.
+- Shell syntax checks passed for tools and deploy scripts.
+- Model SHA256SUMS passed.
+- PCIe driver SHA256SUMS passed.
+
+Not performed in the delivery environment:
+- Qt 5.12.9 ARM64 qmake/compile/link.
+- RK3568 board runtime regression.
+
+Those two checks must be completed in the original build VM and on the target board
+before committing this branch as a verified baseline.

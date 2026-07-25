@@ -9,6 +9,13 @@ TEMPLATE = app
 SOURCES += \
     src/app/main.cpp \
     src/ui/control_panel_window.cpp \
+    src/ui/control_panel_window_video.cpp \
+    src/ui/control_panel_window_fpga.cpp \
+    src/ui/control_panel_window_ai.cpp \
+    src/ui/control_panel_window_violation.cpp \
+    src/ui/control_panel_window_ptz.cpp \
+    src/ui/control_panel_window_system.cpp \
+    src/ui/control_panel_window_style.cpp \
     src/ui/violation_preview_widget.cpp \
     src/video/drm_rga_display.cpp \
     src/pcie/pcie_frame_receiver.cpp \
@@ -27,6 +34,7 @@ SOURCES += \
 
 HEADERS += \
     src/ui/control_panel_window.h \
+    src/ui/control_panel_window_internal.h \
     src/ui/violation_preview_widget.h \
     src/video/drm_rga_display.h \
     src/video/video_route_config.h \
@@ -47,9 +55,6 @@ HEADERS += \
     src/system/fan_controller.h \
     src/system/system_monitor.h \
     src/system/perf_counters.h
-
-FORMS += \
-    src/ui/control_panel_window.ui
 
 # 模块间统一使用 "module/file.h"，避免根目录平铺和同名头文件冲突。
 INCLUDEPATH += $$PWD/src
@@ -119,4 +124,6 @@ DISTFILES += \
     deploy/systemd/rk3568-ptz-qt.service \
     docs/BUILD.md \
     docs/DEPLOY.md \
-    docs/ARCHITECTURE.md
+    docs/ARCHITECTURE.md \
+    docs/UI_REFACTOR.md \
+    docs/SOURCE_VALIDATION_20260725.txt

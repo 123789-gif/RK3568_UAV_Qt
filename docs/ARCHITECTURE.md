@@ -48,7 +48,15 @@ Goodix 触摸仅映射到 `DSI-1`。
 
 ### `src/ui`
 
-- 控制页面；
+- `control_panel_window.cpp`保留窗口生命周期、导航和页面装配；
+- `control_panel_window_video.cpp`负责主视频显示配置和显示状态回调；
+- `control_panel_window_fpga.cpp`负责FPGA预处理与网口输出控制；
+- `control_panel_window_ai.cpp`负责AI任务配置、状态和结果展示；
+- `control_panel_window_violation.cpp`负责违法规则配置与结果展示；
+- `control_panel_window_ptz.cpp`负责PTZ页面、设备切换、预览和截图；
+- `control_panel_window_system.cpp`负责风扇、定时状态和系统状态页面；
+- `control_panel_window_style.cpp`负责窗口样式；
+- `control_panel_window_internal.h`是上述实现文件共享的私有辅助层；
 - AI单任务选择、1～60 FPS目标帧率、置信度和NMS阈值配置；
 - AI运行状态与最近50条有效识别结果展示；
 - AI配置写入部署目录 `config/ai_panel.ini`；
@@ -115,6 +123,7 @@ Goodix 触摸仅映射到 `DSI-1`。
 5. PCIe 驱动由部署脚本条件自动加载，用户态接收逻辑已剥离到 `src/pcie`；
 6. `yolov8_car.rknn`当前未接入任务执行器，不能视为已启用车辆检测；
 7. AI、PTZ和违法规则配置仍保存在版本化发布目录中，版本切换不会自动继承。
+8. 控制窗口实现已按职责拆分，但共享私有辅助函数仍集中在一个内部头文件中。
 
 ## 5. 推荐后续顺序
 
