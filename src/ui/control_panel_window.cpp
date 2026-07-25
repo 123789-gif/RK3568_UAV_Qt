@@ -649,7 +649,7 @@ ControlPanelWindow::ControlPanelWindow(QWidget *parent)
 {
     ui->setupUi(this);
 
-    setWindowTitle(QStringLiteral("智能交通感知控制台"));
+    setWindowTitle(QStringLiteral("智能交通感知控制台｜BUILD-CHECK-01"));
 
     m_display = new DrmRgaDisplay(this);
     m_ptzCapture = new PtzCaptureWorker(this);
@@ -831,7 +831,7 @@ void ControlPanelWindow::setupControlUi()
     root->setContentsMargins(14, 12, 14, 10);
     root->setSpacing(8);
 
-    QLabel *title = new QLabel(QStringLiteral("智能交通感知控制台"), central);
+    QLabel *title = new QLabel(QStringLiteral("智能交通感知控制台｜BUILD-CHECK-01"), central);
     title->setObjectName("titleLabel");
     title->setAlignment(Qt::AlignCenter);
     root->addWidget(title);

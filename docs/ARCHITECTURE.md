@@ -88,11 +88,12 @@ Goodix 触摸仅映射到 `DSI-1`。
 - 单槽最新帧邮箱，输入固定来自PCIe主视频；
 - 行人检测任务仅装载并执行 `ped_det.rknn`；
 - 车牌级联任务仅装载并执行 `plate_det.rknn → plate_reco.rknn`；
+- 行人违法规则任务复用 `ped_det.rknn`，并执行交通灯ROI、斑马线ROI、轨迹和事件规则；
 - 任务切换时由推理线程释放旧任务模型并装载新任务模型；
 - 统一结果快照与64帧有界结果历史，供HDMI OSD和Qt页面读取；
 - RGB565整帧复制仍保持一份，不新增UI侧图像复制。
 
-首版运行模式为单任务，同一时刻不并发行人和车牌任务。
+当前运行模式为单任务，同一时刻不并行执行行人、车牌和违法规则任务。`yolov8_car.rknn`保留在资产目录，但当前推理线程不会加载。
 
 ### `src/ptz`
 
@@ -107,11 +108,13 @@ Goodix 触摸仅映射到 `DSI-1`。
 
 ## 4. 当前已知问题
 
-1. 首版仅支持单任务，不支持行人检测与车牌级联并发；
+1. 当前仅支持单任务，不支持行人检测与车牌级联并发；
 2. 车牌检测接口尚未返回检测分数，Qt结果表中车牌置信度显示为 `--`；
 3. 九宫格总览模式下 NPU 输入改为 1920×1080 全图经 RGA 缩小后的 640×360 轻量帧，不再同步复制完整 1080P 帧；
 4. DRM/RGA、OSD 和 NPU 帧提交仍集中在 `DrmRgaDisplay`；
-5. PCIe 驱动由部署脚本条件自动加载，用户态接收逻辑已剥离到 `src/pcie`。
+5. PCIe 驱动由部署脚本条件自动加载，用户态接收逻辑已剥离到 `src/pcie`；
+6. `yolov8_car.rknn`当前未接入任务执行器，不能视为已启用车辆检测；
+7. AI、PTZ和违法规则配置仍保存在版本化发布目录中，版本切换不会自动继承。
 
 ## 5. 推荐后续顺序
 
@@ -137,7 +140,8 @@ RGB565 → RGB预处理
         ↓
 当前单一任务
   ├─ 行人检测：ped_det
-  └─ 车牌级联：plate_det → plate_reco
+  ├─ 车牌级联：plate_det → plate_reco
+  └─ 行人违法规则：ped_det → 灯色/斑马线/轨迹规则
         ↓
 统一NpuFrameResult
         ├─ HDMI OSD读取最新结果
@@ -260,8 +264,8 @@ HDMI 性能 HUD 在保持 `SYS / FPS / LAT` 三行三列结构的基础上做轻
 ### HUD and Plate Label Rendering v6
 The HDMI performance HUD keeps the compact three-row layout, but row blocks are now equal-height. Plate label rendering remains cached RGB565, with fast stale-slot eviction on unmatched detections and per-suffix red rendering for police/consulate plates.
 
-### Traffic violation task v1
+### 当前违法规则任务
 
-The AI page now exposes a “违法检测（行人+车辆）” task. The first implementation reuses the existing 768x448 letterbox preprocessing path and serially runs the pedestrian detector plus the new four-class vehicle detector (`car`, `bus`, `van`, `truck`). The output is merged into one `NpuFrameResult` as `pedestrians` and `vehicles`, so the AI table and HDMI OSD can verify model loading, coordinate mapping and runtime performance before the rule engine is enabled.
+当前`TrafficViolation`任务只复用行人模型。交通灯状态由ROI内HSV规则获得，斑马线区域由用户配置，行人框经过轻量轨迹关联后判断红灯周期内进入和停留事件。
 
-The rule layer is intentionally not enabled in this patch. Crosswalk ROI configuration, red/green-light state, and event definitions such as pedestrian red-light crossing or vehicle occupying a crosswalk should be added after this dual-model detection path is stable on the board.
+`yolov8_car.rknn`虽然仍在资产目录中，但当前`NpuInferenceWorker`没有对应模型实例、加载路径和车辆后处理调用，`NpuFrameResult::vehicles`不会产生有效结果。车辆检测若要恢复，必须作为独立功能修改完成模型加载、前后处理、结果发布、OSD和板端性能回归。

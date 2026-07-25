@@ -210,9 +210,8 @@ readelf -d rk_dual_screen_video | grep NEEDED
 ### 处理
 
 ```bash
-if ! lsmod | grep -q '^pango_pci_driver '; then
-  insmod /userdata/Projects/driver_1080/pango_pci_driver.ko
-fi
+CURRENT="$(head -n 1 /userdata/Apps/RK3568_PTZ_Qt_test_current.path)"
+"$CURRENT/scripts/load_pcie_driver.sh"
 
 lsmod | grep '^pango_pci_driver '
 ls -l /dev/pango_pci_driver

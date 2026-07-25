@@ -43,6 +43,7 @@ run/
 # Temporary and backup files
 *.bak
 *.bak_*
+/.backup_*/
 deploy.bak_before_deploy_v2/
 *_backup_*/
 *~

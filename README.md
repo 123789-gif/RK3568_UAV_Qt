@@ -1,129 +1,92 @@
 # RK3568_PTZ_Qt
 
-RK3568 双屏 Qt 应用，集成 FPGA PCIe 视频接收与 HDMI 显示、PTZ 视频采集与 VISCA 控制、RKNN NPU 推理、风扇和板级状态管理。
+RK3568双屏Qt应用，集成FPGA PCIe视频接收、RGA/DRM HDMI显示、FPGA预处理与网口输出控制、PTZ采集与VISCA控制、RKNN推理以及板级风扇管理。
 
-## 当前稳定基线
+## 当前工程状态
 
-当前已验证基线标签：
+- Qt：5.12.9 ARM64交叉编译；
+- 目标平台：RK3568，Linux 6.1.99，AArch64；
+- 主程序：`rk_dual_screen_video`；
+- 标准构建目录：`out/arm64-release`；
+- 标准测试部署入口：`./tools/deploy_test.sh`；
+- 板端正式目录：`/userdata/Apps/RK3568_PTZ_Qt`；
+- 板端测试目录：`/userdata/Apps/RK3568_PTZ_Qt_test_<UTC时间戳>`；
+- 测试部署默认保留最新3版，并保护当前运行版本。
 
-```text
-baseline_deploy_v1
-```
+当前窗口标题包含 `BUILD-CHECK-01`，用于确认修改后的ELF确实完成了重新构建和上板替换。完成基线确认后，应改为自动生成的构建版本信息，不再手工修改标题。
 
-已经验证：
+## 当前功能边界
 
-- Ubuntu 20.04 虚拟机使用 ARM64 Qt Kit 完成交叉编译；
-- 生成的程序为 AArch64 ELF；
-- 三个 RKNN 模型随工程管理并进行 SHA256 校验；
-- 发布包具有版本号、压缩包 SHA256 和完整 `MANIFEST.sha256`；
-- 板端 DSI、HDMI、Goodix 触控、PCIe、DRM/RGA、PTZ 和 NPU 主链路可运行；
-- `start.sh` 支持前台调试和后台启动；
-- 当前 PCIe 驱动仍需在启动 Qt 前人工加载，自动加载尚未实现。
+### 视频与显示
+
+- FPGA经PCIe DMA向RK3568提供RGB565视频帧；
+- `PcieFrameReceiver`负责设备、DMA缓冲和FPGA控制接口；
+- `DrmRgaDisplay`负责RGA处理、DRM/KMS显示、OSD和NPU帧提交；
+- 支持九宫格总览及CH1～CH9软件选路；
+- FPGA预处理与网口视频输出可由Qt界面控制。
+
+### NPU任务
+
+当前实际代码包含三个任务：
+
+1. 行人检测：`ped_det.rknn`；
+2. 车牌级联：`plate_det.rknn → plate_reco.rknn`；
+3. 行人违法规则：复用`ped_det.rknn`，结合交通灯ROI、斑马线ROI和行人轨迹进行规则判断。
+
+`yolov8_car.rknn`当前作为兼容/实验资产保留，但当前`NpuInferenceWorker`不会加载该模型，也不会产生车辆检测结果。不得将其描述为已启用功能。
+
+### PTZ与系统
+
+- 自动枚举UVC采集节点并支持双相机Profile；
+- VISCA串口控制；
+- PTZ热插拔恢复；
+- 截图保存；
+- 风扇PWM和系统状态监测。
 
 ## 目录结构
 
 ```text
-src/app       程序入口
-src/ui        Qt 控制界面
-src/video     PCIe、RGA、DRM、OSD 与 NPU 帧提交
-src/npu       RKNN 模型加载、推理线程和后处理
-src/ptz       UVC 采集、VISCA 控制与串口
-src/system    风扇及板级管理
-assets/models 已验证的 RKNN 模型及校验文件
-assets/config 板端运行参数
-deploy        发布、显示配置、运行检查、启停和 systemd 模板
-docs          构建、部署、架构、故障排查和验证证据
-tools         ARM64 命令行构建脚本
-out           本机构建产物，不进入 Git
-dist          本地发布包，不进入 Git
+src/            C++/Qt业务源码
+assets/         模型、默认配置和已验证PCIe驱动
+deploy/         发布包生成、板端检查、启停和显示配置
+tools/          构建、测试部署和驱动同步工具
+docs/           构建、部署、架构和故障排查文档
+out/            本地构建产物，不进入Git
+dist/           本地发布包，不进入Git
 ```
 
-## 标准入口
+`.backup_*`、`out/`、`dist/`和`*.pro.user`均不属于源码，不应进入源码压缩包。
 
-- 完整开发流程：[`docs/DEVELOPMENT_WORKFLOW.md`](docs/DEVELOPMENT_WORKFLOW.md)
-- 虚拟机构建：[`docs/BUILD.md`](docs/BUILD.md)
-- 板端部署：[`docs/DEPLOY.md`](docs/DEPLOY.md)
-- 架构与数据流：[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)
-- 故障排查：[`docs/TROUBLESHOOTING.md`](docs/TROUBLESHOOTING.md)
+## 标准流程
 
-## 当前工程边界
+Qt Creator重新构建后：
 
-当前版本没有改动以下行为：
+```bash
+cd /home/simba/Projects/RK3568_PTZ_Qt
+./tools/deploy_test.sh
+```
 
-- NPU 仍按既有顺序执行车牌检测、车牌识别和行人检测；
-- AI 页面仍使用总开关、总 FPS 和总置信度；
-- Qt 主窗口标题为“智能交通感知系统控制台”；
-- `DrmRgaDisplay` 仍包含 PCIe、RGA、DRM、OSD 和 NPU 帧提交；
-- 九宫格总览模式可将完整画面缩小为 640×360 轻量输入送入 AI，CH1～CH9 单路模式仍将对应 640×360 ROI 送入 AI；
-- HDMI 左上角系统状态与 AI 状态使用共享纵向布局，检测框仍独立绘制；
-- AI 目标推理帧率可设置为 1～60 FPS，默认仍为 15 FPS，并继续使用 latest-only 防积压调度；
-- PCIe 驱动尚未随发布包自动加载。
+命令行全量构建：
 
-后续功能修改必须从独立 `feature/*` 分支开始，并完成板端回归后再合并到 `main`。
+```bash
+cd /home/simba/Projects/RK3568_PTZ_Qt
+./tools/build_arm64.sh
+```
 
-### 本轮显示优先与车牌OSD修正
+首次配置SSH密钥以及完整部署说明见：
 
-- 1080P 全图/九宫格总览 AI 仍通过 RGA 缩小为 640×360 后送入 NPU，适用于 PCIe 输入为单路 1080P 高清画面的测试。
-- NPU 输入准备调整为 DRM flip 之后执行，当前 HDMI 帧优先提交，降低 AI 输入缩放对显示关键路径的影响。
-- 补全 RGB565 OSD 5×7 字库中的 B/H/J/O/Q/V/W/Y/Z，修复车牌识别拼音标签中部分字母显示成占位符或错误形状的问题。
+- [构建说明](docs/BUILD.md)
+- [部署说明](docs/DEPLOY.md)
+- [开发流程](docs/DEVELOPMENT_WORKFLOW.md)
+- [架构说明](docs/ARCHITECTURE.md)
+- [故障排查](docs/TROUBLESHOOTING.md)
+- [清理版交接说明](docs/CLEANUP_HANDOVER.md)
 
-### 本轮车牌 OSD 稳定显示优化
+## 当前已知工程债务
 
-- 车牌识别 OSD 使用真实中文省份简称显示，格式化为“浙A 14FH3”形式，省份汉字与城市字母紧邻，后续号码单独分隔。
-- 车牌检测框颜色根据车牌类型显示：蓝牌、绿牌、新能源/黄牌、警牌和领馆牌分别使用对应颜色风格。
-- 车牌字符结果不再作为小号框旁标签实时闪烁，而是在车牌框上方以更大的 Qt 字体绘制。
-- 车牌字符显示增加连续确认和位置平滑，只有连续多次识别一致才更新稳定 OSD，减少字符抖动和视觉闪烁。
+- `ControlPanelWindow`、`DrmRgaDisplay`和`NpuInferenceWorker`文件较大，后续应分阶段拆分；
+- 运行配置仍写在版本化发布目录中，版本切换时不能自动继承；
+- `yolov8_car.rknn`当前未接入运行链路；
+- `QMAKE_LFLAGS`使用`--allow-shlib-undefined`，每次发布必须依赖板端`ldd`和运行检查兜底。
 
-### 本轮性能分阶段打点与车牌OSD缓存优化
-
-- 新增 `src/system/system_monitor.*` 和 `src/system/perf_counters.*`，把 NPU load、温度和轻量耗时计数从显示主循环中拆出，后续系统性能监测模块统一放在 `src/system` 下扩展。
-- AI 页面增加 `copy/pre/RKNN input/run/output/post` 等阶段耗时，便于判断瓶颈来自帧复制、预处理、NPU运行、输出获取、后处理还是OSD显示。
-- HDMI OSD 增加 `OSD/PL/NP` 平均耗时字段，分别观察整体 OSD 绘制、车牌稳定标签绘制和 NPU 输入准备开销。
-- 车牌中文稳定标签改为缓存式渲染：稳定字符串和颜色不变时不再每帧创建 QImage/QPainter，仅把缓存图层叠加到 RGB565 framebuffer，降低多车牌场景下的 OSD 开销。
-
-### perf_hud_split_plate_osd_opt_v1 说明
-
-本版本将 HDMI 左上角性能 HUD 与 AI 结果 OSD 分离。`AI结果OSD 开/关` 只控制检测框和车牌大字标签，性能 HUD 默认保留，便于在关闭业务叠加时继续观察 `SYS / FPS / LAT` 指标。车牌稳定标签改为 RGB565 预渲染缓存，减少多车牌时 PL 绘制耗时。
-
-## HUD Readability v1
-
-本轮将 HDMI 左上角性能 HUD 从普通小号调试文字调整为深色信息卡片：使用 HUD 专用 8x12 ASCII 点阵、左侧青色状态条、SYS/FPS/LAT 三行固定布局，并补齐 `/`、`.`、`%`、`+` 等符号。HUD 文本每 250ms 更新到 RGB565 缓存图层，显示帧仅执行缓存 blit，避免重新引入 OSD 绘制开销。
-
-### Perf HUD Polish v2
-
-- HDMI 左上角性能 HUD 改为更紧凑的三行网格布局，缩小背景卡片、内边距和左侧状态条。
-- 指标统一采用 `KEY: VALUE` 形式，CPU/RX/RGA 等首列字段、冒号和数值列固定坐标对齐。
-- FPS 行右侧统一显示 `(FPS)`，LAT 行右侧统一显示 `(MS)`，减少每个字段重复单位造成的视觉噪声。
-- HUD 继续使用轻量字库缓存路径，但原生 8x12 绘制改为软边缘像素混合，降低 `/`、`%`、`:`、数字等字符的锯齿感。
-- 继续保持 250 ms HUD 缓存刷新和每帧 RGB565 blit，避免重新引入明显 OSD 开销。
-
-### Perf HUD Layout Trim v3
-
-- HDMI 左上角默认 HUD 进一步收敛为严格三列：`SYS: CPU/NPU/TMP`、`FPS: RX/AI/DSP`、`LAT: RGA/NP/OSD`。
-- 默认不再显示 `PL`，车牌稳定标签耗时仍保留在内部统计与详细状态中，避免破坏 `TMP/DSP/OSD` 第三列对齐。
-- HUD 背景卡片宽度同步缩小，现场画面遮挡更少，默认展示更接近正式系统状态栏。
-
-### Perf HUD Compact RX v4
-
-- HDMI 左上角 HUD 继续保留 `RX` 命名，用于表达 PCIe 接收链路帧率；本轮不修改 PCIe 驱动，后续可通过驱动 producer 统计接口把该数值升级为独立硬件接收帧率。
-- HUD 字体从原生 8x12 提升为约 12x18 的轻量软边缘字形，改善上一版偏小的问题，同时避免回到 scale=2 的笨重效果。
-- 去掉 FPS 行尾的 `(FPS)`，LAT 行改为 `LAT MS`，去掉行尾 `(MS)`，三列内容更紧凑。
-- `TMP` 温度值改为 `62.0 C` 形式，数字与 `C` 之间保留小间隔。
-- 三列间距收紧，继续保持 `CPU/RX/RGA`、`NPU/AI/NP`、`TMP/DSP/OSD` 纵向对齐。
-
-### Perf HUD Grid Balance v5
-
-- HDMI 左上角 HUD 进行小范围回调：去掉 `LAT MS` 中的 `MS`，LAT 行默认以毫秒为隐含单位，避免左侧行标题过长。
-- FPS 行的 `AI` 字段只显示实时推理帧率，不再显示目标帧率；目标帧率仍保留在 Qt 的 AI 推理页面。
-- 字体保持上一版约 12x18 的 HUD 尺寸，但三行行距扩大约 1.2 倍，改善字体放大后的拥挤感。
-- 三列横向坐标重新收紧，继续保持 `CPU/RX/RGA`、`NPU/AI/NP`、`TMP/DSP/OSD` 纵向对齐。
-
-
-### HUD / Plate OSD Fix v6
-- HDMI HUD rows now use explicit equal-height SYS/FPS/LAT row geometry.
-- Stable plate labels now expire after short consecutive misses instead of lingering for about one second after scene changes.
-- Police and consulate plate labels use per-character color rendering: police prefixes are black with a red suffix, and consulate labels keep a white prefix with a red suffix.
-
-### Traffic violation vehicle detection v1
-
-This version adds a first-stage “违法检测（行人+车辆）” AI task. It loads the existing pedestrian model and the new `yolov8_car.rknn` model, then displays `person / car / bus / van / truck` detection results in the AI page and HDMI OSD. It is a model-integration baseline only; crosswalk ROI, signal-light state, and violation rule judgment are reserved for the next patch.
+在完成当前基线提交和板端回归前，不要同时进行构建系统迁移或大范围源码重构。

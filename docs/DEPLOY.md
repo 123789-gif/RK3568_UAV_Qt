@@ -1,239 +1,139 @@
-# 板端部署、启动与回滚
+# 板端测试部署说明
 
 ## 1. 当前部署策略
 
-板端正式目录：
+```text
+板端地址：root@192.168.1.100
+正式目录：/userdata/Apps/RK3568_PTZ_Qt
+测试目录：/userdata/Apps/RK3568_PTZ_Qt_test_<UTC时间戳>
+当前状态：/userdata/Apps/RK3568_PTZ_Qt_test_current.path
+```
+
+测试部署不会覆盖正式目录。默认保留最新3个时间戳测试版本，并保护当前版本和正在运行的版本。
+
+## 2. 一次性配置SSH密钥
+
+不要把板端密码写入脚本。
+
+在虚拟机`simba`用户下执行：
+
+```bash
+mkdir -p ~/.ssh
+chmod 700 ~/.ssh
+
+[ -f ~/.ssh/id_ed25519 ] || \
+ssh-keygen -t ed25519 -f ~/.ssh/id_ed25519 -N ''
+
+ssh-copy-id -i ~/.ssh/id_ed25519.pub root@192.168.1.100
+```
+
+验证：
+
+```bash
+ssh -o BatchMode=yes root@192.168.1.100 'echo SSH_KEY_OK'
+```
+
+必须无密码提示并输出`SSH_KEY_OK`。
+
+## 3. 标准测试部署
+
+在Qt Creator完成重新构建后：
+
+```bash
+cd /home/simba/Projects/RK3568_PTZ_Qt
+./tools/deploy_test.sh
+```
+
+脚本自动完成：
+
+1. 检查ELF为ARM AArch64；
+2. 拒绝部署比源码更旧的ELF；
+3. 生成发布目录、压缩包和SHA256；
+4. 上传到板端`/tmp`；
+5. 校验压缩包和发布目录；
+6. 停止旧测试程序和正式程序；
+7. 加载/检查PCIe驱动；
+8. 检查板端动态库、模型、设备和显示环境；
+9. 启动新程序并确认实际运行的是新目录中的ELF；
+10. 更新当前测试版本状态；
+11. 保留最新3个测试版本；
+12. 删除板端`/tmp`中的本次发布包。
+
+## 4. BUILD-CHECK验证
+
+当前标题验证：
+
+```bash
+EXPECTED_MARKER=BUILD-CHECK-01 ./tools/deploy_test.sh
+```
+
+该检查只用于确认ELF确实来自当前源码。后续应使用自动构建版本信息替代手工标题标记。
+
+## 5. 常用选项
+
+仅上传和解压，不切换运行程序：
+
+```bash
+./tools/deploy_test.sh --no-start
+```
+
+保留最新5个测试版本：
+
+```bash
+./tools/deploy_test.sh --keep-releases 5
+```
+
+指定板端：
+
+```bash
+./tools/deploy_test.sh --board root@192.168.1.100
+```
+
+## 6. 板端检查
+
+```bash
+CURRENT="$(head -n 1 /userdata/Apps/RK3568_PTZ_Qt_test_current.path)"
+
+echo "$CURRENT"
+cat "$CURRENT/run/rk_dual_screen_video.pid"
+tail -n 100 "$CURRENT/logs/rk_dual_screen_video.log"
+"$CURRENT/scripts/check_runtime.sh"
+```
+
+停止当前测试程序：
+
+```bash
+"$CURRENT/scripts/stop.sh"
+```
+
+前台调试：
+
+```bash
+"$CURRENT/scripts/start.sh" --foreground
+```
+
+## 7. 回滚
+
+默认保留最近3个测试版本。选择需要回滚的目录后：
+
+```bash
+OLD=/userdata/Apps/RK3568_PTZ_Qt_test_<目标版本>
+CURRENT="$(head -n 1 /userdata/Apps/RK3568_PTZ_Qt_test_current.path)"
+
+"$CURRENT/scripts/stop.sh" 2>/dev/null || true
+"$OLD/scripts/check_runtime.sh"
+"$OLD/scripts/start.sh"
+printf '%s\n' "$OLD" > /userdata/Apps/RK3568_PTZ_Qt_test_current.path
+```
+
+回滚前必须确认`OLD`是完整时间戳测试目录，不允许将变量设置为`/userdata/Apps`或其他上级路径。
+
+## 8. 正式版本
+
+当前脚本只部署版本化测试目录，不自动覆盖：
 
 ```text
 /userdata/Apps/RK3568_PTZ_Qt
 ```
 
-运行用户：`root`
-
-当前阶段：
-
-- 支持单命令前台或后台启动；
-- 不默认启用 systemd；
-- PCIe 驱动仍需人工条件加载；
-- 不依赖 `/userdata/Projects/icore_npu_rk/model`；
-- 不应手工设置 `LD_LIBRARY_PATH`。
-
-## 2. 生成发布包
-
-虚拟机：
-
-```bash
-cd /home/simba/Projects/RK3568_PTZ_Qt
-
-./deploy/make_bundle.sh   "$PWD/out/arm64-release/rk_dual_screen_video"   "$PWD/dist"
-```
-
-输出为版本化文件：
-
-```text
-dist/RK3568_PTZ_Qt_<UTC时间戳>.tar.gz
-dist/RK3568_PTZ_Qt_<UTC时间戳>.tar.gz.sha256
-```
-
-发布包包含：
-
-```text
-RK3568_PTZ_Qt/
-├── bin/rk_dual_screen_video
-├── models/
-├── config/runtime.env
-├── scripts/
-├── logs/
-├── run/
-├── VERSION
-└── MANIFEST.sha256
-```
-
-## 3. 上传
-
-```bash
-PACKAGE="$(ls -1t dist/RK3568_PTZ_Qt_*.tar.gz | head -n 1)"
-
-scp "$PACKAGE" "$PACKAGE.sha256" root@192.168.1.100:/tmp/
-```
-
-## 4. 板端压缩包校验
-
-```bash
-ssh root@192.168.1.100
-cd /tmp
-
-PACKAGE="$(ls -1t /tmp/RK3568_PTZ_Qt_*.tar.gz | head -n 1)"
-PACKAGE_NAME="$(basename "$PACKAGE")"
-
-sha256sum -c "$PACKAGE_NAME.sha256"
-gzip -t "$PACKAGE"
-```
-
-必须全部成功。
-
-## 5. 解压到干净测试目录
-
-```bash
-TEST_ROOT=/userdata/Apps/RK3568_PTZ_Qt_test_clean
-
-rm -rf "$TEST_ROOT"
-mkdir -p "$TEST_ROOT"
-
-tar -xzf "$PACKAGE"   -C "$TEST_ROOT"   --strip-components=1
-
-sync
-
-cd "$TEST_ROOT"
-sha256sum -c MANIFEST.sha256
-```
-
-`MANIFEST.sha256` 任一文件失败时禁止启动。
-
-## 6. PCIe 驱动
-
-已验证信息：
-
-```text
-驱动文件：/userdata/Projects/driver_1080/pango_pci_driver.ko
-模块名称：pango_pci_driver
-设备节点：/dev/pango_pci_driver
-驱动 SHA256：e00ef92e4bcb3bfe1fbb3711bbba88fdab54c266c3b6fcc51ae6cf9a4942200f
-vermagic：6.1.99 SMP mod_unload aarch64
-```
-
-当前人工幂等加载：
-
-```bash
-DRIVER_KO=/userdata/Projects/driver_1080/pango_pci_driver.ko
-
-if [ -e /dev/pango_pci_driver ]; then
-  echo "PCIe driver device already exists"
-elif lsmod | grep -q '^pango_pci_driver '; then
-  echo "ERROR: module is loaded but /dev/pango_pci_driver is missing" >&2
-  exit 1
-else
-  insmod "$DRIVER_KO"
-fi
-
-lsmod | grep '^pango_pci_driver '
-ls -l /dev/pango_pci_driver
-```
-
-不要每次无条件 `insmod`，也不要在普通 `stop.sh` 中 `rmmod`。
-
-## 7. 完整运行检查
-
-```bash
-"$TEST_ROOT/scripts/check_runtime.sh"
-```
-
-检查内容包括：
-
-- 发布包 `MANIFEST.sha256`；
-- AArch64 ELF；
-- DRM、RGA、RKNN、OpenCV 关键依赖；
-- 三个模型；
-- `/dev/pango_pci_driver`；
-- `/dev/dri/card0`；
-- `/dev/video0`；
-- `/dev/ttyS0`；
-- `/dev/mem`；
-- 板端动态库。
-
-最后必须出现：
-
-```text
-Runtime check passed.
-```
-
-## 8. 前台启动
-
-```bash
-"$TEST_ROOT/scripts/start.sh" --foreground
-```
-
-脚本执行：
-
-```text
-check_runtime
-→ 启动或等待 LightDM
-→ 检查/设置 DSI 和 HDMI 布局
-→ Goodix 映射到 DSI
-→ 使用干净 env 启动 Qt
-```
-
-当前 PCIe 驱动加载发生在脚本之外。
-
-已验证显示布局：
-
-```text
-DSI-1   原始 720×1280，right 旋转后逻辑 1280×720，位置 0x0，primary
-HDMI-1  1920×1080@60，位置 1280x0
-桌面    3200×1080
-触摸    goodix-ts → DSI-1
-```
-
-## 9. 后台启动、日志和停止
-
-```bash
-"$TEST_ROOT/scripts/start.sh"
-```
-
-查看：
-
-```bash
-cat "$TEST_ROOT/run/rk_dual_screen_video.pid"
-ps -fp "$(cat "$TEST_ROOT/run/rk_dual_screen_video.pid")"
-tail -n 100 "$TEST_ROOT/logs/rk_dual_screen_video.log"
-```
-
-停止：
-
-```bash
-"$TEST_ROOT/scripts/stop.sh"
-pgrep -af rk_dual_screen_video
-```
-
-## 10. 切换正式目录
-
-```bash
-APP_ROOT=/userdata/Apps/RK3568_PTZ_Qt
-BACKUP_ROOT=/userdata/Apps/RK3568_PTZ_Qt_backup_$(date +%Y%m%d_%H%M%S)
-
-"$TEST_ROOT/scripts/stop.sh" 2>/dev/null || true
-
-if [ -d "$APP_ROOT" ]; then
-  "$APP_ROOT/scripts/stop.sh" 2>/dev/null || true
-  mv "$APP_ROOT" "$BACKUP_ROOT"
-fi
-
-mv "$TEST_ROOT" "$APP_ROOT"
-
-"$APP_ROOT/scripts/check_runtime.sh"
-"$APP_ROOT/scripts/start.sh"
-```
-
-## 11. 回滚
-
-```bash
-"$APP_ROOT/scripts/stop.sh" 2>/dev/null || true
-
-mv "$APP_ROOT"   "/userdata/Apps/RK3568_PTZ_Qt_failed_$(date +%Y%m%d_%H%M%S)"
-
-mv "$BACKUP_ROOT" "$APP_ROOT"
-
-"$APP_ROOT/scripts/check_runtime.sh"
-"$APP_ROOT/scripts/start.sh"
-```
-
-## 12. systemd
-
-`deploy/systemd/rk3568-ptz-qt.service` 当前只是模板，不要直接 `enable`。
-
-启用前必须先完成：
-
-- PCIe 驱动自动加载；
-- 开发板冷启动回归；
-- LightDM、USB采集、PCIe设备和应用启动顺序验证；
-- systemd 服务退出和重启行为验证。
+正式版本切换应在完成DSI、HDMI、PCIe、NPU、PTZ、FPGA控制、网口输出、启停和冷启动回归后单独执行。

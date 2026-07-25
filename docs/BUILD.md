@@ -1,31 +1,14 @@
-# ARM64 构建说明
+# ARM64构建说明
 
 ## 1. 已验证环境
 
-虚拟机：
-
 ```text
-Ubuntu 20.04.6 LTS
-x86_64
-```
-
-工程目录：
-
-```text
-/home/simba/Projects/RK3568_PTZ_Qt
-```
-
-Qt ARM64：
-
-```text
+Host: Ubuntu 20.04.6 LTS x86_64
+Project: /home/simba/Projects/RK3568_PTZ_Qt
 qmake: /home/simba/Qt-5.12.9-arm64/bin/qmake
-```
-
-交叉编译器：
-
-```text
-CC:  /usr/bin/aarch64-linux-gnu-gcc
+CC: /usr/bin/aarch64-linux-gnu-gcc
 CXX: /usr/bin/aarch64-linux-gnu-g++
+Dependencies: /home/simba/rk3568_deps
 ```
 
 依赖目录：
@@ -38,159 +21,106 @@ CXX: /usr/bin/aarch64-linux-gnu-g++
 └── opencv/
 ```
 
-可通过 Qt Creator 构建环境覆盖：
+可通过环境变量覆盖：
 
 ```text
 RK3568_DEPS_ROOT
 RKNN_API_ROOT
+QMAKE_BIN
 ```
 
-## 2. Qt Creator 构建
+## 2. Qt Creator构建
 
-选择已配置的 `RK3568` ARM64 Kit。
-
-启用 Shadow Build，构建目录设置为：
+选择RK3568 ARM64 Kit，启用Shadow Build，构建目录固定为：
 
 ```text
 /home/simba/Projects/RK3568_PTZ_Qt/out/arm64-release
 ```
 
-首次构建、移动源码、修改 `.pro` 或切换依赖后：
+修改源码后执行：
 
 ```text
-构建 → 清理所有项目
-构建 → 执行 qmake
 构建 → 重新构建所有项目
 ```
 
-不要复用历史 `build_manual`。
+修改`.pro`、移动源码、切换Kit或更换依赖后执行：
+
+```text
+清理所有项目 → 执行qmake → 重新构建所有项目
+```
 
 ## 3. 命令行构建
 
-当前 `tools/build_arm64.sh` 默认使用源码目录同级的外部构建目录。为了与 Qt Creator 保持一致，明确覆盖 `BUILD_DIR`：
-
 ```bash
 cd /home/simba/Projects/RK3568_PTZ_Qt
-
-BUILD_DIR="$PWD/out/arm64-release" QMAKE_BIN=/home/simba/Qt-5.12.9-arm64/bin/qmake ./tools/build_arm64.sh
+./tools/build_arm64.sh
 ```
 
-注意：该脚本会删除并重建 `BUILD_DIR`，不要将其指向源码或其他需要保留的目录。
+脚本默认：
 
-## 4. 构建后产物
+- 输出到`out/arm64-release`；
+- 删除并重建该构建目录；
+- 拒绝删除工程`out/`之外的路径；
+- 使用`/home/simba/Qt-5.12.9-arm64/bin/qmake`。
 
-链接后 `deploy/copy_runtime_assets.sh` 会生成：
-
-```text
-out/arm64-release/
-├── rk_dual_screen_video
-├── models/
-│   ├── ped_det.rknn
-│   ├── plate_det.rknn
-│   ├── plate_reco.rknn
-│   └── SHA256SUMS
-└── config/
-    └── runtime.env
-```
-
-模型不嵌入 ELF。
-
-## 5. 必做检查
-
-架构：
+增量构建：
 
 ```bash
-file out/arm64-release/rk_dual_screen_video
+CLEAN_BUILD=0 ./tools/build_arm64.sh
 ```
 
-应包含：
+覆盖并行任务数：
+
+```bash
+JOBS=4 ./tools/build_arm64.sh
+```
+
+## 4. 必做检查
+
+```bash
+BIN=/home/simba/Projects/RK3568_PTZ_Qt/out/arm64-release/rk_dual_screen_video
+
+file "$BIN"
+readelf -d "$BIN" |
+  grep -E 'libdrm|librga|librknnrt|libopencv_core|libopencv_imgproc|libjpeg|libQt5'
+
+(
+  cd /home/simba/Projects/RK3568_PTZ_Qt/out/arm64-release/models
+  sha256sum -c SHA256SUMS
+)
+```
+
+`file`必须包含：
 
 ```text
 ARM aarch64
 ```
 
-关键依赖：
+## 5. 模型状态
 
-```bash
-readelf -d out/arm64-release/rk_dual_screen_video   | grep -E 'libdrm|librga|librknnrt|libopencv_core|libopencv_imgproc'
-```
+| 文件 | 当前状态 |
+| --- | --- |
+| `ped_det.rknn` | 行人检测和行人违法规则使用 |
+| `plate_det.rknn` | 车牌检测使用 |
+| `plate_reco.rknn` | 车牌识别使用 |
+| `yolov8_car.rknn` | 保留的实验资产，当前代码不加载 |
 
-应包含：
+模型和驱动不嵌入ELF，由`deploy/copy_runtime_assets.sh`复制到构建输出目录。
 
-```text
-libdrm.so.2
-librga.so.2
-librknnrt.so
-libopencv_core.so.406
-libopencv_imgproc.so.406
-```
+## 6. 链接约束
 
-模型：
-
-```bash
-(
-  cd out/arm64-release/models
-  sha256sum -c SHA256SUMS
-)
-```
-
-当前模型哈希：
-
-```text
-ped_det.rknn    1f4cf6821682a01984af93de74240f206d756e0d980f3601f24751098889dc98
-plate_det.rknn  c8f7abd3882539f25fc29589e08127a4c1f9b8241203c78ced1fe1d97a2e1700
-plate_reco.rknn cb0f5c4d5609fff3fd70bf8d6360e22c80584c5b494fb7bb326c49b9106ff6c6
-```
-
-## 6. 当前链接约束
-
-工程使用：
+工程当前包含：
 
 ```qmake
 QMAKE_LFLAGS += -Wl,--allow-shlib-undefined
 ```
 
-原因是当前导入的板端 OpenCV ARM64 动态库包含 TBB、BLAS、LAPACK 等传递依赖，虚拟机链接阶段不完整解析这些板端共享库符号。
+这是对板端OpenCV传递依赖的工程折中。构建成功不代表板端动态库完整，每次发布必须由`deploy_test.sh`在板端执行`check_runtime.sh`和`ldd`检查。
 
-这是一项当前已验证但需要严格约束的工程折中：
+## 7. 禁止事项
 
-- 构建成功不代表板端依赖完整；
-- 每个发布包必须在板端执行 `check_runtime.sh`；
-- 不得省略 `ldd` 检查；
-- 后续更换 OpenCV 或 rootfs 时必须重新验证 ABI。
-
-## 7. 常见错误
-
-### `No rule to make target npu/vision.cpp`
-
-源码路径与 `.pro` 不一致。当前文件应位于：
-
-```text
-src/npu/vision.cpp
-src/npu/vision.h
-src/npu/demo_types.h
-```
-
-修改后重新执行 qmake。
-
-### `rknn_api.h` 不存在
-
-检查：
-
-```text
-/home/simba/rk3568_deps/rknn_api/include/rknn_api.h
-```
-
-以及 `RKNN_API_ROOT`。
-
-### `opencv2/opencv.hpp` 不存在
-
-检查：
-
-```text
-/home/simba/rk3568_deps/opencv/include/opencv4/opencv2/opencv.hpp
-```
-
-### 误编译为 x86_64
-
-必须检查 `file` 输出。Kit 或 qmake 指向桌面 Qt 时，不允许部署。
+- 不部署x86_64 ELF；
+- 不复用来源不明的旧构建目录；
+- 不从`dist/`反向复制文件覆盖源码；
+- 不跳过模型SHA256检查；
+- 不把`BUILD_DIR`指向工程源码、用户主目录或其他需要保留的目录。
