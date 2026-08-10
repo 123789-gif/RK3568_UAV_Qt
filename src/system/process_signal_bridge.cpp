@@ -76,10 +76,10 @@ ProcessSignalBridge::ProcessSignalBridge(QObject *parent)
     }
 
     m_notifier = new QSocketNotifier(m_readFd, QSocketNotifier::Read, this);
-    connect(m_notifier,
-            static_cast<void (QSocketNotifier::*)(int)>(&QSocketNotifier::activated),
-            this,
-            [this](int) { drainSignals(); });
+    // Qt 5.12 的 activated 信号还带一个内部 QPrivateSignal 参数。
+    // 让 connect 模板自行推导真实信号签名，槽 lambda 只接收所需的 socket 参数。
+    connect(m_notifier, &QSocketNotifier::activated,
+            this, [this](int) { drainSignals(); });
     m_installed = true;
 }
 
@@ -126,12 +126,13 @@ void ProcessSignalBridge::signalHandler(int signalNumber)
 
 void ProcessSignalBridge::drainSignals()
 {
-    unsigned char signals[32];
+    // Qt 将 signals 定义为元对象关键字宏，局部变量不能使用该名称。
+    unsigned char signalBytes[32];
     for (;;) {
-        const ssize_t count = ::read(m_readFd, signals, sizeof(signals));
+        const ssize_t count = ::read(m_readFd, signalBytes, sizeof(signalBytes));
         if (count > 0) {
             for (ssize_t i = 0; i < count; ++i) {
-                emit terminationRequested(static_cast<int>(signals[i]));
+                emit terminationRequested(static_cast<int>(signalBytes[i]));
             }
             continue;
         }
