@@ -156,6 +156,7 @@ private:
     void setLastError(const QString &msg);
 
 private:
+    std::mutex m_lifecycleMutex;
     std::thread m_thread;
     std::atomic<bool> m_running {false};
     std::atomic<bool> m_stopReq {false};

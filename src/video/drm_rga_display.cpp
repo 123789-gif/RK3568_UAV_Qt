@@ -24,6 +24,7 @@
 #include <cmath>
 #include <vector>
 #include <string>
+#include <system_error>
 
 #include <fcntl.h>
 #include <poll.h>
@@ -1563,10 +1564,19 @@ DrmRgaDisplay::~DrmRgaDisplay()
 
 bool DrmRgaDisplay::startDisplay()
 {
+    std::unique_lock<std::mutex> lifecycleLock(m_lifecycleMutex);
     if (m_running.load()) {
+        lifecycleLock.unlock();
         emit stateChanged("RGA/DRM already running");
         return true;
     }
+
+    // worker 可能因 DRM/PCIe 错误自主退出并将 m_running 清零；
+    // std::thread 仍保持 joinable，必须先回收后才能重新赋值。
+    if (m_thread.joinable()) {
+        m_thread.join();
+    }
+
     m_stopReq.store(false);
     {
         std::lock_guard<std::mutex> lock(m_fpgaControlMutex);
@@ -1576,27 +1586,43 @@ bool DrmRgaDisplay::startDisplay()
     if (m_npuWorker) {
         m_npuWorker->start();
     }
-    m_thread = std::thread(&DrmRgaDisplay::workerMain, this);
+    try {
+        m_thread = std::thread(&DrmRgaDisplay::workerMain, this);
+    } catch (const std::system_error &error) {
+        m_running.store(false);
+        if (m_npuWorker) {
+            m_npuWorker->stop();
+        }
+        lifecycleLock.unlock();
+        setLastError(QStringLiteral("Failed to start display thread: %1")
+                     .arg(QString::fromLocal8Bit(error.what())));
+        return false;
+    }
+    lifecycleLock.unlock();
     emit stateChanged("RGA/DRM starting");
     return true;
 }
 
 void DrmRgaDisplay::stopDisplay()
 {
-    if (!m_running.load()) {
-        if (m_npuWorker) {
-            m_npuWorker->stop();
-        }
-        return;
-    }
+    std::unique_lock<std::mutex> lifecycleLock(m_lifecycleMutex);
+    const bool hadWorker = m_thread.joinable();
+    const bool wasRunning = m_running.load();
+
     m_stopReq.store(true);
     m_fpgaControlCv.notify_all();
-    if (m_thread.joinable()) m_thread.join();
+    if (m_thread.joinable()) {
+        m_thread.join();
+    }
     if (m_npuWorker) {
         m_npuWorker->stop();
     }
     m_running.store(false);
-    emit stateChanged("RGA/DRM stopped");
+    lifecycleLock.unlock();
+
+    if (hadWorker || wasRunning) {
+        emit stateChanged("RGA/DRM stopped");
+    }
 }
 
 bool DrmRgaDisplay::isRunning() const { return m_running.load(); }
@@ -1785,7 +1811,6 @@ void DrmRgaDisplay::workerMain()
 
     PcieFrameReceiver pcie;
     DrmState drm;
-    bool drmInited = false;
     std::atomic<bool> fpgaControlStop {false};
     std::thread fpgaControlThread;
 
@@ -2106,8 +2131,6 @@ void DrmRgaDisplay::workerMain()
         setLastError("DRM init failed");
         goto cleanup;
     }
-    drmInited = true;
-
     if (c_RkRgaInit() != 0) emit stateChanged("Warning: c_RkRgaInit returned non-zero");
     emit stateChanged("RGA/DRM display running");
 
@@ -2385,7 +2408,9 @@ cleanup:
                                     0, 0, 0, 0, 0,
                                     QStringLiteral("PCIe显示已停止，网络视频输出控制不可用"));
     pcie.close();
-    if (drmInited) drm_cleanup(drm);
+    // drm_init 失败时也可能已经打开 fd、获取 connector/CRTC 或创建首个 FB。
+    // drm_cleanup 对空成员安全，始终调用以释放部分初始化资源。
+    drm_cleanup(drm);
     if (m_npuWorker) m_npuWorker->stop();
 
     m_running.store(false);

@@ -111,14 +111,25 @@ PcieFrameReceiver::WaitResult PcieFrameReceiver::waitNextFrame(FrameView &frame)
     const ssize_t result = ::read(m_deviceFd, &dummy, sizeof(dummy));
 
     // 驱动将帧有效标志和缓冲区编号编码在 read() 返回值中。
-    // 保持既有 ABI 和容错行为：无有效帧时继续等待，不改变线程模型。
-    if (result <= 0 || ((result & 0x1) == 0)) {
+    // EINTR/EAGAIN 属于可恢复的“暂时无帧”；设备断开和 I/O 错误必须上报，
+    // 否则显示线程会在永久故障后无提示空转。
+    if (result < 0) {
+        const int errorCode = errno;
+        if (errorCode == EINTR || errorCode == EAGAIN || errorCode == EWOULDBLOCK) {
+            return WaitResult::NoFrame;
+        }
+        setError(errnoMessageWithCode("read PCIe frame", errorCode));
+        return WaitResult::Error;
+    }
+
+    if (result == 0 || ((result & 0x1) == 0)) {
         return WaitResult::NoFrame;
     }
 
     const int index = static_cast<int>((result >> 1) & 0x3);
     if (index < 0 || index >= kBufferCount || m_buffers[static_cast<std::size_t>(index)] == nullptr) {
-        return WaitResult::NoFrame;
+        setError("PCIe driver returned an invalid DMA buffer index");
+        return WaitResult::Error;
     }
 
     frame.data = static_cast<const std::uint8_t *>(m_buffers[static_cast<std::size_t>(index)]);

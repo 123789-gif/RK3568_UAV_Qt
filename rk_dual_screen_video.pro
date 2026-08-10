@@ -28,6 +28,7 @@ SOURCES += \
     src/ptz/ptz_capture_worker.cpp \
     src/ptz/ptz_control_worker.cpp \
     src/ptz/visca_serial.cpp \
+    src/system/process_signal_bridge.cpp \
     src/system/fan_controller.cpp \
     src/system/system_monitor.cpp \
     src/system/perf_counters.cpp
@@ -52,6 +53,7 @@ HEADERS += \
     src/ptz/ptz_capture_worker.h \
     src/ptz/ptz_control_worker.h \
     src/ptz/visca_serial.hpp \
+    src/system/process_signal_bridge.h \
     src/system/fan_controller.h \
     src/system/system_monitor.h \
     src/system/perf_counters.h
