@@ -21,6 +21,7 @@ elif [[ $# -gt 0 ]]; then
 fi
 
 BIN="$APP_ROOT/bin/rk_dual_screen_video"
+EXPECTED_EXE="$(readlink -f "$BIN" 2>/dev/null || true)"
 PID_DIR="$APP_ROOT/run"
 PID_FILE="$PID_DIR/rk_dual_screen_video.pid"
 LOG_DIR="$APP_ROOT/logs"
@@ -31,12 +32,30 @@ TERM_VALUE="${TERM:-xterm-256color}"
 mkdir -p "$PID_DIR" "$LOG_DIR" "$RUNTIME_DIR"
 chmod 700 "$RUNTIME_DIR"
 
+[[ -n "$EXPECTED_EXE" && -x "$EXPECTED_EXE" ]] || {
+    echo "ERROR: executable is missing or invalid: $BIN" >&2
+    exit 1
+}
+
+process_matches_binary() {
+    local pid="$1"
+    local actual_exe=""
+
+    [[ "$pid" =~ ^[1-9][0-9]*$ ]] || return 1
+    actual_exe="$(readlink -f "/proc/$pid/exe" 2>/dev/null || true)"
+    [[ "$actual_exe" == "$EXPECTED_EXE" ]]
+}
+
 if [[ -f "$PID_FILE" ]]; then
     OLD_PID="$(cat "$PID_FILE" 2>/dev/null || true)"
 
-    if [[ -n "$OLD_PID" ]] && kill -0 "$OLD_PID" 2>/dev/null; then
+    if process_matches_binary "$OLD_PID"; then
         echo "Already running: PID $OLD_PID"
         exit 0
+    fi
+
+    if [[ "$OLD_PID" =~ ^[1-9][0-9]*$ ]] && kill -0 "$OLD_PID" 2>/dev/null; then
+        echo "WARNING: stale PID file points to another process; it will not be signalled: PID $OLD_PID" >&2
     fi
 
     rm -f "$PID_FILE"
@@ -73,10 +92,13 @@ fi
 nohup "${RUN_ENV[@]}" "$BIN" >>"$LOG_FILE" 2>&1 &
 PID=$!
 
-echo "$PID" > "$PID_FILE"
+PID_TMP="$PID_FILE.tmp.$$"
+printf '%s\n' "$PID" > "$PID_TMP"
+chmod 600 "$PID_TMP"
+mv -f "$PID_TMP" "$PID_FILE"
 sleep 2
 
-if kill -0 "$PID" 2>/dev/null; then
+if process_matches_binary "$PID"; then
     echo "Started rk_dual_screen_video: PID $PID"
     echo "Log: $LOG_FILE"
 else

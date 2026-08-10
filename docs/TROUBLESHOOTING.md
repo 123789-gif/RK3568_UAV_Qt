@@ -309,3 +309,44 @@ git symbolic-ref HEAD refs/heads/main
 ```
 
 首次提交后再正常使用分支命令。
+
+---
+
+## 14. `stop.sh` 提示使用了 SIGKILL
+
+### 含义
+
+应用收到SIGTERM后10秒内没有完成Qt析构和工作线程回收。脚本为释放DRM/PCIe资源进行了最终强制终止；这不是正常停止结果。
+
+### 检查
+
+```bash
+CURRENT="$(head -n 1 /userdata/Apps/RK3568_PTZ_Qt_test_current.path)"
+tail -n 200 "$CURRENT/logs/rk_dual_screen_video.log"
+dmesg -T | grep -Ei 'pango|pci|dma|drm|hang|error|fail' | tail -n 120
+```
+
+日志应包含`Received signal ... requesting graceful Qt shutdown`。若存在该日志但仍超时，重点检查PCIe驱动`read()`是否不可中断地阻塞，以及PTZ/NPU停止过程是否卡住。
+
+---
+
+## 15. 新测试版本失败后自动回滚
+
+### 正常日志特征
+
+```text
+WARNING: 新版本切换失败，开始自动回滚。
+恢复：/userdata/Apps/RK3568_PTZ_Qt...
+回滚成功，PID：...
+```
+
+即使回滚成功，`deploy_test.sh`仍返回非零，表示本次新发布未通过。通过以下命令确认当前实际进程和状态文件一致：
+
+```bash
+CURRENT="$(head -n 1 /userdata/Apps/RK3568_PTZ_Qt_test_current.path 2>/dev/null || true)"
+PID="$(cat "$CURRENT/run/rk_dual_screen_video.pid")"
+readlink -f "/proc/$PID/exe"
+echo "$CURRENT"
+```
+
+若提示“仍有视频进程，无法安全恢复旧版本”，脚本不会并行启动旧版本。先人工确认残留进程的`/proc/<PID>/exe`，不得使用宽泛`pkill -f`。

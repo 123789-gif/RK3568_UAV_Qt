@@ -249,47 +249,154 @@ fi
 current_state="$apps_root/RK3568_PTZ_Qt_test_current.path"
 official_root="$apps_root/RK3568_PTZ_Qt"
 
-if [[ -f "$current_state" ]]; then
-    previous_root="$(head -n 1 "$current_state" 2>/dev/null || true)"
-    case "$previous_root" in
-    "$apps_root"/RK3568_PTZ_Qt_test_*)
-        if [[ -x "$previous_root/scripts/stop.sh" ]]; then
-            "$previous_root/scripts/stop.sh" 2>/dev/null || true
+find_app_processes() {
+    local proc_exe=""
+    local candidate_pid=""
+    local candidate_exe=""
+
+    for proc_exe in /proc/[0-9]*/exe; do
+        [[ -e "$proc_exe" ]] || continue
+        candidate_pid="${proc_exe#/proc/}"
+        candidate_pid="${candidate_pid%/exe}"
+        candidate_exe="$(readlink -f "$proc_exe" 2>/dev/null || true)"
+        if [[ "$candidate_exe" == */bin/rk_dual_screen_video ]]; then
+            printf '%s|%s\n' "$candidate_pid" "$candidate_exe"
         fi
-        ;;
-    esac
+    done
+}
+
+find_pid_for_exe() {
+    local expected_exe="$1"
+    local record=""
+    local candidate_pid=""
+    local candidate_exe=""
+
+    while IFS= read -r record; do
+        [[ -n "$record" ]] || continue
+        candidate_pid="${record%%|*}"
+        candidate_exe="${record#*|}"
+        if [[ "$candidate_exe" == "$expected_exe" ]]; then
+            printf '%s\n' "$candidate_pid"
+            return 0
+        fi
+    done < <(find_app_processes)
+    return 1
+}
+
+is_test_root() {
+    local candidate_root="$1"
+    local candidate_parent=""
+    local candidate_name=""
+
+    candidate_parent="$(dirname "$candidate_root")"
+    candidate_name="$(basename "$candidate_root")"
+    [[ "$candidate_parent" == "$apps_root" &&
+       "$candidate_name" == RK3568_PTZ_Qt_test_20??????T??????Z ]]
+}
+
+mapfile -t active_records < <(find_app_processes)
+if ((${#active_records[@]} > 1)); then
+    echo "ERROR: 检测到多个视频程序，部署前必须人工清理，避免误判回滚目标：" >&2
+    printf '  %s\n' "${active_records[@]}" >&2
+    exit 1
 fi
 
-if [[ -x "$official_root/scripts/stop.sh" ]]; then
-    "$official_root/scripts/stop.sh" 2>/dev/null || true
+rollback_root=""
+if ((${#active_records[@]} == 1)); then
+    active_exe="${active_records[0]#*|}"
+    rollback_root="$(dirname "$(dirname "$active_exe")")"
+    if [[ "$rollback_root" != "$official_root" ]] && ! is_test_root "$rollback_root"; then
+        echo "ERROR: 当前进程不属于受管正式/测试目录，拒绝自动停止：$active_exe" >&2
+        exit 1
+    fi
 fi
 
-if pgrep -af '[r]k_dual_screen_video' >/dev/null; then
+switch_started=0
+switch_committed=0
+
+rollback_on_exit() {
+    local status=$?
+    local rollback_exe=""
+    local rollback_pid=""
+    local state_tmp=""
+    local remaining_records=()
+
+    trap - EXIT
+    if ((status == 0 || switch_started == 0 || switch_committed == 1)); then
+        exit "$status"
+    fi
+
+    set +e
+    echo "WARNING: 新版本切换失败，开始自动回滚。" >&2
+    if [[ -x "$new_root/scripts/stop.sh" ]]; then
+        "$new_root/scripts/stop.sh" </dev/null >&2
+    fi
+
+    mapfile -t remaining_records < <(find_app_processes)
+    if ((${#remaining_records[@]} > 0)); then
+        echo "ERROR: 仍有视频进程，无法安全恢复旧版本：" >&2
+        printf '  %s\n' "${remaining_records[@]}" >&2
+        exit "$status"
+    fi
+
+    if [[ -n "$rollback_root" && -x "$rollback_root/scripts/start.sh" ]]; then
+        echo "      恢复：$rollback_root" >&2
+        "$rollback_root/scripts/start.sh" </dev/null >&2
+        rollback_exe="$rollback_root/bin/rk_dual_screen_video"
+        for ((attempt = 1; attempt <= 10; attempt++)); do
+            rollback_pid="$(find_pid_for_exe "$rollback_exe" || true)"
+            [[ -n "$rollback_pid" ]] && break
+            sleep 1
+        done
+
+        if [[ -n "$rollback_pid" ]]; then
+            if is_test_root "$rollback_root"; then
+                state_tmp="${current_state}.tmp.$$"
+                printf '%s\n' "$rollback_root" > "$state_tmp"
+                mv -f "$state_tmp" "$current_state"
+            elif [[ "$rollback_root" == "$official_root" ]]; then
+                rm -f "$current_state"
+            fi
+            echo "      回滚成功，PID：$rollback_pid" >&2
+        else
+            echo "ERROR: 旧版本启动命令已执行，但未检测到目标 ELF。" >&2
+        fi
+    else
+        echo "      切换前没有运行中的受管版本，无可恢复进程。" >&2
+    fi
+
+    exit "$status"
+}
+
+trap rollback_on_exit EXIT
+switch_started=1
+
+if [[ -n "$rollback_root" ]]; then
+    [[ -x "$rollback_root/scripts/stop.sh" ]] || {
+        echo "ERROR: 旧版本缺少停止脚本：$rollback_root/scripts/stop.sh" >&2
+        exit 1
+    }
+    "$rollback_root/scripts/stop.sh" </dev/null
+fi
+
+mapfile -t active_records < <(find_app_processes)
+if ((${#active_records[@]} > 0)); then
     echo "ERROR: 仍有 rk_dual_screen_video 进程，拒绝并行占用 DRM/PCIe：" >&2
-    pgrep -af '[r]k_dual_screen_video' >&2 || true
+    printf '  %s\n' "${active_records[@]}" >&2
     exit 1
 fi
 
 # 非交互SSH会把本脚本的here-doc作为stdin。显式切到/dev/null，
 # 避免Qt后台进程继承SSH输入通道，导致部署已经完成但ssh一直不退出。
 if ! "$new_root/scripts/start.sh" </dev/null; then
-    echo "ERROR: 新测试版本启动失败，正式目录未被覆盖。" >&2
-    echo "恢复正式版本：$official_root/scripts/start.sh" >&2
+    echo "ERROR: 新测试版本启动失败。" >&2
     exit 1
 fi
 
 expected_exe="$new_root/bin/rk_dual_screen_video"
 running_pid=""
 for ((attempt = 1; attempt <= 10; attempt++)); do
-    while IFS= read -r candidate_pid; do
-        [[ -n "$candidate_pid" ]] || continue
-        candidate_exe="$(readlink -f "/proc/$candidate_pid/exe" 2>/dev/null || true)"
-        if [[ "$candidate_exe" == "$expected_exe" ]]; then
-            running_pid="$candidate_pid"
-            break
-        fi
-    done < <(pgrep -f '[r]k_dual_screen_video' || true)
-
+    running_pid="$(find_pid_for_exe "$expected_exe" || true)"
     [[ -n "$running_pid" ]] && break
     sleep 1
 done
@@ -303,7 +410,10 @@ if [[ -z "$running_pid" ]]; then
     exit 1
 fi
 
-printf '%s\n' "$new_root" > "$current_state"
+state_tmp="${current_state}.tmp.$$"
+printf '%s\n' "$new_root" > "$state_tmp"
+mv -f "$state_tmp" "$current_state"
+switch_committed=1
 
 echo "[5/5] 新测试版本已在后台启动"
 echo "      目录：$new_root"
@@ -340,14 +450,9 @@ for release_dir in "${release_dirs[@]}"; do
     fi
 
     release_active=0
-    while IFS= read -r candidate_pid; do
-        [[ -n "$candidate_pid" ]] || continue
-        candidate_exe="$(readlink -f "/proc/$candidate_pid/exe" 2>/dev/null || true)"
-        if [[ "$candidate_exe" == "$release_real/bin/rk_dual_screen_video" ]]; then
-            release_active=1
-            break
-        fi
-    done < <(pgrep -f '[r]k_dual_screen_video' || true)
+    if find_pid_for_exe "$release_real/bin/rk_dual_screen_video" >/dev/null; then
+        release_active=1
+    fi
 
     if ((release_active == 1)); then
         echo "      保留运行中版本：$release_real"
