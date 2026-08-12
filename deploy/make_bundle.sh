@@ -60,7 +60,7 @@ install -m 0755 \
     "$BINARY" \
     "$APP_DIR/bin/rk_dual_screen_video"
 
-cp -f "$PROJECT_ROOT"/assets/models/* \
+cp -a "$PROJECT_ROOT/assets/models/." \
     "$APP_DIR/models/"
 
 cp -f "$PROJECT_ROOT"/assets/config/* \

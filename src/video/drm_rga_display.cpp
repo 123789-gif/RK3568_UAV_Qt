@@ -1,5 +1,6 @@
 #include "video/drm_rga_display.h"
 #include "npu/npu_inference_worker.h"
+#include "npu/plate_type_ids.h"
 #include "pcie/pcie_frame_receiver.h"
 #include "system/perf_counters.h"
 #include "system/system_monitor.h"
@@ -569,29 +570,43 @@ static PlateOsdStyle plate_osd_style(int classId)
     PlateOsdStyle st;
     st.shadowColor = rgb565(0, 0, 0);
     switch (classId) {
-    case 0:  // Blue plate.
+    case plate_types::Blue:
         st.frameColor = rgb565(0, 96, 255);
         st.background = QColor(0, 84, 210, 232);
         st.text = QColor(255, 255, 255);
         break;
-    case 1:  // Green / new-energy plate.
+    case plate_types::Green:
         st.frameColor = rgb565(0, 210, 80);
         st.background = QColor(0, 185, 80, 232);
         st.text = QColor(0, 0, 0);
         break;
-    case 2:  // Yellow plate.
+    case plate_types::Yellow:
         st.frameColor = rgb565(255, 220, 0);
         st.background = QColor(245, 210, 0, 232);
         st.text = QColor(0, 0, 0);
         break;
-    case 3:  // Police plate: white plate, black prefix, red suffix.
+    case plate_types::White:
+    case plate_types::Police:
+    case plate_types::Embassy:
         st.frameColor = rgb565(255, 255, 255);
         st.background = QColor(245, 245, 245, 235);
         st.text = QColor(0, 0, 0);
         break;
-    case 4:  // Consulate / black plate.
+    case plate_types::Black:
+    case plate_types::Consulate:
         st.frameColor = rgb565(20, 20, 20);
         st.background = QColor(10, 10, 10, 235);
+        st.text = QColor(255, 255, 255);
+        break;
+    case plate_types::HongKong:
+    case plate_types::Macau:
+        st.frameColor = rgb565(0, 96, 255);
+        st.background = QColor(235, 235, 235, 235);
+        st.text = QColor(0, 0, 0);
+        break;
+    case plate_types::Foreign:
+        st.frameColor = rgb565(180, 180, 180);
+        st.background = QColor(40, 40, 40, 232);
         st.text = QColor(255, 255, 255);
         break;
     default:
@@ -720,12 +735,16 @@ struct CachedRgb565Label {
 
 static bool plate_label_needs_red_suffix(int classId, const QString &text)
 {
-    return (classId == 3 || classId == 4) && text.size() > 1;
+    return (classId == plate_types::Police ||
+            classId == plate_types::Consulate ||
+            classId == plate_types::Embassy) && text.size() > 1;
 }
 
 static QColor plate_label_suffix_color(int classId)
 {
-    if (classId == 3 || classId == 4) {
+    if (classId == plate_types::Police ||
+        classId == plate_types::Consulate ||
+        classId == plate_types::Embassy) {
         return QColor(220, 0, 0);
     }
     return QColor();

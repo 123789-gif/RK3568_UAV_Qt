@@ -12,8 +12,7 @@ DRIVER_SOURCE_DIR="$PROJECT_ROOT/assets/driver/rk3568-kernel-6.1.99"
 
 mkdir -p "$OUTPUT_DIR/models" "$OUTPUT_DIR/config" "$OUTPUT_DIR/driver"
 
-cp -f "$PROJECT_ROOT"/assets/models/*.rknn "$OUTPUT_DIR/models/"
-cp -f "$PROJECT_ROOT/assets/models/SHA256SUMS" "$OUTPUT_DIR/models/"
+cp -a "$PROJECT_ROOT/assets/models/." "$OUTPUT_DIR/models/"
 cp -f "$PROJECT_ROOT"/assets/config/* "$OUTPUT_DIR/config/"
 
 for file in pango_pci_driver.ko SHA256SUMS DRIVER_INFO.txt; do

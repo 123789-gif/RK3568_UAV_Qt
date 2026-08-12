@@ -22,6 +22,7 @@ SOURCES += \
     src/npu/npu_inference_worker.cpp \
     src/npu/pedestrian_violation_engine.cpp \
     src/npu/violation_rule_config.cpp \
+    src/npu/plate_v291.cpp \
     src/npu/vision.cpp \
     src/ptz/ptz_camera_profile.cpp \
     src/ptz/v4l2_device_detector.cpp \
@@ -47,6 +48,8 @@ HEADERS += \
     src/npu/npu_task_config.h \
     src/npu/npu_result_types.h \
     src/npu/demo_types.h \
+    src/npu/plate_type_ids.h \
+    src/npu/plate_v291.h \
     src/npu/vision.h \
     src/ptz/ptz_camera_profile.h \
     src/ptz/v4l2_device_detector.h \
@@ -112,6 +115,9 @@ DISTFILES += \
     assets/models/plate_reco.rknn \
     assets/models/yolov8_car.rknn \
     assets/models/SHA256SUMS \
+    assets/models/v291_candidate/plate_det.rknn \
+    assets/models/v291_candidate/plate_reco.rknn \
+    assets/models/v291_candidate/SHA256SUMS \
     assets/config/runtime.env \
     assets/config/pedestrian_violation.ini \
     assets/driver/rk3568-kernel-6.1.99/pango_pci_driver.ko \

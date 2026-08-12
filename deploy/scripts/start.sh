@@ -28,6 +28,28 @@ LOG_DIR="$APP_ROOT/logs"
 LOG_FILE="$LOG_DIR/rk_dual_screen_video.log"
 RUNTIME_DIR=/tmp/rk3568-ptz-qt-runtime
 TERM_VALUE="${TERM:-xterm-256color}"
+MODEL_PROFILE="${NPU_MODEL_PROFILE:-legacy}"
+PLATE_POSTPROCESS="${PLATE_POSTPROCESS_MODE:-stable}"
+
+if [[ ! "$MODEL_PROFILE" =~ ^[A-Za-z0-9_.-]+$ ]]; then
+    echo "ERROR: invalid NPU_MODEL_PROFILE: $MODEL_PROFILE" >&2
+    exit 2
+fi
+if [[ "$PLATE_POSTPROCESS" != "stable" && "$PLATE_POSTPROCESS" != "raw" ]]; then
+    echo "ERROR: PLATE_POSTPROCESS_MODE must be stable or raw." >&2
+    exit 2
+fi
+
+if [[ "$MODEL_PROFILE" == "legacy" ]]; then
+    MODEL_DIR="$APP_ROOT/models"
+else
+    MODEL_DIR="$APP_ROOT/models/$MODEL_PROFILE"
+fi
+
+[[ -d "$MODEL_DIR" ]] || {
+    echo "ERROR: model profile directory is missing: $MODEL_DIR" >&2
+    exit 1
+}
 
 mkdir -p "$PID_DIR" "$LOG_DIR" "$RUNTIME_DIR"
 chmod 700 "$RUNTIME_DIR"
@@ -77,10 +99,15 @@ RUN_ENV=(
     XDG_RUNTIME_DIR="$RUNTIME_DIR"
     QT_QPA_PLATFORM="$QT_PLATFORM"
     QT_XCB_GL_INTEGRATION=none
-    PTZ_NPU_MODEL_DIR="$APP_ROOT/models"
+    PTZ_NPU_MODEL_DIR="$MODEL_DIR"
+    PTZ_NPU_MODEL_PROFILE="$MODEL_PROFILE"
+    PTZ_PLATE_POSTPROCESS="$PLATE_POSTPROCESS"
 )
 
 cd "$APP_ROOT"
+
+echo "NPU model profile: $MODEL_PROFILE"
+echo "Plate postprocess: $PLATE_POSTPROCESS"
 
 if [[ $FOREGROUND -eq 1 ]]; then
     echo "Starting in foreground; log: $LOG_FILE"

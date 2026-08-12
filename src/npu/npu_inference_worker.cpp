@@ -1,5 +1,7 @@
 #include "npu/npu_inference_worker.h"
 
+#include "npu/plate_type_ids.h"
+#include "npu/plate_v291.h"
 #include "npu/vision.h"
 #include "npu/pedestrian_violation_engine.h"
 
@@ -13,6 +15,8 @@
 #include <cstdlib>
 #include <cstring>
 #include <deque>
+#include <iostream>
+#include <initializer_list>
 #include <limits.h>
 #include <map>
 #include <mutex>
@@ -26,6 +30,19 @@ namespace {
 constexpr const char* kPlateDetModel = "plate_det.rknn";
 constexpr const char* kPlateRecoModel = "plate_reco.rknn";
 constexpr const char* kPedModel = "ped_det.rknn";
+
+enum class PlateBackend
+{
+    Unknown,
+    Legacy,
+    V291
+};
+
+enum class PlatePostprocessMode
+{
+    Stable,
+    Raw
+};
 
 struct FrameCopy
 {
@@ -73,6 +90,16 @@ static double elapsedMs(std::chrono::steady_clock::time_point begin)
 
 
 static void accumulateStageTiming(NpuFrameResult& result, const demo::vision::RknnStageTiming& timing)
+{
+    result.rknnInputMs += timing.input_ms;
+    result.rknnRunMs += timing.run_ms;
+    result.rknnOutputMs += timing.output_ms;
+    result.rknnPostMs += timing.post_ms;
+    result.rknnRunCount += timing.run_count;
+}
+
+static void accumulateStageTiming(NpuFrameResult& result,
+                                  const demo::plate_v291::RknnStageTiming& timing)
 {
     result.rknnInputMs += timing.input_ms;
     result.rknnRunMs += timing.run_ms;
@@ -256,6 +283,146 @@ static bool loadModel(const std::string& path, demo::RknnModel* model, std::stri
     return true;
 }
 
+static bool tensorHasDim(const rknn_tensor_attr& attr, int expected)
+{
+    for (uint32_t i = 0; i < attr.n_dims; ++i) {
+        if (static_cast<int>(attr.dims[i]) == expected) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static std::string tensorShape(const rknn_tensor_attr& attr)
+{
+    std::string result = "[";
+    for (uint32_t i = 0; i < attr.n_dims; ++i) {
+        if (i != 0) {
+            result += ",";
+        }
+        result += std::to_string(attr.dims[i]);
+    }
+    result += "]";
+    return result;
+}
+
+static bool tensorMatches(const rknn_tensor_attr& attr,
+                          std::initializer_list<int> requiredDims,
+                          uint32_t expectedElements)
+{
+    if (expectedElements != 0 && attr.n_elems != expectedElements) {
+        return false;
+    }
+    for (int dim : requiredDims) {
+        if (!tensorHasDim(attr, dim)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+static PlateBackend validatePlateContract(const demo::RknnModel& det,
+                                          const demo::RknnModel& reco,
+                                          std::string* error)
+{
+    if (det.num_in != 1 || det.num_out != 1 ||
+        reco.num_in != 1 || reco.num_out != 1 ||
+        !det.in_attrs || !det.out_attrs || !reco.in_attrs || !reco.out_attrs) {
+        if (error) {
+            *error = "plate model contract requires exactly one input and one output";
+        }
+        return PlateBackend::Unknown;
+    }
+
+    const rknn_tensor_attr& detIn = det.in_attrs[0];
+    const rknn_tensor_attr& detOut = det.out_attrs[0];
+    const rknn_tensor_attr& recoIn = reco.in_attrs[0];
+    const rknn_tensor_attr& recoOut = reco.out_attrs[0];
+
+    const bool commonRecoInput = tensorHasDim(recoIn, 24) && tensorHasDim(recoIn, 94);
+    const bool legacy =
+            tensorMatches(detIn, {3, 448, 768}, 3u * 448u * 768u) &&
+            tensorMatches(detOut, {77, 6720}, 77u * 6720u) &&
+            commonRecoInput && tensorHasDim(recoOut, 68) && tensorHasDim(recoOut, 18);
+    if (legacy) {
+        return PlateBackend::Legacy;
+    }
+
+    const bool v291 =
+            tensorMatches(detIn, {3, 320, 640}, 3u * 320u * 640u) &&
+            tensorMatches(detOut, {73, 4200}, 73u * 4200u) &&
+            commonRecoInput && tensorHasDim(recoOut, 73) && tensorHasDim(recoOut, 18);
+    if (v291) {
+        return PlateBackend::V291;
+    }
+
+    if (error) {
+        *error = "unsupported plate model contract: det input=" + tensorShape(detIn) +
+                " output=" + tensorShape(detOut) +
+                " reco input=" + tensorShape(recoIn) +
+                " output=" + tensorShape(recoOut);
+    }
+    return PlateBackend::Unknown;
+}
+
+static PlatePostprocessMode platePostprocessModeFromEnvironment()
+{
+    const char* value = std::getenv("PTZ_PLATE_POSTPROCESS");
+    if (!value) {
+        return PlatePostprocessMode::Stable;
+    }
+    std::string normalized(value);
+    for (char& ch : normalized) {
+        ch = static_cast<char>(std::toupper(static_cast<unsigned char>(ch)));
+    }
+    return normalized == "RAW" ? PlatePostprocessMode::Raw
+                                : PlatePostprocessMode::Stable;
+}
+
+static int normalizeLegacyPlateType(int legacyClassId)
+{
+    switch (legacyClassId) {
+    case 0: return plate_types::Blue;
+    case 1: return plate_types::Green;
+    case 2: return plate_types::Yellow;
+    case 3: return plate_types::Police;
+    case 4: return plate_types::Consulate;
+    default: return plate_types::Unknown;
+    }
+}
+
+static void normalizeLegacyPlateTypes(std::vector<int>* typeIds)
+{
+    if (!typeIds) {
+        return;
+    }
+    for (int& typeId : *typeIds) {
+        typeId = normalizeLegacyPlateType(typeId);
+    }
+}
+
+static int denormalizeLegacyPlateType(int businessTypeId)
+{
+    switch (businessTypeId) {
+    case plate_types::Blue: return 0;
+    case plate_types::Green: return 1;
+    case plate_types::Yellow: return 2;
+    case plate_types::Police: return 3;
+    case plate_types::Consulate: return 4;
+    default: return 0;
+    }
+}
+
+static void denormalizeLegacyPlateTypes(std::vector<int>* typeIds)
+{
+    if (!typeIds) {
+        return;
+    }
+    for (int& typeId : *typeIds) {
+        typeId = denormalizeLegacyPlateType(typeId);
+    }
+}
+
 
 static NpuBox makeBox(const demo::Rect2f& r, float score, int classId,
                       const std::string& text = std::string(),
@@ -345,13 +512,41 @@ static bool plateTextImpliesConsulate(const std::string& plate,
 
 static bool plateOcrColorsCompatible(int cachedColorId, int candidateColorId)
 {
+    // v2.9.1 检测阶段只产生 Unknown，实际类型在 OCR/颜色后处理后得到。
+    // Unknown 不作为身份判据，仍由 IoU、裁剪签名和 TTL 共同约束复用。
+    if (cachedColorId == plate_types::Unknown ||
+        candidateColorId == plate_types::Unknown) {
+        return true;
+    }
     if (cachedColorId == candidateColorId) {
         return true;
     }
     // 仅允许“已确认领馆牌缓存 → 当前单帧误报Blue”的单向复用。
     // 反向不复用，避免普通蓝牌错误继承领馆后缀。
-    return cachedColorId == demo::PLATE_CLASS_CONSULATE &&
-            candidateColorId == demo::PLATE_CLASS_BLUE;
+    return cachedColorId == plate_types::Consulate &&
+            candidateColorId == plate_types::Blue;
+}
+
+static void convertPlateInputBoxToOrig(PlateBackend backend,
+                                       const demo::Rect2f& inputBox,
+                                       demo::Rect2f* origBox,
+                                       int frameWidth,
+                                       int frameHeight)
+{
+    if (!origBox) {
+        return;
+    }
+    if (backend == PlateBackend::V291) {
+        demo::plate_v291::convert_input_box_to_orig(inputBox,
+                                                    *origBox,
+                                                    frameWidth,
+                                                    frameHeight);
+    } else {
+        demo::vision::convert_input_box_to_orig(inputBox,
+                                                *origBox,
+                                                frameWidth,
+                                                frameHeight);
+    }
 }
 
 static bool isStandingPedestrianBox(const demo::Rect2f& box)
@@ -584,8 +779,10 @@ public:
         ocrToCandidate->clear();
         pruneOcrCache(nowMs);
 
-        const std::size_t count = std::min(crops.size(),
-                                           std::min(boxes.size(), colorIds.size()));
+        const std::size_t count = std::min(
+                    kPlateMaxTracks,
+                    std::min(crops.size(),
+                             std::min(boxes.size(), colorIds.size())));
         candidates->reserve(count);
         std::vector<bool> cacheUsed(ocrCache_.size(), false);
 
@@ -603,6 +800,7 @@ public:
                         ocrCache_[static_cast<std::size_t>(cacheIndex)];
                 candidate.plate = cached.plate;
                 candidate.pinyin = cached.pinyin;
+                candidate.colorId = cached.colorId;
                 candidate.cacheIndex = cacheIndex;
                 candidate.reusedOcr = true;
                 cacheUsed[static_cast<std::size_t>(cacheIndex)] = true;
@@ -618,6 +816,7 @@ public:
 
     void mergeOcrResults(const std::vector<std::string>& plates,
                          const std::vector<std::string>& pinyins,
+                         const std::vector<int>& colorIds,
                          const std::vector<int>& ocrToCandidate,
                          std::vector<PlateTemporalCandidate>* candidates)
     {
@@ -632,22 +831,27 @@ public:
                     (*candidates)[static_cast<std::size_t>(candidateIndex)];
             candidate.plate = plates[i];
             candidate.pinyin = i < pinyins.size() ? pinyins[i] : std::string();
+            if (i < colorIds.size()) {
+                candidate.colorId = colorIds[i];
+            }
         }
     }
 
     void stabilize(std::vector<PlateTemporalCandidate>* candidates,
+                   PlateBackend backend,
                    int frameWidth,
                    int frameHeight,
                    int64_t nowMs,
                    std::vector<PlateTemporalCandidate>* stableOutput)
     {
         for (PlateTemporalCandidate& candidate : *candidates) {
-            demo::vision::convert_input_box_to_orig(candidate.inputBox,
-                                                    candidate.origBox,
-                                                    frameWidth,
-                                                    frameHeight);
+            convertPlateInputBoxToOrig(backend,
+                                       candidate.inputBox,
+                                       &candidate.origBox,
+                                       frameWidth,
+                                       frameHeight);
             if (plateTextImpliesConsulate(candidate.plate, candidate.pinyin)) {
-                candidate.colorId = demo::PLATE_CLASS_CONSULATE;
+                candidate.colorId = plate_types::Consulate;
             }
         }
         updateOcrCache(*candidates, nowMs);
@@ -888,7 +1092,7 @@ private:
         int bestColor = -1;
         int bestCount = 0;
         for (int colorId : votes) {
-            if (colorId < 0 || colorId >= demo::PLATE_CLASS_COUNT) {
+            if (colorId < 0 || colorId >= plate_types::Count) {
                 continue;
             }
             const int count = ++counts[colorId];
@@ -952,9 +1156,9 @@ private:
         const bool semanticConsulate =
                 plateTextImpliesConsulate(candidate.plate, candidate.pinyin);
         if (semanticConsulate) {
-            observedColor = demo::PLATE_CLASS_CONSULATE;
+            observedColor = plate_types::Consulate;
         }
-        if (observedColor >= 0 && observedColor < demo::PLATE_CLASS_COUNT) {
+        if (observedColor >= 0 && observedColor < plate_types::Count) {
             track.colorVotes.push_back(observedColor);
             while (static_cast<int>(track.colorVotes.size()) >
                    kPlateColorVoteWindow) {
@@ -964,19 +1168,19 @@ private:
 
         const std::pair<int, int> votedColor = majorityColor(track.colorVotes);
         const int consulateVotes = colorVoteCount(
-                    track.colorVotes, demo::PLATE_CLASS_CONSULATE);
+                    track.colorVotes, plate_types::Consulate);
         const int blueVotes = colorVoteCount(
-                    track.colorVotes, demo::PLATE_CLASS_BLUE);
+                    track.colorVotes, plate_types::Blue);
 
         if (track.stableColorId < 0) {
             track.stableColorId = observedColor;
         }
 
         if (semanticConsulate) {
-            track.stableColorId = demo::PLATE_CLASS_CONSULATE;
+            track.stableColorId = plate_types::Consulate;
             track.consecutiveBlueCount = 0;
-        } else if (track.stableColorId == demo::PLATE_CLASS_CONSULATE) {
-            if (observedColor == demo::PLATE_CLASS_BLUE) {
+        } else if (track.stableColorId == plate_types::Consulate) {
+            if (observedColor == plate_types::Blue) {
                 ++track.consecutiveBlueCount;
             } else {
                 track.consecutiveBlueCount = 0;
@@ -988,11 +1192,11 @@ private:
                 blueVotes > consulateVotes &&
                 track.consecutiveBlueCount >=
                     kPlateConsulateToBlueConsecutive) {
-                track.stableColorId = demo::PLATE_CLASS_BLUE;
+                track.stableColorId = plate_types::Blue;
                 track.consecutiveBlueCount = 0;
             } else if (votedColor.first >= 0 &&
-                       votedColor.first != demo::PLATE_CLASS_BLUE &&
-                       votedColor.first != demo::PLATE_CLASS_CONSULATE &&
+                       votedColor.first != plate_types::Blue &&
+                       votedColor.first != plate_types::Consulate &&
                        votedColor.second >= kPlateColorVoteMin) {
                 track.stableColorId = votedColor.first;
                 track.consecutiveBlueCount = 0;
@@ -1000,7 +1204,7 @@ private:
         } else {
             track.consecutiveBlueCount = 0;
             if (consulateVotes >= kPlateConsulateVoteMin) {
-                track.stableColorId = demo::PLATE_CLASS_CONSULATE;
+                track.stableColorId = plate_types::Consulate;
             } else if (votedColor.first >= 0 &&
                        votedColor.first != track.stableColorId &&
                        votedColor.second >= kPlateColorVoteMin) {
@@ -1067,6 +1271,8 @@ struct NpuInferenceWorker::Impl
     demo::RknnModel plateDet;
     demo::RknnModel plateReco;
     demo::RknnModel ped;
+    PlateBackend plateBackend = PlateBackend::Unknown;
+    PlatePostprocessMode platePostprocessMode = PlatePostprocessMode::Stable;
     mutable std::mutex violationConfigMutex;
     ViolationRuleConfig violationConfig;
     PedestrianViolationEngine violationEngine;
@@ -1082,6 +1288,7 @@ struct NpuInferenceWorker::Impl
     {
         requestedConfig = sanitizeNpuTaskConfig(requestedConfig);
         violationConfig = sanitizeViolationRuleConfig(violationConfig);
+        platePostprocessMode = platePostprocessModeFromEnvironment();
     }
 
     ~Impl()
@@ -1095,6 +1302,7 @@ struct NpuInferenceWorker::Impl
         releaseModel(plateDet);
         releaseModel(plateReco);
         releaseModel(ped);
+        plateBackend = PlateBackend::Unknown;
         platePostprocessor.reset();
         loadedTaskValue.store(-1);
         modelsLoaded.store(false);
@@ -1286,6 +1494,20 @@ struct NpuInferenceWorker::Impl
             const std::string plateRecoPath = findModelPath(kPlateRecoModel);
             ok = loadModel(plateDetPath, &plateDet, &error) &&
                  loadModel(plateRecoPath, &plateReco, &error);
+            if (ok) {
+                plateBackend = validatePlateContract(plateDet, plateReco, &error);
+                ok = plateBackend != PlateBackend::Unknown;
+            }
+            if (ok) {
+                const char* backendName = plateBackend == PlateBackend::V291
+                        ? "v291_candidate" : "legacy";
+                const char* postName = platePostprocessMode == PlatePostprocessMode::Raw
+                        ? "raw" : "stable";
+                std::cerr << "[NPU] plate backend=" << backendName
+                          << " postprocess=" << postName
+                          << " det=" << plateDetPath
+                          << " reco=" << plateRecoPath << std::endl;
+            }
         } else if (task == NpuTaskType::TrafficViolation) {
             // 违法检测第一轮只复用行人模型。交通灯状态由人工ROI内HSV判断，
             // 不再额外运行车辆模型，降低NPU占用并提高规则刷新率。
@@ -1451,11 +1673,21 @@ struct NpuInferenceWorker::Impl
         const auto totalBegin = std::chrono::steady_clock::now();
         const auto preBegin = std::chrono::steady_clock::now();
         bool usedRga = false;
-        demo::Mat input = demo::vision::pre_img_rgb565_to_rgb(frame.data.data(),
-                                                              frame.width,
-                                                              frame.height,
-                                                              &usedRga,
-                                                              false);
+        demo::Mat input;
+        if (cfg.task == NpuTaskType::PlateCascade &&
+            plateBackend == PlateBackend::V291) {
+            input = demo::plate_v291::pre_img_rgb565_to_rgb(frame.data.data(),
+                                                            frame.width,
+                                                            frame.height,
+                                                            &usedRga,
+                                                            false);
+        } else {
+            input = demo::vision::pre_img_rgb565_to_rgb(frame.data.data(),
+                                                        frame.width,
+                                                        frame.height,
+                                                        &usedRga,
+                                                        false);
+        }
         result.preMs = elapsedMs(preBegin);
         result.usedRga = usedRga;
         if (input.empty()) {
@@ -1474,20 +1706,113 @@ struct NpuInferenceWorker::Impl
             std::vector<demo::Mat> crops;
             std::vector<demo::Rect2f> plateBoxesIn;
             std::vector<int> plateColorIds;
-            demo::vision::RknnStageTiming plateTiming;
-            demo::vision::detect_plate_candidates(input,
-                                                  plateDet,
-                                                  cfg.confidence,
-                                                  cfg.nmsThreshold,
-                                                  crops,
-                                                  plateBoxesIn,
-                                                  plateColorIds,
-                                                  true,
-                                                  &result.plateMs,
-                                                  &plateTiming);
-            accumulateStageTiming(result, plateTiming);
+            if (plateBackend == PlateBackend::V291) {
+                demo::plate_v291::RknnStageTiming plateTiming;
+                demo::plate_v291::detect_plate_candidates(input,
+                                                           plateDet,
+                                                           cfg.confidence,
+                                                           cfg.nmsThreshold,
+                                                           crops,
+                                                           plateBoxesIn,
+                                                           plateColorIds,
+                                                           true,
+                                                           &result.plateMs,
+                                                           &plateTiming);
+                accumulateStageTiming(result, plateTiming);
+            } else {
+                demo::vision::RknnStageTiming plateTiming;
+                demo::vision::detect_plate_candidates(input,
+                                                      plateDet,
+                                                      cfg.confidence,
+                                                      cfg.nmsThreshold,
+                                                      crops,
+                                                      plateBoxesIn,
+                                                      plateColorIds,
+                                                      true,
+                                                      &result.plateMs,
+                                                      &plateTiming);
+                accumulateStageTiming(result, plateTiming);
+                normalizeLegacyPlateTypes(&plateColorIds);
+            }
 
             const int64_t plateNowMs = steadyMs();
+
+            // raw 模式完全旁路 OCR 缓存、轨迹 TTL、框 EMA 和文字投票，
+            // 用于隔离评估模型及逐帧前后处理本身。
+            if (platePostprocessMode == PlatePostprocessMode::Raw) {
+                const std::size_t rawCount = std::min(
+                            kPlateMaxTracks,
+                            std::min(crops.size(),
+                                     std::min(plateBoxesIn.size(),
+                                              plateColorIds.size())));
+                std::vector<demo::Mat> rawCrops(crops.begin(),
+                                                crops.begin() + rawCount);
+                std::vector<demo::Rect2f> rawBoxes(plateBoxesIn.begin(),
+                                                   plateBoxesIn.begin() + rawCount);
+                std::vector<int> rawTypes(plateColorIds.begin(),
+                                          plateColorIds.begin() + rawCount);
+                std::vector<std::string> recognizedPlates;
+                std::vector<std::string> recognizedPinyins;
+                std::vector<demo::Rect2f> recognizedBoxes;
+                std::vector<int> recognizedTypes;
+                double ocrMs = 0.0;
+                if (plateBackend == PlateBackend::V291) {
+                    demo::plate_v291::RknnStageTiming ocrTiming;
+                    demo::plate_v291::recognize_plate_crops(rawCrops,
+                                                            rawBoxes,
+                                                            rawTypes,
+                                                            plateReco,
+                                                            recognizedPlates,
+                                                            recognizedPinyins,
+                                                            recognizedBoxes,
+                                                            recognizedTypes,
+                                                            &ocrMs,
+                                                            &ocrTiming);
+                    accumulateStageTiming(result, ocrTiming);
+                } else {
+                    demo::vision::RknnStageTiming ocrTiming;
+                    std::vector<int> legacyTypes = rawTypes;
+                    denormalizeLegacyPlateTypes(&legacyTypes);
+                    demo::vision::recognize_plate_crops(rawCrops,
+                                                        rawBoxes,
+                                                        legacyTypes,
+                                                        plateReco,
+                                                        recognizedPlates,
+                                                        recognizedPinyins,
+                                                        recognizedBoxes,
+                                                        recognizedTypes,
+                                                        &ocrMs,
+                                                        &ocrTiming);
+                    accumulateStageTiming(result, ocrTiming);
+                    normalizeLegacyPlateTypes(&recognizedTypes);
+                }
+                result.plateMs += ocrMs;
+
+                const std::size_t count = std::min(
+                            recognizedPlates.size(), recognizedBoxes.size());
+                for (std::size_t i = 0; i < count; ++i) {
+                    if (!isDisplayablePlateText(recognizedPlates[i])) {
+                        continue;
+                    }
+                    demo::Rect2f origBox;
+                    convertPlateInputBoxToOrig(plateBackend,
+                                               recognizedBoxes[i],
+                                               &origBox,
+                                               frame.width,
+                                               frame.height);
+                    const int typeId = i < recognizedTypes.size()
+                            ? recognizedTypes[i] : plate_types::Unknown;
+                    const std::string pinyin = i < recognizedPinyins.size()
+                            ? recognizedPinyins[i] : std::string();
+                    result.plates.push_back(makeBox(origBox,
+                                                    -1.0f,
+                                                    typeId,
+                                                    recognizedPlates[i],
+                                                    !pinyin.empty()
+                                                    ? pinyin
+                                                    : recognizedPlates[i]));
+                }
+            } else {
             std::vector<PlateTemporalCandidate> candidates;
             std::vector<demo::Mat> ocrCrops;
             std::vector<demo::Rect2f> ocrBoxes;
@@ -1509,28 +1834,48 @@ struct NpuInferenceWorker::Impl
                 std::vector<demo::Rect2f> recognizedBoxes;
                 std::vector<int> recognizedColors;
                 double ocrMs = 0.0;
-                demo::vision::RknnStageTiming ocrTiming;
-                demo::vision::recognize_plate_crops(ocrCrops,
-                                                    ocrBoxes,
-                                                    ocrColorIds,
-                                                    plateReco,
-                                                    recognizedPlates,
-                                                    recognizedPinyins,
-                                                    recognizedBoxes,
-                                                    recognizedColors,
-                                                    &ocrMs,
-                                                    &ocrTiming);
+                if (plateBackend == PlateBackend::V291) {
+                    demo::plate_v291::RknnStageTiming ocrTiming;
+                    demo::plate_v291::recognize_plate_crops(ocrCrops,
+                                                            ocrBoxes,
+                                                            ocrColorIds,
+                                                            plateReco,
+                                                            recognizedPlates,
+                                                            recognizedPinyins,
+                                                            recognizedBoxes,
+                                                            recognizedColors,
+                                                            &ocrMs,
+                                                            &ocrTiming);
+                    accumulateStageTiming(result, ocrTiming);
+                } else {
+                    demo::vision::RknnStageTiming ocrTiming;
+                    std::vector<int> legacyTypes = ocrColorIds;
+                    denormalizeLegacyPlateTypes(&legacyTypes);
+                    demo::vision::recognize_plate_crops(ocrCrops,
+                                                        ocrBoxes,
+                                                        legacyTypes,
+                                                        plateReco,
+                                                        recognizedPlates,
+                                                        recognizedPinyins,
+                                                        recognizedBoxes,
+                                                        recognizedColors,
+                                                        &ocrMs,
+                                                        &ocrTiming);
+                    accumulateStageTiming(result, ocrTiming);
+                    normalizeLegacyPlateTypes(&recognizedColors);
+                }
                 result.plateMs += ocrMs;
-                accumulateStageTiming(result, ocrTiming);
                 // recognize_plate_crops保持输入batch顺序，按计划索引回填候选。
                 platePostprocessor.mergeOcrResults(recognizedPlates,
                                                    recognizedPinyins,
+                                                   recognizedColors,
                                                    ocrToCandidate,
                                                    &candidates);
             }
 
             std::vector<PlateTemporalCandidate> stablePlates;
             platePostprocessor.stabilize(&candidates,
+                                         plateBackend,
                                          frame.width,
                                          frame.height,
                                          plateNowMs,
@@ -1545,6 +1890,7 @@ struct NpuInferenceWorker::Impl
                                                 plate.colorId,
                                                 plate.plate,
                                                 label));
+            }
             }
         } else {
             std::vector<demo::Rect2f> pedBoxesIn;

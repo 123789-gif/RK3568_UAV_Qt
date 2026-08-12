@@ -13,6 +13,17 @@ DRIVER_KO="$DRIVER_DIR/$DRIVER_FILE"
 MODULE_NAME="${PCIE_DRIVER_MODULE:-pango_pci_driver}"
 DEVICE_NODE="${PCIE_DRIVER_DEVICE:-/dev/pango_pci_driver}"
 FAIL=0
+MODEL_PROFILE="${NPU_MODEL_PROFILE:-legacy}"
+
+if [[ ! "$MODEL_PROFILE" =~ ^[A-Za-z0-9_.-]+$ ]]; then
+    echo "[FAIL] invalid NPU_MODEL_PROFILE: $MODEL_PROFILE" >&2
+    exit 2
+fi
+if [[ "$MODEL_PROFILE" == "legacy" ]]; then
+    MODEL_DIR="$APP_ROOT/models"
+else
+    MODEL_DIR="$APP_ROOT/models/$MODEL_PROFILE"
+fi
 
 ok() {
     printf '[OK] %s\n' "$*"
@@ -79,13 +90,29 @@ if [[ -x "$BIN" ]]; then
     fi
 fi
 
-for model in ped_det.rknn plate_det.rknn plate_reco.rknn; do
-    if [[ -s "$APP_ROOT/models/$model" ]]; then
-        ok "model: $model"
+for model in plate_det.rknn plate_reco.rknn; do
+    if [[ -s "$MODEL_DIR/$model" ]]; then
+        ok "model[$MODEL_PROFILE]: $model"
     else
-        err "missing model: $model"
+        err "missing model[$MODEL_PROFILE]: $MODEL_DIR/$model"
     fi
 done
+
+if [[ -f "$MODEL_DIR/SHA256SUMS" ]] && (
+    cd "$MODEL_DIR"
+    sha256sum -c SHA256SUMS >/dev/null
+); then
+    ok "model[$MODEL_PROFILE] SHA256"
+else
+    err "model[$MODEL_PROFILE] SHA256 mismatch or missing SHA256SUMS"
+fi
+
+# 行人任务仍使用已验证的 legacy 模型，候选 profile 只替换车牌链路。
+if [[ -s "$APP_ROOT/models/ped_det.rknn" ]]; then
+    ok "legacy pedestrian model: ped_det.rknn"
+else
+    err "missing legacy pedestrian model: $APP_ROOT/models/ped_det.rknn"
+fi
 
 if [[ -f "$DRIVER_KO" ]]; then
     ok "PCIe driver file: $DRIVER_KO"
