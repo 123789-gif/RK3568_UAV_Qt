@@ -140,6 +140,9 @@ static bool rga_resize_rgb565_to_rgb565(const uint8_t* src_ptr,
                                         Mat& dst_565) {
     if (!src_ptr || src_w <= 0 || src_h <= 0 || dst_565.empty()) return false;
     if (dst_565.type() != CV_8UC2 || !dst_565.isContinuous()) return false;
+    // RK3568 BSP 的 RGA 虚拟地址路径要求像素宽度按 4 对齐。未对齐时
+    // 部分 librga 版本不会可靠拒绝请求，而可能按对齐 stride 写越界。
+    if ((src_w & 3) != 0 || (dst_565.cols & 3) != 0) return false;
     rga_buffer_t src = wrapbuffer_virtualaddr(const_cast<uint8_t*>(src_ptr),
                                               src_w,
                                               src_h,
@@ -160,6 +163,7 @@ static bool rga_blit_565_to_888(const uint8_t* src_ptr,
                                 int dst_format = RK_FORMAT_RGB_888) {
     if (!src_ptr || src_w <= 0 || src_h <= 0 || dst_888.empty()) return false;
     if (dst_888.type() != CV_8UC3 || !dst_888.isContinuous()) return false;
+    if ((src_w & 3) != 0 || (dst_888.cols & 3) != 0) return false;
     rga_info_t src {};
     rga_info_t dst {};
     src.fd = -1;
@@ -184,6 +188,7 @@ static bool rga_imresize_565_to_888(const uint8_t* src_ptr,
                                     int dst_format = RK_FORMAT_RGB_888) {
     if (!src_ptr || src_w <= 0 || src_h <= 0 || dst_888.empty()) return false;
     if (dst_888.type() != CV_8UC3 || !dst_888.isContinuous()) return false;
+    if ((src_w & 3) != 0 || (dst_888.cols & 3) != 0) return false;
     rga_buffer_t src = wrapbuffer_virtualaddr(const_cast<uint8_t*>(src_ptr),
                                               src_w,
                                               src_h,
@@ -424,6 +429,14 @@ static void get_scaling_info(int ow, int oh, int& nw, int& nh, int& sx, int& sy)
     float scale = std::min(static_cast<float>(DET_INPUT_W) / ow, static_cast<float>(DET_INPUT_H) / oh);
     nw = std::max(1, std::min(DET_INPUT_W, static_cast<int>(std::round(ow * scale))));
     nh = std::max(1, std::min(DET_INPUT_H, static_cast<int>(std::round(oh * scale))));
+    // 1920x1080 -> 640x320 按常规四舍五入会得到 569x320。569 不能安全
+    // 作为该 BSP 上 RGA RGB888 虚拟缓冲区的 width stride，因此在保持
+    // 长宽比的前提下向下对齐到 4 像素（实际为 568x320）。预处理与坐标
+    // 反变换共用本函数，避免引入 1 像素几何口径不一致。
+    if (nw >= 4 && nw < DET_INPUT_W) {
+        nw &= ~3;
+        nw = std::max(4, nw);
+    }
     float pad_w = static_cast<float>(DET_INPUT_W - nw);
     float pad_h = static_cast<float>(DET_INPUT_H - nh);
     sx = static_cast<int>(std::round(pad_w * 0.5f - 0.1f));
@@ -2166,6 +2179,11 @@ bool detect_plate_candidates(const Mat& mid_img,
                              std::vector<float>* raw_output) {
     if (npu_ms) *npu_ms = 0.0;
     if (timing) timing->reset();
+    crops.clear();
+    boxes.clear();
+    class_ids.clear();
+    if (scores) scores->clear();
+    if (keypoints) keypoints->clear();
     if (crop_debugs) crop_debugs->clear();
     if (raw_output) raw_output->clear();
     // 线程局部缓存，避免在线程函数中反复分配。
@@ -2220,6 +2238,14 @@ bool detect_plate_candidates(const Mat& mid_img,
         }
         TensorCNView view;
         if (!infer_cn_view(det_model.out_attrs[0], p, view)) break;
+        const size_t required_output_bytes =
+                static_cast<size_t>(view.channels) *
+                static_cast<size_t>(view.num_preds) * sizeof(float);
+        if (!p || static_cast<size_t>(out[0].size) < required_output_bytes) {
+            std::cerr << "[NPU] v291 detector output is smaller than tensor contract: actual="
+                      << out[0].size << " required=" << required_output_bytes << std::endl;
+            break;
+        }
         int num_preds = view.num_preds;
         if (num_preds <= 0) break;
 
@@ -2640,6 +2666,16 @@ Mat pre_img_rgb565_to_rgb(const uint8_t* rgb565,
     static thread_local Mat bg_rgb(DET_INPUT_H, DET_INPUT_W, CV_8UC3);
     make_letterbox_rgb(resized_rgb, sx, sy, nw, nh, bg_rgb);
 
+    static std::atomic<bool> route_reported(false);
+    if (!route_reported.exchange(true)) {
+        const char* route = force_cpu ? "cpu-forced" : (rga_ok ? "rga" : "cpu-fallback");
+        std::cerr << "[NPU] v291 preprocess route=" << route
+                  << " source=" << width << "x" << height
+                  << " resized=" << nw << "x" << nh
+                  << " input=" << DET_INPUT_W << "x" << DET_INPUT_H
+                  << std::endl;
+    }
+
     if (used_rga) *used_rga = rga_ok;
     return bg_rgb;
 }
@@ -2876,8 +2912,14 @@ bool recognize_plate_crops(const std::vector<Mat>& crops,
     if (ocr_debugs) ocr_debugs->clear();
     if (raw_output) raw_output->clear();
     int batch = static_cast<int>(crops.size());
-    if (batch <= 0) return false;
+    if (batch <= 0 || batch > 4) return false;
     if (in_boxes.size() != crops.size() || in_color_ids.size() != crops.size()) return false;
+    for (const Mat& crop : crops) {
+        if (crop.empty() || crop.rows != 24 || crop.cols != 94 || crop.type() != CV_8UC3) {
+            std::cerr << "[NPU] v291 OCR crop contract mismatch" << std::endl;
+            return false;
+        }
+    }
 
     auto input_start = std::chrono::high_resolution_clock::now();
     // 按裁剪数量动态设置识别 batch。batch 不变时跳过 shape 更新，减少 RKNN 控制开销。
@@ -2887,7 +2929,12 @@ bool recognize_plate_crops(const std::vector<Mat>& crops,
         rknn_tensor_attr in_attr;
         memset(&in_attr, 0, sizeof(in_attr));
         in_attr.index = 0;
-        rknn_query(reco_model.ctx, RKNN_QUERY_INPUT_ATTR, &in_attr, sizeof(in_attr));
+        if (rknn_query(reco_model.ctx,
+                       RKNN_QUERY_INPUT_ATTR,
+                       &in_attr,
+                       sizeof(in_attr)) != RKNN_SUCC || in_attr.n_dims == 0) {
+            return false;
+        }
         in_attr.dims[0] = batch;
         if (rknn_set_input_shape(reco_model.ctx, &in_attr) != RKNN_SUCC) return false;
         cached_ctx = reco_model.ctx;
@@ -2950,6 +2997,14 @@ bool recognize_plate_crops(const std::vector<Mat>& crops,
         }
 
         int per = num_chars * seq_len;
+        const size_t required_output_bytes = static_cast<size_t>(batch) *
+                static_cast<size_t>(per) * sizeof(float);
+        if (!p || static_cast<size_t>(out[0].size) < required_output_bytes) {
+            std::cerr << "[NPU] v291 OCR output is smaller than dynamic batch contract: actual="
+                      << out[0].size << " required=" << required_output_bytes
+                      << " batch=" << batch << std::endl;
+            break;
+        }
         for (int i = 0; i < batch; ++i) {
             std::string text;
             std::string py;

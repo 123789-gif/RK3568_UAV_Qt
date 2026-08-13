@@ -379,6 +379,19 @@ static PlatePostprocessMode platePostprocessModeFromEnvironment()
                                 : PlatePostprocessMode::Stable;
 }
 
+static bool v291ForceCpuFromEnvironment()
+{
+    const char* value = std::getenv("PTZ_V291_PREPROCESS");
+    if (!value) {
+        return false;
+    }
+    std::string normalized(value);
+    for (char& ch : normalized) {
+        ch = static_cast<char>(std::toupper(static_cast<unsigned char>(ch)));
+    }
+    return normalized == "CPU";
+}
+
 static int normalizeLegacyPlateType(int legacyClassId)
 {
     switch (legacyClassId) {
@@ -1273,6 +1286,7 @@ struct NpuInferenceWorker::Impl
     demo::RknnModel ped;
     PlateBackend plateBackend = PlateBackend::Unknown;
     PlatePostprocessMode platePostprocessMode = PlatePostprocessMode::Stable;
+    bool v291ForceCpu = false;
     mutable std::mutex violationConfigMutex;
     ViolationRuleConfig violationConfig;
     PedestrianViolationEngine violationEngine;
@@ -1289,6 +1303,7 @@ struct NpuInferenceWorker::Impl
         requestedConfig = sanitizeNpuTaskConfig(requestedConfig);
         violationConfig = sanitizeViolationRuleConfig(violationConfig);
         platePostprocessMode = platePostprocessModeFromEnvironment();
+        v291ForceCpu = v291ForceCpuFromEnvironment();
     }
 
     ~Impl()
@@ -1505,6 +1520,7 @@ struct NpuInferenceWorker::Impl
                         ? "raw" : "stable";
                 std::cerr << "[NPU] plate backend=" << backendName
                           << " postprocess=" << postName
+                          << " preprocess=" << (v291ForceCpu ? "cpu" : "auto")
                           << " det=" << plateDetPath
                           << " reco=" << plateRecoPath << std::endl;
             }
@@ -1680,7 +1696,7 @@ struct NpuInferenceWorker::Impl
                                                             frame.width,
                                                             frame.height,
                                                             &usedRga,
-                                                            false);
+                                                            v291ForceCpu);
         } else {
             input = demo::vision::pre_img_rgb565_to_rgb(frame.data.data(),
                                                         frame.width,

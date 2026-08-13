@@ -30,6 +30,7 @@ RUNTIME_DIR=/tmp/rk3568-ptz-qt-runtime
 TERM_VALUE="${TERM:-xterm-256color}"
 MODEL_PROFILE="${NPU_MODEL_PROFILE:-legacy}"
 PLATE_POSTPROCESS="${PLATE_POSTPROCESS_MODE:-stable}"
+V291_PREPROCESS="${V291_PREPROCESS_MODE:-auto}"
 
 if [[ ! "$MODEL_PROFILE" =~ ^[A-Za-z0-9_.-]+$ ]]; then
     echo "ERROR: invalid NPU_MODEL_PROFILE: $MODEL_PROFILE" >&2
@@ -37,6 +38,10 @@ if [[ ! "$MODEL_PROFILE" =~ ^[A-Za-z0-9_.-]+$ ]]; then
 fi
 if [[ "$PLATE_POSTPROCESS" != "stable" && "$PLATE_POSTPROCESS" != "raw" ]]; then
     echo "ERROR: PLATE_POSTPROCESS_MODE must be stable or raw." >&2
+    exit 2
+fi
+if [[ "$V291_PREPROCESS" != "auto" && "$V291_PREPROCESS" != "cpu" ]]; then
+    echo "ERROR: V291_PREPROCESS_MODE must be auto or cpu." >&2
     exit 2
 fi
 
@@ -102,12 +107,14 @@ RUN_ENV=(
     PTZ_NPU_MODEL_DIR="$MODEL_DIR"
     PTZ_NPU_MODEL_PROFILE="$MODEL_PROFILE"
     PTZ_PLATE_POSTPROCESS="$PLATE_POSTPROCESS"
+    PTZ_V291_PREPROCESS="$V291_PREPROCESS"
 )
 
 cd "$APP_ROOT"
 
 echo "NPU model profile: $MODEL_PROFILE"
 echo "Plate postprocess: $PLATE_POSTPROCESS"
+echo "V291 preprocess: $V291_PREPROCESS"
 
 if [[ $FOREGROUND -eq 1 ]]; then
     echo "Starting in foreground; log: $LOG_FILE"
