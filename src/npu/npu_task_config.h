@@ -10,6 +10,18 @@ enum class NpuTaskType : std::uint8_t
     TrafficViolation = 2
 };
 
+enum class NpuPlateModelProfile : std::uint8_t
+{
+    Legacy = 0,
+    V291Candidate = 1
+};
+
+enum class NpuPlatePostprocess : std::uint8_t
+{
+    Stable = 0,
+    Raw = 1
+};
+
 inline constexpr int NPU_TARGET_FPS_MIN = 1;
 inline constexpr int NPU_TARGET_FPS_DEFAULT = 15;
 inline constexpr int NPU_TARGET_FPS_MAX = 60;
@@ -18,6 +30,8 @@ struct NpuTaskConfig
 {
     bool enabled = false;
     NpuTaskType task = NpuTaskType::Pedestrian;
+    NpuPlateModelProfile plateModelProfile = NpuPlateModelProfile::V291Candidate;
+    NpuPlatePostprocess platePostprocess = NpuPlatePostprocess::Stable;
     int targetFps = NPU_TARGET_FPS_DEFAULT;
     float confidence = 0.50f;
     float nmsThreshold = 0.45f;
@@ -27,12 +41,30 @@ struct NpuTaskConfig
 
 inline NpuTaskConfig sanitizeNpuTaskConfig(NpuTaskConfig config)
 {
+    if (config.plateModelProfile != NpuPlateModelProfile::Legacy &&
+        config.plateModelProfile != NpuPlateModelProfile::V291Candidate) {
+        config.plateModelProfile = NpuPlateModelProfile::V291Candidate;
+    }
+    if (config.platePostprocess != NpuPlatePostprocess::Stable &&
+        config.platePostprocess != NpuPlatePostprocess::Raw) {
+        config.platePostprocess = NpuPlatePostprocess::Stable;
+    }
     config.targetFps = std::max(NPU_TARGET_FPS_MIN,
                                 std::min(NPU_TARGET_FPS_MAX, config.targetFps));
     config.confidence = std::max(0.10f, std::min(0.95f, config.confidence));
     config.nmsThreshold = std::max(0.10f, std::min(0.90f, config.nmsThreshold));
     config.resultHistoryDepth = std::max(10, std::min(200, config.resultHistoryDepth));
     return config;
+}
+
+inline const char* npuPlateModelProfileKey(NpuPlateModelProfile profile)
+{
+    return profile == NpuPlateModelProfile::Legacy ? "legacy" : "v291_candidate";
+}
+
+inline const char* npuPlatePostprocessKey(NpuPlatePostprocess mode)
+{
+    return mode == NpuPlatePostprocess::Raw ? "raw" : "stable";
 }
 
 inline const char* npuTaskKey(NpuTaskType task)

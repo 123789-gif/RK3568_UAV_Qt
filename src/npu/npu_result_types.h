@@ -52,6 +52,11 @@ struct NpuFrameResult
     uint64_t sourceRevision = 0;
     int sourceChannel = 0;
     NpuTaskType task = NpuTaskType::Pedestrian;
+    NpuPlateModelProfile requestedPlateModelProfile = NpuPlateModelProfile::V291Candidate;
+    NpuPlateModelProfile activePlateModelProfile = NpuPlateModelProfile::V291Candidate;
+    NpuPlatePostprocess platePostprocess = NpuPlatePostprocess::Stable;
+    bool activePlateModelProfileValid = false;
+    bool modelSwitching = false;
     bool enabled = false;
     bool ready = false;
     bool modelsReady = false;

@@ -38,12 +38,6 @@ enum class PlateBackend
     V291
 };
 
-enum class PlatePostprocessMode
-{
-    Stable,
-    Raw
-};
-
 struct FrameCopy
 {
     uint64_t id = 0;
@@ -177,6 +171,39 @@ static std::string findModelPath(const char* name)
         }
     }
     return joinPath("./model", name);
+}
+
+static std::string findPlateModelPath(NpuPlateModelProfile profile,
+                                      const char* name)
+{
+    std::vector<std::string> roots;
+    if (const char* envRoot = std::getenv("PTZ_NPU_MODEL_ROOT")) {
+        roots.emplace_back(envRoot);
+    }
+
+    const std::string exeDir = executableDir();
+    if (!exeDir.empty()) {
+        roots.emplace_back(exeDir + "/../models");
+        roots.emplace_back(exeDir + "/models");
+    }
+    roots.emplace_back("./assets/models");
+    roots.emplace_back("./models");
+
+    const char* profileDir = profile == NpuPlateModelProfile::V291Candidate
+            ? "v291_candidate" : "";
+    for (const std::string& root : roots) {
+        const std::string dir = *profileDir
+                ? joinPath(root, profileDir) : root;
+        const std::string path = joinPath(dir, name);
+        if (fileExists(path)) {
+            return path;
+        }
+    }
+
+    const std::string fallbackRoot = roots.empty() ? "./models" : roots.front();
+    return *profileDir
+            ? joinPath(joinPath(fallbackRoot, profileDir), name)
+            : joinPath(fallbackRoot, name);
 }
 
 static bool readFile(const std::string& path, std::vector<unsigned char>* out, std::string* error)
@@ -365,18 +392,32 @@ static PlateBackend validatePlateContract(const demo::RknnModel& det,
     return PlateBackend::Unknown;
 }
 
-static PlatePostprocessMode platePostprocessModeFromEnvironment()
+static NpuPlatePostprocess platePostprocessModeFromEnvironment()
 {
     const char* value = std::getenv("PTZ_PLATE_POSTPROCESS");
     if (!value) {
-        return PlatePostprocessMode::Stable;
+        return NpuPlatePostprocess::Stable;
     }
     std::string normalized(value);
     for (char& ch : normalized) {
         ch = static_cast<char>(std::toupper(static_cast<unsigned char>(ch)));
     }
-    return normalized == "RAW" ? PlatePostprocessMode::Raw
-                                : PlatePostprocessMode::Stable;
+    return normalized == "RAW" ? NpuPlatePostprocess::Raw
+                                : NpuPlatePostprocess::Stable;
+}
+
+static NpuPlateModelProfile plateModelProfileFromEnvironment()
+{
+    const char* value = std::getenv("PTZ_NPU_MODEL_PROFILE");
+    if (!value) {
+        return NpuPlateModelProfile::V291Candidate;
+    }
+    std::string normalized(value);
+    for (char& ch : normalized) {
+        ch = static_cast<char>(std::toupper(static_cast<unsigned char>(ch)));
+    }
+    return normalized == "LEGACY" ? NpuPlateModelProfile::Legacy
+                                  : NpuPlateModelProfile::V291Candidate;
 }
 
 static bool v291ForceCpuFromEnvironment()
@@ -1285,7 +1326,8 @@ struct NpuInferenceWorker::Impl
     demo::RknnModel plateReco;
     demo::RknnModel ped;
     PlateBackend plateBackend = PlateBackend::Unknown;
-    PlatePostprocessMode platePostprocessMode = PlatePostprocessMode::Stable;
+    std::atomic<int> loadedPlateProfileValue {-1};
+    std::atomic<bool> modelSwitching {false};
     bool v291ForceCpu = false;
     mutable std::mutex violationConfigMutex;
     ViolationRuleConfig violationConfig;
@@ -1293,6 +1335,7 @@ struct NpuInferenceWorker::Impl
     PlateTemporalPostprocessor platePostprocessor;
     std::atomic<int> loadedTaskValue {-1};
     std::string modelError;
+    uint64_t activePlateConfigRevision = 0;
 
     int64_t fpsWindowMs = 0;
     int fpsWindowCount = 0;
@@ -1301,8 +1344,9 @@ struct NpuInferenceWorker::Impl
     Impl()
     {
         requestedConfig = sanitizeNpuTaskConfig(requestedConfig);
+        requestedConfig.plateModelProfile = plateModelProfileFromEnvironment();
+        requestedConfig.platePostprocess = platePostprocessModeFromEnvironment();
         violationConfig = sanitizeViolationRuleConfig(violationConfig);
-        platePostprocessMode = platePostprocessModeFromEnvironment();
         v291ForceCpu = v291ForceCpuFromEnvironment();
     }
 
@@ -1318,15 +1362,46 @@ struct NpuInferenceWorker::Impl
         releaseModel(plateReco);
         releaseModel(ped);
         plateBackend = PlateBackend::Unknown;
+        loadedPlateProfileValue.store(-1);
         platePostprocessor.reset();
         loadedTaskValue.store(-1);
         modelsLoaded.store(false);
+        activePlateConfigRevision = 0;
     }
 
     NpuTaskConfig configSnapshot() const
     {
         std::lock_guard<std::mutex> lk(configMutex);
         return requestedConfig;
+    }
+
+    bool modelsMatchConfig(const NpuTaskConfig& cfg) const
+    {
+        if (!modelsLoaded.load() ||
+            loadedTaskValue.load() != static_cast<int>(cfg.task)) {
+            return false;
+        }
+        return cfg.task != NpuTaskType::PlateCascade ||
+                loadedPlateProfileValue.load() ==
+                static_cast<int>(cfg.plateModelProfile);
+    }
+
+    void fillModelState(NpuFrameResult* result,
+                        const NpuTaskConfig& cfg) const
+    {
+        if (!result) {
+            return;
+        }
+        result->requestedPlateModelProfile = cfg.plateModelProfile;
+        result->platePostprocess = cfg.platePostprocess;
+        result->modelSwitching = modelSwitching.load();
+        const int active = loadedPlateProfileValue.load();
+        result->activePlateModelProfileValid = active >= 0;
+        if (active >= 0) {
+            result->activePlateModelProfile =
+                    static_cast<NpuPlateModelProfile>(active);
+        }
+        result->modelsReady = modelsMatchConfig(cfg);
     }
 
     void updateViolationConfig(const ViolationRuleConfig& requested)
@@ -1348,15 +1423,19 @@ struct NpuInferenceWorker::Impl
     void updateConfig(const NpuTaskConfig& requested)
     {
         NpuTaskConfig next = sanitizeNpuTaskConfig(requested);
+        bool executionChanged = false;
         {
             std::lock_guard<std::mutex> lk(configMutex);
+            executionChanged = next.task != requestedConfig.task ||
+                    next.plateModelProfile != requestedConfig.plateModelProfile ||
+                    next.platePostprocess != requestedConfig.platePostprocess;
             next.revision = requestedConfig.revision + 1;
             requestedConfig = next;
         }
 
         nextSubmitNs.store(0);
 
-        if (!next.enabled) {
+        if (!next.enabled || executionChanged) {
             std::lock_guard<std::mutex> lk(pendingMutex);
             pending = FrameCopy();
             pendingValid = false;
@@ -1365,12 +1444,11 @@ struct NpuInferenceWorker::Impl
         NpuFrameResult state;
         state.enabled = next.enabled;
         state.task = next.task;
+        fillModelState(&state, next);
         state.targetFps = next.targetFps;
         state.confidence = next.confidence;
         state.nmsThreshold = next.nmsThreshold;
         state.configRevision = next.revision;
-        state.modelsReady = modelsLoaded.load() &&
-                loadedTaskValue.load() == static_cast<int>(next.task);
         if (next.task == NpuTaskType::TrafficViolation) {
             state.violationConfig = violationConfigSnapshot();
             state.violationRegionsConfigured = state.violationConfig.regionsValid();
@@ -1424,14 +1502,13 @@ struct NpuInferenceWorker::Impl
         NpuFrameResult state;
         state.enabled = cfg.enabled;
         state.task = cfg.task;
+        fillModelState(&state, cfg);
         state.targetFps = cfg.targetFps;
         state.confidence = cfg.confidence;
         state.nmsThreshold = cfg.nmsThreshold;
         state.configRevision = cfg.revision;
         state.sourceChannel = sourceChannel;
         state.sourceRevision = sourceRevision;
-        state.modelsReady = modelsLoaded.load() &&
-                loadedTaskValue.load() == static_cast<int>(cfg.task);
         if (cfg.task == NpuTaskType::TrafficViolation) {
             state.violationConfig = violationConfigSnapshot();
             state.violationRegionsConfigured = state.violationConfig.regionsValid();
@@ -1491,40 +1568,75 @@ struct NpuInferenceWorker::Impl
         }
     }
 
-    bool ensureModels(NpuTaskType task)
+    bool loadPlateProfile(NpuPlateModelProfile profile,
+                          NpuPlatePostprocess postprocess,
+                          std::string* error)
     {
-        if (modelsLoaded.load() &&
-            loadedTaskValue.load() == static_cast<int>(task)) {
+        // 只接受profile对应目录中的显式模型对；禁止依赖旧的“按张量形状
+        // 自动猜后端”行为，避免界面显示legacy但实际运行candidate（或相反）。
+        const std::string plateDetPath = findPlateModelPath(profile,
+                                                            kPlateDetModel);
+        const std::string plateRecoPath = findPlateModelPath(profile,
+                                                              kPlateRecoModel);
+        bool ok = loadModel(plateDetPath, &plateDet, error) &&
+                  loadModel(plateRecoPath, &plateReco, error);
+        if (ok) {
+            plateBackend = validatePlateContract(plateDet, plateReco, error);
+            const PlateBackend expected =
+                    profile == NpuPlateModelProfile::Legacy
+                    ? PlateBackend::Legacy : PlateBackend::V291;
+            if (plateBackend != expected) {
+                if (error) {
+                    *error = std::string("plate profile contract mismatch: requested=") +
+                            npuPlateModelProfileKey(profile);
+                }
+                ok = false;
+            }
+        }
+        if (!ok) {
+            return false;
+        }
+
+        std::cerr << "[NPU] plate backend="
+                  << npuPlateModelProfileKey(profile)
+                  << " postprocess=" << npuPlatePostprocessKey(postprocess)
+                  << " preprocess=" << (v291ForceCpu ? "cpu" : "auto")
+                  << " det=" << plateDetPath
+                  << " reco=" << plateRecoPath << std::endl;
+        return true;
+    }
+
+    bool ensureModels(const NpuTaskConfig& cfg)
+    {
+        if (modelsMatchConfig(cfg)) {
             return true;
         }
 
+        const int previousTask = loadedTaskValue.load();
+        const int previousProfile = loadedPlateProfileValue.load();
+        modelSwitching.store(true);
+        if (cfg.task == NpuTaskType::PlateCascade) {
+            std::cerr << "[NPU] profile switch begin: active="
+                      << (previousProfile >= 0
+                          ? npuPlateModelProfileKey(
+                                static_cast<NpuPlateModelProfile>(previousProfile))
+                          : "none")
+                      << " requested="
+                      << npuPlateModelProfileKey(cfg.plateModelProfile)
+                      << std::endl;
+        }
+
         // 模型只由推理线程装载和释放。切换任务时释放旧任务模型，
-        // 避免行人和车牌三级模型长期同时占用NPU运行时与内存。
+        // 切换车牌profile时也不让两套模型同时常驻。
         releaseAllModels();
 
         std::string error;
         bool ok = false;
-        if (task == NpuTaskType::PlateCascade) {
-            const std::string plateDetPath = findModelPath(kPlateDetModel);
-            const std::string plateRecoPath = findModelPath(kPlateRecoModel);
-            ok = loadModel(plateDetPath, &plateDet, &error) &&
-                 loadModel(plateRecoPath, &plateReco, &error);
-            if (ok) {
-                plateBackend = validatePlateContract(plateDet, plateReco, &error);
-                ok = plateBackend != PlateBackend::Unknown;
-            }
-            if (ok) {
-                const char* backendName = plateBackend == PlateBackend::V291
-                        ? "v291_candidate" : "legacy";
-                const char* postName = platePostprocessMode == PlatePostprocessMode::Raw
-                        ? "raw" : "stable";
-                std::cerr << "[NPU] plate backend=" << backendName
-                          << " postprocess=" << postName
-                          << " preprocess=" << (v291ForceCpu ? "cpu" : "auto")
-                          << " det=" << plateDetPath
-                          << " reco=" << plateRecoPath << std::endl;
-            }
-        } else if (task == NpuTaskType::TrafficViolation) {
+        if (cfg.task == NpuTaskType::PlateCascade) {
+            ok = loadPlateProfile(cfg.plateModelProfile,
+                                  cfg.platePostprocess,
+                                  &error);
+        } else if (cfg.task == NpuTaskType::TrafficViolation) {
             // 违法检测第一轮只复用行人模型。交通灯状态由人工ROI内HSV判断，
             // 不再额外运行车辆模型，降低NPU占用并提高规则刷新率。
             const std::string pedPath = findModelPath(kPedModel);
@@ -1535,13 +1647,81 @@ struct NpuInferenceWorker::Impl
         }
 
         if (!ok) {
-            modelError = error;
+            const std::string switchError = error;
             releaseAllModels();
+
+            // 车牌profile切换失败时，自动重新装载切换前已验证的profile。
+            if (cfg.task == NpuTaskType::PlateCascade &&
+                previousTask == static_cast<int>(NpuTaskType::PlateCascade) &&
+                previousProfile >= 0) {
+                const NpuPlateModelProfile rollbackProfile =
+                        static_cast<NpuPlateModelProfile>(previousProfile);
+                std::string rollbackError;
+                if (loadPlateProfile(rollbackProfile,
+                                     cfg.platePostprocess,
+                                     &rollbackError)) {
+                    loadedTaskValue.store(
+                                static_cast<int>(NpuTaskType::PlateCascade));
+                    loadedPlateProfileValue.store(previousProfile);
+                    modelsLoaded.store(true);
+
+                    NpuTaskConfig reverted;
+                    {
+                        std::lock_guard<std::mutex> lk(configMutex);
+                        if (requestedConfig.revision == cfg.revision) {
+                            requestedConfig.plateModelProfile = rollbackProfile;
+                            ++requestedConfig.revision;
+                        }
+                        reverted = requestedConfig;
+                    }
+                    modelError = "profile switch failed; rolled back: " +
+                            switchError;
+                    modelSwitching.store(false);
+                    NpuFrameResult state;
+                    state.enabled = reverted.enabled;
+                    state.task = reverted.task;
+                    state.configRevision = reverted.revision;
+                    state.targetFps = reverted.targetFps;
+                    state.confidence = reverted.confidence;
+                    state.nmsThreshold = reverted.nmsThreshold;
+                    state.status = "profile rollback";
+                    state.error = modelError;
+                    fillModelState(&state, reverted);
+                    {
+                        std::lock_guard<std::mutex> lk(resultMutex);
+                        latest = std::move(state);
+                        resultHistory.clear();
+                    }
+                    std::cerr << "[NPU] profile switch failed: requested="
+                              << npuPlateModelProfileKey(cfg.plateModelProfile)
+                              << " reason=" << switchError << std::endl;
+                    std::cerr << "[NPU] profile rollback ready: active="
+                              << npuPlateModelProfileKey(rollbackProfile)
+                              << std::endl;
+                    return false;
+                }
+                error = switchError + "; rollback failed: " + rollbackError;
+            } else {
+                error = switchError;
+            }
+
+            modelError = error;
+            modelSwitching.store(false);
             return false;
         }
 
-        loadedTaskValue.store(static_cast<int>(task));
+        loadedTaskValue.store(static_cast<int>(cfg.task));
+        if (cfg.task == NpuTaskType::PlateCascade) {
+            loadedPlateProfileValue.store(
+                        static_cast<int>(cfg.plateModelProfile));
+            std::cerr << "[NPU] profile switch ready: active="
+                      << npuPlateModelProfileKey(cfg.plateModelProfile)
+                      << " postprocess="
+                      << npuPlatePostprocessKey(cfg.platePostprocess)
+                      << std::endl;
+        }
         modelsLoaded.store(true);
+        modelSwitching.store(false);
         fpsWindowMs = 0;
         fpsWindowCount = 0;
         currentFps = 0.0;
@@ -1633,8 +1813,7 @@ struct NpuInferenceWorker::Impl
         result.confidence = cfg.confidence;
         result.nmsThreshold = cfg.nmsThreshold;
         result.configRevision = cfg.revision;
-        result.modelsReady = modelsLoaded.load() &&
-                loadedTaskValue.load() == static_cast<int>(cfg.task);
+        fillModelState(&result, current);
         result.processed = processed.load();
         result.dropped = droppedFrames.load();
 
@@ -1678,12 +1857,23 @@ struct NpuInferenceWorker::Impl
         result.nmsThreshold = cfg.nmsThreshold;
         result.configRevision = cfg.revision;
 
-        if (!ensureModels(cfg.task)) {
+        if (!ensureModels(cfg)) {
             result.ready = false;
             result.error = modelError;
             result.status = "model error";
             publish(std::move(result), cfg);
             return;
+        }
+
+        if (cfg.task == NpuTaskType::PlateCascade &&
+            activePlateConfigRevision != cfg.revision) {
+            activePlateConfigRevision = cfg.revision;
+            std::cerr << "[NPU] plate config active: profile="
+                      << npuPlateModelProfileKey(cfg.plateModelProfile)
+                      << " postprocess="
+                      << npuPlatePostprocessKey(cfg.platePostprocess)
+                      << " preprocess=" << (v291ForceCpu ? "cpu" : "auto")
+                      << " revision=" << cfg.revision << std::endl;
         }
 
         const auto totalBegin = std::chrono::steady_clock::now();
@@ -1755,7 +1945,7 @@ struct NpuInferenceWorker::Impl
 
             // raw 模式完全旁路 OCR 缓存、轨迹 TTL、框 EMA 和文字投票，
             // 用于隔离评估模型及逐帧前后处理本身。
-            if (platePostprocessMode == PlatePostprocessMode::Raw) {
+            if (cfg.platePostprocess == NpuPlatePostprocess::Raw) {
                 const std::size_t rawCount = std::min(
                             kPlateMaxTracks,
                             std::min(crops.size(),
@@ -2110,8 +2300,7 @@ NpuFrameResult NpuInferenceWorker::latestResult() const
     result.configRevision = cfg.revision;
     result.sourceChannel = m_impl->inputSourceChannel.load();
     result.sourceRevision = m_impl->inputSourceRevision.load();
-    result.modelsReady = m_impl->modelsLoaded.load() &&
-                         m_impl->loadedTaskValue.load() == static_cast<int>(cfg.task);
+    m_impl->fillModelState(&result, cfg);
     result.processed = m_impl->processed.load();
     result.dropped = m_impl->droppedFrames.load();
     if (!result.enabled) {
