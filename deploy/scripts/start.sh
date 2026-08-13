@@ -32,8 +32,8 @@ MODEL_PROFILE="${NPU_MODEL_PROFILE:-legacy}"
 PLATE_POSTPROCESS="${PLATE_POSTPROCESS_MODE:-stable}"
 V291_PREPROCESS="${V291_PREPROCESS_MODE:-auto}"
 
-if [[ ! "$MODEL_PROFILE" =~ ^[A-Za-z0-9_.-]+$ ]]; then
-    echo "ERROR: invalid NPU_MODEL_PROFILE: $MODEL_PROFILE" >&2
+if [[ "$MODEL_PROFILE" != "legacy" && "$MODEL_PROFILE" != "v291_candidate" ]]; then
+    echo "ERROR: NPU_MODEL_PROFILE must be legacy or v291_candidate." >&2
     exit 2
 fi
 if [[ "$PLATE_POSTPROCESS" != "stable" && "$PLATE_POSTPROCESS" != "raw" ]]; then
@@ -105,6 +105,7 @@ RUN_ENV=(
     QT_QPA_PLATFORM="$QT_PLATFORM"
     QT_XCB_GL_INTEGRATION=none
     PTZ_NPU_MODEL_DIR="$MODEL_DIR"
+    PTZ_NPU_MODEL_ROOT="$APP_ROOT/models"
     PTZ_NPU_MODEL_PROFILE="$MODEL_PROFILE"
     PTZ_PLATE_POSTPROCESS="$PLATE_POSTPROCESS"
     PTZ_V291_PREPROCESS="$V291_PREPROCESS"

@@ -15,16 +15,10 @@ DEVICE_NODE="${PCIE_DRIVER_DEVICE:-/dev/pango_pci_driver}"
 FAIL=0
 MODEL_PROFILE="${NPU_MODEL_PROFILE:-legacy}"
 
-if [[ ! "$MODEL_PROFILE" =~ ^[A-Za-z0-9_.-]+$ ]]; then
-    echo "[FAIL] invalid NPU_MODEL_PROFILE: $MODEL_PROFILE" >&2
+if [[ "$MODEL_PROFILE" != "legacy" && "$MODEL_PROFILE" != "v291_candidate" ]]; then
+    echo "[FAIL] NPU_MODEL_PROFILE must be legacy or v291_candidate." >&2
     exit 2
 fi
-if [[ "$MODEL_PROFILE" == "legacy" ]]; then
-    MODEL_DIR="$APP_ROOT/models"
-else
-    MODEL_DIR="$APP_ROOT/models/$MODEL_PROFILE"
-fi
-
 ok() {
     printf '[OK] %s\n' "$*"
 }
@@ -90,22 +84,34 @@ if [[ -x "$BIN" ]]; then
     fi
 fi
 
-for model in plate_det.rknn plate_reco.rknn; do
-    if [[ -s "$MODEL_DIR/$model" ]]; then
-        ok "model[$MODEL_PROFILE]: $model"
-    else
-        err "missing model[$MODEL_PROFILE]: $MODEL_DIR/$model"
-    fi
-done
+check_plate_profile() {
+    local profile="$1"
+    local model_dir="$2"
+    local model
 
-if [[ -f "$MODEL_DIR/SHA256SUMS" ]] && (
-    cd "$MODEL_DIR"
-    sha256sum -c SHA256SUMS >/dev/null
-); then
-    ok "model[$MODEL_PROFILE] SHA256"
-else
-    err "model[$MODEL_PROFILE] SHA256 mismatch or missing SHA256SUMS"
-fi
+    for model in plate_det.rknn plate_reco.rknn; do
+        if [[ -s "$model_dir/$model" ]]; then
+            ok "model[$profile]: $model"
+        else
+            err "missing model[$profile]: $model_dir/$model"
+        fi
+    done
+
+    if [[ -f "$model_dir/SHA256SUMS" ]] && (
+        cd "$model_dir"
+        sha256sum -c SHA256SUMS >/dev/null
+    ); then
+        ok "model[$profile] SHA256"
+    else
+        err "model[$profile] SHA256 mismatch or missing SHA256SUMS"
+    fi
+}
+
+# Qt界面支持运行时A/B切换，因此启动前必须同时验证两套车牌模型，
+# 不能只验证runtime.env里默认选中的profile。
+check_plate_profile "legacy" "$APP_ROOT/models"
+check_plate_profile "v291_candidate" "$APP_ROOT/models/v291_candidate"
+ok "startup model profile: $MODEL_PROFILE"
 
 # 行人任务仍使用已验证的 legacy 模型，候选 profile 只替换车牌链路。
 if [[ -s "$APP_ROOT/models/ped_det.rknn" ]]; then

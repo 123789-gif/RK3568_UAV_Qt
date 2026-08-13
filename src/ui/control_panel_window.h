@@ -229,6 +229,8 @@ private:
     QLabel *m_ethernetCurrentStateLabel = nullptr;
     QLabel *m_ethernetApplyStatusLabel = nullptr;
     QButtonGroup *m_npuTaskButtonGroup = nullptr;
+    QButtonGroup *m_plateModelButtonGroup = nullptr;
+    QButtonGroup *m_platePostprocessButtonGroup = nullptr;
     QPushButton *m_btnAiApply = nullptr;
     QPushButton *m_btnAiStop = nullptr;
     QSpinBox *m_npuFpsSpin = nullptr;
@@ -326,6 +328,12 @@ private:
     QString m_aiStatus = "off";
     NpuTaskType m_aiTask = NpuTaskType::Pedestrian;
     NpuTaskType m_aiRequestedTask = NpuTaskType::Pedestrian;
+    NpuPlateModelProfile m_aiRequestedPlateProfile = NpuPlateModelProfile::V291Candidate;
+    NpuPlateModelProfile m_aiActivePlateProfile = NpuPlateModelProfile::V291Candidate;
+    NpuPlatePostprocess m_aiRequestedPlatePostprocess = NpuPlatePostprocess::Stable;
+    bool m_aiActivePlateProfileValid = false;
+    bool m_aiPlateOptionsDirty = false;
+    std::uint64_t m_aiRequestedConfigRevision = 0;
     bool m_aiTaskSwitchPending = false;
     double m_aiLastMs = 0.0;
     double m_aiPreMs = 0.0;

@@ -1,6 +1,22 @@
 #include "ui/control_panel_window.h"
 #include "ui/control_panel_window_internal.h"
 
+namespace {
+
+QString plateProfileDisplayName(NpuPlateModelProfile profile)
+{
+    return profile == NpuPlateModelProfile::Legacy
+            ? QStringLiteral("旧版基线") : QStringLiteral("v2.9.1候选");
+}
+
+QString platePostprocessDisplayName(NpuPlatePostprocess mode)
+{
+    return mode == NpuPlatePostprocess::Raw
+            ? QStringLiteral("原始结果") : QStringLiteral("稳定结果");
+}
+
+}  // namespace
+
 QWidget *ControlPanelWindow::createAiPage()
 {
     QWidget *page = new QWidget(this);
@@ -19,7 +35,7 @@ QWidget *ControlPanelWindow::createAiPage()
     QGridLayout *grid = new QGridLayout(configGroup);
     grid->setContentsMargins(12, 18, 12, 10);
     grid->setHorizontalSpacing(8);
-    grid->setVerticalSpacing(7);
+    grid->setVerticalSpacing(4);
     grid->setColumnMinimumWidth(0, 94);
     grid->setColumnStretch(0, 0);
     grid->setColumnStretch(1, 1);
@@ -47,6 +63,70 @@ QWidget *ControlPanelWindow::createAiPage()
 
     createTaskButton(NpuTaskType::PlateCascade);
     createTaskButton(NpuTaskType::Pedestrian);
+
+    auto createChoiceRow = [this, configGroup](QButtonGroup **groupOut,
+                                                const QList<QPair<QString, int>> &choices,
+                                                const std::function<void(int)> &selected) {
+        QButtonGroup *group = new QButtonGroup(this);
+        group->setExclusive(true);
+        QWidget *widget = new QWidget(configGroup);
+        QHBoxLayout *layout = new QHBoxLayout(widget);
+        layout->setContentsMargins(0, 0, 0, 0);
+        layout->setSpacing(6);
+        for (const auto &choice : choices) {
+            QPushButton *button = new QPushButton(choice.first, widget);
+            button->setObjectName(QStringLiteral("aiChoiceButton"));
+            button->setCheckable(true);
+            button->setMinimumHeight(42);
+            button->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+            group->addButton(button, choice.second);
+            layout->addWidget(button, 1);
+            connect(button, &QPushButton::clicked, this,
+                    [selected, choice]() { selected(choice.second); });
+        }
+        *groupOut = group;
+        return widget;
+    };
+
+    QWidget *modelWidget = createChoiceRow(
+                &m_plateModelButtonGroup,
+                {{QStringLiteral("旧版基线"), static_cast<int>(NpuPlateModelProfile::Legacy)},
+                 {QStringLiteral("v2.9.1候选"), static_cast<int>(NpuPlateModelProfile::V291Candidate)}},
+                [this](int value) {
+        if (m_aiTaskSwitchPending) return;
+        m_aiRequestedPlateProfile = static_cast<NpuPlateModelProfile>(value);
+        m_aiPlateOptionsDirty = true;
+        clearAiCurrentResult();
+        if (m_aiConfigSummaryLabel) {
+            m_aiConfigSummaryLabel->setText(
+                        QStringLiteral("待应用：%1｜%2｜%3")
+                        .arg(aiTaskDisplayName(m_aiRequestedTask))
+                        .arg(plateProfileDisplayName(m_aiRequestedPlateProfile))
+                        .arg(platePostprocessDisplayName(
+                                 m_aiRequestedPlatePostprocess)));
+        }
+        updateAiTaskButtons();
+    });
+
+    QWidget *postprocessWidget = createChoiceRow(
+                &m_platePostprocessButtonGroup,
+                {{QStringLiteral("原始结果"), static_cast<int>(NpuPlatePostprocess::Raw)},
+                 {QStringLiteral("稳定结果"), static_cast<int>(NpuPlatePostprocess::Stable)}},
+                [this](int value) {
+        if (m_aiTaskSwitchPending) return;
+        m_aiRequestedPlatePostprocess = static_cast<NpuPlatePostprocess>(value);
+        m_aiPlateOptionsDirty = true;
+        clearAiCurrentResult();
+        if (m_aiConfigSummaryLabel) {
+            m_aiConfigSummaryLabel->setText(
+                        QStringLiteral("待应用：%1｜%2｜%3")
+                        .arg(aiTaskDisplayName(m_aiRequestedTask))
+                        .arg(plateProfileDisplayName(m_aiRequestedPlateProfile))
+                        .arg(platePostprocessDisplayName(
+                                 m_aiRequestedPlatePostprocess)));
+        }
+        updateAiTaskButtons();
+    });
 
     QLabel *sourceValue = new QLabel(
                 QStringLiteral("视频显示页选定输入：总览全图或CH1~CH9"), configGroup);
@@ -135,31 +215,35 @@ QWidget *ControlPanelWindow::createAiPage()
     grid->addWidget(taskWidget, 0, 1);
     grid->addWidget(new QLabel(QStringLiteral("输入源"), configGroup), 1, 0);
     grid->addWidget(sourceValue, 1, 1);
+    grid->addWidget(new QLabel(QStringLiteral("车牌模型"), configGroup), 2, 0);
+    grid->addWidget(modelWidget, 2, 1);
+    grid->addWidget(new QLabel(QStringLiteral("后处理"), configGroup), 3, 0);
+    grid->addWidget(postprocessWidget, 3, 1);
 
-    addTouchAdjustRow(2,
+    addTouchAdjustRow(4,
                       QStringLiteral("目标推理帧率"),
                       m_npuFpsSpin,
                       [this]() { m_npuFpsSpin->stepDown(); },
                       [this]() { m_npuFpsSpin->stepUp(); });
-    addTouchAdjustRow(3,
+    addTouchAdjustRow(5,
                       QStringLiteral("检测置信度"),
                       m_confSpin,
                       [this]() { m_confSpin->stepDown(); },
                       [this]() { m_confSpin->stepUp(); });
-    addTouchAdjustRow(4,
+    addTouchAdjustRow(6,
                       QStringLiteral("NMS阈值"),
                       m_nmsSpin,
                       [this]() { m_nmsSpin->stepDown(); },
                       [this]() { m_nmsSpin->stepUp(); });
 
-    grid->addWidget(m_btnAiApply, 5, 0, 1, 2);
-    grid->addWidget(m_btnAiStop, 6, 0, 1, 2);
+    grid->addWidget(m_btnAiApply, 7, 0, 1, 2);
+    grid->addWidget(m_btnAiStop, 8, 0, 1, 2);
 
     m_aiConfigSummaryLabel = new QLabel(configGroup);
     m_aiConfigSummaryLabel->setWordWrap(true);
     m_aiConfigSummaryLabel->setObjectName(QStringLiteral("ptzState"));
     m_aiConfigSummaryLabel->setMaximumHeight(52);
-    grid->addWidget(m_aiConfigSummaryLabel, 7, 0, 1, 2);
+    grid->addWidget(m_aiConfigSummaryLabel, 9, 0, 1, 2);
 
     QLabel *touchHint = new QLabel(
                 QStringLiteral("先选择任务和参数，再点击“应用参数并推理”；"
@@ -167,7 +251,7 @@ QWidget *ControlPanelWindow::createAiPage()
                 configGroup);
     touchHint->setObjectName(QStringLiteral("navHint"));
     touchHint->setWordWrap(true);
-    grid->addWidget(touchHint, 8, 0, 1, 2);
+    grid->addWidget(touchHint, 10, 0, 1, 2);
 
     leftLayout->addWidget(configGroup);
     leftLayout->addStretch(1);
@@ -179,7 +263,7 @@ QWidget *ControlPanelWindow::createAiPage()
     rightLayout->setSpacing(8);
 
     QGroupBox *runtimeGroup = new QGroupBox(QStringLiteral("运行状态"), rightPanel);
-    runtimeGroup->setMaximumHeight(196);
+    runtimeGroup->setMaximumHeight(220);
     QVBoxLayout *runtimeLayout = new QVBoxLayout(runtimeGroup);
     runtimeLayout->setContentsMargins(10, 18, 10, 8);
     m_aiRuntimeLabel = new QLabel(QStringLiteral("AI未启用"), runtimeGroup);
@@ -226,24 +310,32 @@ void ControlPanelWindow::onApplyAiConfigClicked()
         stopViolationDetection(false);
     }
 
-    NpuTaskConfig config;
+    const NpuTaskConfig previous = m_display->npuConfig();
+    NpuTaskConfig config = previous;
     config.enabled = true;
     config.task = m_aiRequestedTask;
+    config.plateModelProfile = m_aiRequestedPlateProfile;
+    config.platePostprocess = m_aiRequestedPlatePostprocess;
     config.targetFps = m_npuFpsSpin->value();
     config.confidence = static_cast<float>(m_confSpin->value());
     config.nmsThreshold = static_cast<float>(m_nmsSpin->value());
     config.resultHistoryDepth = 50;
     config = sanitizeNpuTaskConfig(config);
 
-    const bool taskChanged = !m_aiEnabled || config.task != m_aiTask;
-    m_aiTaskSwitchPending = taskChanged;
+    const bool executionChanged = !m_aiEnabled ||
+            config.task != previous.task ||
+            config.plateModelProfile != previous.plateModelProfile ||
+            config.platePostprocess != previous.platePostprocess;
+    m_aiTaskSwitchPending = executionChanged;
 
     m_display->setNpuConfig(config);
+    m_aiRequestedConfigRevision = m_display->npuConfig().revision;
+    m_aiPlateOptionsDirty = false;
     saveAiSettings(config);
 
     m_aiEnabled = true;
     m_aiReady = false;
-    m_aiStatus = taskChanged
+    m_aiStatus = executionChanged
             ? QStringLiteral("switching")
             : QStringLiteral("pending");
 
@@ -252,8 +344,10 @@ void ControlPanelWindow::onApplyAiConfigClicked()
 
     if (m_aiConfigSummaryLabel) {
         m_aiConfigSummaryLabel->setText(
-                    QStringLiteral("正在应用：%1｜%2 fps｜conf=%3｜NMS=%4")
+                    QStringLiteral("正在应用：%1｜%2｜%3｜%4 fps｜conf=%5｜NMS=%6")
                     .arg(aiTaskDisplayName(config.task))
+                    .arg(plateProfileDisplayName(config.plateModelProfile))
+                    .arg(platePostprocessDisplayName(config.platePostprocess))
                     .arg(config.targetFps)
                     .arg(config.confidence, 0, 'f', 2)
                     .arg(config.nmsThreshold, 0, 'f', 2));
@@ -277,9 +371,11 @@ void ControlPanelWindow::onStopAiInferenceClicked()
         stopViolationDetection(false);
     }
 
-    NpuTaskConfig config;
+    NpuTaskConfig config = m_display->npuConfig();
     config.enabled = false;
     config.task = m_aiRequestedTask;
+    config.plateModelProfile = m_aiRequestedPlateProfile;
+    config.platePostprocess = m_aiRequestedPlatePostprocess;
     config.targetFps = m_npuFpsSpin->value();
     config.confidence = static_cast<float>(m_confSpin->value());
     config.nmsThreshold = static_cast<float>(m_nmsSpin->value());
@@ -287,6 +383,8 @@ void ControlPanelWindow::onStopAiInferenceClicked()
     config = sanitizeNpuTaskConfig(config);
 
     m_display->setNpuConfig(config);
+    m_aiRequestedConfigRevision = m_display->npuConfig().revision;
+    m_aiPlateOptionsDirty = false;
     saveAiSettings(config);
 
     m_aiEnabled = false;
@@ -305,8 +403,10 @@ void ControlPanelWindow::onStopAiInferenceClicked()
 
     if (m_aiConfigSummaryLabel) {
         m_aiConfigSummaryLabel->setText(
-                    QStringLiteral("推理已关闭｜待执行：%1｜%2 fps｜conf=%3｜NMS=%4")
+                    QStringLiteral("推理已关闭｜待执行：%1｜%2｜%3｜%4 fps｜conf=%5｜NMS=%6")
                     .arg(aiTaskDisplayName(config.task))
+                    .arg(plateProfileDisplayName(config.plateModelProfile))
+                    .arg(platePostprocessDisplayName(config.platePostprocess))
                     .arg(config.targetFps)
                     .arg(config.confidence, 0, 'f', 2)
                     .arg(config.nmsThreshold, 0, 'f', 2));
@@ -338,12 +438,29 @@ void ControlPanelWindow::updateAiPanel(const NpuFrameResult &result)
     m_aiPreMs = result.preMs;
     m_aiProcessed = result.processed;
     m_aiDropped = result.dropped;
+    m_aiActivePlateProfileValid = result.activePlateModelProfileValid;
+    if (result.activePlateModelProfileValid) {
+        m_aiActivePlateProfile = result.activePlateModelProfile;
+    }
+
+    // UI没有未应用的本地选择时，以后台已接受（包括失败回滚后）的配置为准。
+    if (!m_aiPlateOptionsDirty &&
+        result.configRevision >= m_aiRequestedConfigRevision) {
+        m_aiRequestedPlateProfile = result.requestedPlateModelProfile;
+        m_aiRequestedPlatePostprocess = result.platePostprocess;
+        m_aiRequestedConfigRevision = result.configRevision;
+    }
 
     if (m_aiTaskSwitchPending &&
-        (result.task == m_aiRequestedTask ||
-         !result.enabled ||
-         !result.error.empty())) {
-        // 目标配置已进入结果流，或后台明确返回失败，解除按钮锁定。
+        result.configRevision >= m_aiRequestedConfigRevision &&
+        (!result.enabled ||
+         !result.error.empty() ||
+         (result.ready && result.modelsReady && !result.modelSwitching &&
+          result.task == m_aiRequestedTask &&
+          (result.task != NpuTaskType::PlateCascade ||
+           (result.activePlateModelProfileValid &&
+            result.activePlateModelProfile == m_aiRequestedPlateProfile))))) {
+        // 第一帧已经由目标配置处理，或后台明确返回失败/回滚，解除按钮锁定。
         m_aiTaskSwitchPending = false;
     }
 
@@ -353,7 +470,7 @@ void ControlPanelWindow::updateAiPanel(const NpuFrameResult &result)
         m_aiStatus = QStringLiteral("off");
     } else if (!result.error.empty()) {
         m_aiStatus = QString::fromStdString(result.error);
-    } else if (m_aiTaskSwitchPending) {
+    } else if (m_aiTaskSwitchPending || result.modelSwitching) {
         m_aiStatus = QStringLiteral("switching");
     } else if (result.ready) {
         m_aiStatus = QStringLiteral("ready");
@@ -367,15 +484,21 @@ void ControlPanelWindow::updateAiPanel(const NpuFrameResult &result)
         const int resultCount = m_aiPlateCount + m_aiPedestrianCount + m_aiVehicleCount;
         m_aiRuntimeLabel->setText(
                     QStringLiteral("状态：%1｜输入：%2｜任务：%3\n"
-                                   "实际FPS：%4 / 目标%5｜总耗时：%6 ms｜预处理：%7 ms\n"
-                                   "RKNN运行：%8 ms｜后处理：%9 ms｜runs=%10\n"
-                                   "本帧目标：%11｜已处理：%12｜覆盖丢帧：%13\n"
-                                   "最近错误：%14")
+                                   "模型：请求%4｜实际%5｜后处理%6\n"
+                                   "实际FPS：%7 / 目标%8｜总耗时：%9 ms｜预处理：%10 ms\n"
+                                   "RKNN运行：%11 ms｜后处理：%12 ms｜runs=%13\n"
+                                   "本帧目标：%14｜已处理：%15｜覆盖丢帧：%16\n"
+                                   "最近错误：%17")
                     .arg(m_aiStatus)
                     .arg(isSingleChannelRoute(route)
                          ? QStringLiteral("CH%1").arg(videoRouteChannel(route))
                          : QStringLiteral("总览全图"))
                     .arg(aiTaskDisplayName(result.task))
+                    .arg(plateProfileDisplayName(result.requestedPlateModelProfile))
+                    .arg(result.activePlateModelProfileValid
+                         ? plateProfileDisplayName(result.activePlateModelProfile)
+                         : QStringLiteral("未加载"))
+                    .arg(platePostprocessDisplayName(result.platePostprocess))
                     .arg(result.fps, 0, 'f', 1)
                     .arg(result.targetFps)
                     .arg(result.lastMs, 0, 'f', 1)
@@ -433,6 +556,11 @@ void ControlPanelWindow::updateAiCurrentResult(const NpuFrameResult &result)
     lines << QStringLiteral("当前任务：%1").arg(aiTaskDisplayName(result.task));
 
     if (result.task == NpuTaskType::PlateCascade) {
+        lines << QStringLiteral("模型：%1｜后处理：%2")
+                 .arg(result.activePlateModelProfileValid
+                      ? plateProfileDisplayName(result.activePlateModelProfile)
+                      : QStringLiteral("未加载"))
+                 .arg(platePostprocessDisplayName(result.platePostprocess));
         if (result.plates.empty()) {
             lines << QStringLiteral("本帧未识别到车牌");
         } else {
@@ -505,8 +633,10 @@ void ControlPanelWindow::requestAiTask(NpuTaskType task)
 
     if (m_aiConfigSummaryLabel) {
         m_aiConfigSummaryLabel->setText(
-                    QStringLiteral("待应用：%1｜%2 fps｜conf=%3｜NMS=%4")
+                    QStringLiteral("待应用：%1｜%2｜%3｜%4 fps｜conf=%5｜NMS=%6")
                     .arg(aiTaskDisplayName(task))
+                    .arg(plateProfileDisplayName(m_aiRequestedPlateProfile))
+                    .arg(platePostprocessDisplayName(m_aiRequestedPlatePostprocess))
                     .arg(m_npuFpsSpin ? m_npuFpsSpin->value()
                                      : NPU_TARGET_FPS_DEFAULT)
                     .arg(m_confSpin ? m_confSpin->value() : 0.50, 0, 'f', 2)
@@ -548,10 +678,28 @@ void ControlPanelWindow::updateAiTaskButtons()
     if (m_btnAiStop) {
         m_btnAiStop->setEnabled(m_aiEnabled || m_aiTaskSwitchPending);
     }
+
+    if (m_plateModelButtonGroup) {
+        for (QAbstractButton *button : m_plateModelButtonGroup->buttons()) {
+            if (!button) continue;
+            button->setChecked(m_plateModelButtonGroup->id(button) ==
+                               static_cast<int>(m_aiRequestedPlateProfile));
+            button->setEnabled(!m_aiTaskSwitchPending);
+        }
+    }
+    if (m_platePostprocessButtonGroup) {
+        for (QAbstractButton *button : m_platePostprocessButtonGroup->buttons()) {
+            if (!button) continue;
+            button->setChecked(m_platePostprocessButtonGroup->id(button) ==
+                               static_cast<int>(m_aiRequestedPlatePostprocess));
+            button->setEnabled(!m_aiTaskSwitchPending);
+        }
+    }
 }
 void ControlPanelWindow::loadAiSettings()
 {
-    if (!m_npuTaskButtonGroup || !m_npuFpsSpin ||
+    if (!m_npuTaskButtonGroup || !m_plateModelButtonGroup ||
+        !m_platePostprocessButtonGroup || !m_npuFpsSpin ||
         !m_confSpin || !m_nmsSpin) {
         return;
     }
@@ -575,6 +723,14 @@ void ControlPanelWindow::loadAiSettings()
     m_aiEnabled = false;
     m_aiReady = false;
     m_aiTaskSwitchPending = false;
+    const NpuTaskConfig runtimeConfig = m_display
+            ? m_display->npuConfig() : NpuTaskConfig();
+    m_aiRequestedPlateProfile = runtimeConfig.plateModelProfile;
+    m_aiActivePlateProfile = runtimeConfig.plateModelProfile;
+    m_aiRequestedPlatePostprocess = runtimeConfig.platePostprocess;
+    m_aiActivePlateProfileValid = false;
+    m_aiPlateOptionsDirty = false;
+    m_aiRequestedConfigRevision = runtimeConfig.revision;
 
     m_npuFpsSpin->setValue(qBound(NPU_TARGET_FPS_MIN,
                                   fps,
@@ -584,8 +740,10 @@ void ControlPanelWindow::loadAiSettings()
 
     if (m_aiConfigSummaryLabel) {
         m_aiConfigSummaryLabel->setText(
-                    QStringLiteral("推理未启动｜待执行：%1｜%2 fps｜conf=%3｜NMS=%4")
+                    QStringLiteral("推理未启动｜待执行：%1｜%2｜%3｜%4 fps｜conf=%5｜NMS=%6")
                     .arg(aiTaskDisplayName(savedTask))
+                    .arg(plateProfileDisplayName(m_aiRequestedPlateProfile))
+                    .arg(platePostprocessDisplayName(m_aiRequestedPlatePostprocess))
                     .arg(m_npuFpsSpin->value())
                     .arg(m_confSpin->value(), 0, 'f', 2)
                     .arg(m_nmsSpin->value(), 0, 'f', 2));
