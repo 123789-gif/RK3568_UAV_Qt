@@ -14,9 +14,18 @@ MODULE_NAME="${PCIE_DRIVER_MODULE:-pango_pci_driver}"
 DEVICE_NODE="${PCIE_DRIVER_DEVICE:-/dev/pango_pci_driver}"
 FAIL=0
 MODEL_PROFILE="${NPU_MODEL_PROFILE:-legacy}"
+PLATE_CROP_SOURCE="${PLATE_CROP_SOURCE:-detector}"
 
 if [[ "$MODEL_PROFILE" != "legacy" && "$MODEL_PROFILE" != "v291_candidate" ]]; then
     echo "[FAIL] NPU_MODEL_PROFILE must be legacy or v291_candidate." >&2
+    exit 2
+fi
+if [[ "$PLATE_CROP_SOURCE" != "detector" && "$PLATE_CROP_SOURCE" != "original" ]]; then
+    echo "[FAIL] PLATE_CROP_SOURCE must be detector or original." >&2
+    exit 2
+fi
+if [[ "$PLATE_CROP_SOURCE" == "original" && "$MODEL_PROFILE" != "v291_candidate" ]]; then
+    echo "[FAIL] PLATE_CROP_SOURCE=original requires NPU_MODEL_PROFILE=v291_candidate." >&2
     exit 2
 fi
 ok() {
@@ -112,6 +121,7 @@ check_plate_profile() {
 check_plate_profile "legacy" "$APP_ROOT/models"
 check_plate_profile "v291_candidate" "$APP_ROOT/models/v291_candidate"
 ok "startup model profile: $MODEL_PROFILE"
+ok "startup plate crop source: $PLATE_CROP_SOURCE"
 
 # 行人任务仍使用已验证的 legacy 模型，候选 profile 只替换车牌链路。
 if [[ -s "$APP_ROOT/models/ped_det.rknn" ]]; then

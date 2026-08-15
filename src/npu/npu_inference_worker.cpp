@@ -430,7 +430,7 @@ static NpuPlateModelProfile plateModelProfileFromEnvironment()
 {
     const char* value = std::getenv("PTZ_NPU_MODEL_PROFILE");
     if (!value) {
-        return NpuPlateModelProfile::V291Candidate;
+        return NpuPlateModelProfile::Legacy;
     }
     std::string normalized(value);
     for (char& ch : normalized) {
@@ -1944,6 +1944,8 @@ struct NpuInferenceWorker::Impl
                       << " postprocess="
                       << npuPlatePostprocessKey(cfg.platePostprocess)
                       << " preprocess=" << (v291ForceCpu ? "cpu" : "auto")
+                      << " crop_source="
+                      << npuPlateCropSourceKey(cfg.plateCropSource)
                       << " revision=" << cfg.revision << std::endl;
         }
 
@@ -2280,6 +2282,27 @@ struct NpuInferenceWorker::Impl
                                         &result.pedestrians,
                                         &result);
             }
+        }
+
+        const int processedBefore = processed.load();
+        const int originalLogInterval = std::max(1, cfg.targetFps * 5);
+        if (cfg.task == NpuTaskType::PlateCascade &&
+            cfg.plateCropSource == NpuPlateCropSource::OriginalSource &&
+            processedBefore % originalLogInterval == 0) {
+            std::cerr << "[NPU] original ROI source="
+                      << result.originalSourceWidth << "x"
+                      << result.originalSourceHeight
+                      << " actual="
+                      << npuPlateCropSourceKey(result.actualPlateCropSource)
+                      << " copy_ms=" << result.originalFrameCopyMs
+                      << " convert_ms=" << result.originalRoiConvertMs
+                      << " warp_ms=" << result.originalRoiWarpMs
+                      << " crops=" << result.originalRoiCropCount
+                      << " fallback=" << result.originalRoiFallbackCount;
+            if (!result.originalRoiFallbackReason.empty()) {
+                std::cerr << " reason=" << result.originalRoiFallbackReason;
+            }
+            std::cerr << std::endl;
         }
 
         processed.fetch_add(1);

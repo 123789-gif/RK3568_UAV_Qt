@@ -134,4 +134,5 @@ DISTFILES += \
     docs/DEPLOY.md \
     docs/ARCHITECTURE.md \
     docs/UI_REFACTOR.md \
+    docs/PLATE_ORIGINAL_ROI_EXPERIMENT.md \
     docs/SOURCE_VALIDATION_20260725.txt

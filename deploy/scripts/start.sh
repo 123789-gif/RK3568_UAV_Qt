@@ -31,6 +31,7 @@ TERM_VALUE="${TERM:-xterm-256color}"
 MODEL_PROFILE="${NPU_MODEL_PROFILE:-legacy}"
 PLATE_POSTPROCESS="${PLATE_POSTPROCESS_MODE:-stable}"
 V291_PREPROCESS="${V291_PREPROCESS_MODE:-auto}"
+PLATE_CROP_SOURCE="${PLATE_CROP_SOURCE:-detector}"
 
 if [[ "$MODEL_PROFILE" != "legacy" && "$MODEL_PROFILE" != "v291_candidate" ]]; then
     echo "ERROR: NPU_MODEL_PROFILE must be legacy or v291_candidate." >&2
@@ -42,6 +43,14 @@ if [[ "$PLATE_POSTPROCESS" != "stable" && "$PLATE_POSTPROCESS" != "raw" ]]; then
 fi
 if [[ "$V291_PREPROCESS" != "auto" && "$V291_PREPROCESS" != "cpu" ]]; then
     echo "ERROR: V291_PREPROCESS_MODE must be auto or cpu." >&2
+    exit 2
+fi
+if [[ "$PLATE_CROP_SOURCE" != "detector" && "$PLATE_CROP_SOURCE" != "original" ]]; then
+    echo "ERROR: PLATE_CROP_SOURCE must be detector or original." >&2
+    exit 2
+fi
+if [[ "$PLATE_CROP_SOURCE" == "original" && "$MODEL_PROFILE" != "v291_candidate" ]]; then
+    echo "ERROR: PLATE_CROP_SOURCE=original requires NPU_MODEL_PROFILE=v291_candidate." >&2
     exit 2
 fi
 
@@ -109,6 +118,7 @@ RUN_ENV=(
     PTZ_NPU_MODEL_PROFILE="$MODEL_PROFILE"
     PTZ_PLATE_POSTPROCESS="$PLATE_POSTPROCESS"
     PTZ_V291_PREPROCESS="$V291_PREPROCESS"
+    PTZ_PLATE_CROP_SOURCE="$PLATE_CROP_SOURCE"
 )
 
 cd "$APP_ROOT"
@@ -116,6 +126,7 @@ cd "$APP_ROOT"
 echo "NPU model profile: $MODEL_PROFILE"
 echo "Plate postprocess: $PLATE_POSTPROCESS"
 echo "V291 preprocess: $V291_PREPROCESS"
+echo "Plate crop source: $PLATE_CROP_SOURCE"
 
 if [[ $FOREGROUND -eq 1 ]]; then
     echo "Starting in foreground; log: $LOG_FILE"
