@@ -78,41 +78,29 @@ void applyPlateUiMode(PlateUiMode mode,
 QWidget *ControlPanelWindow::createAiPage()
 {
     QWidget *page = new QWidget(this);
-    QHBoxLayout *pageLayout = new QHBoxLayout(page);
+    QVBoxLayout *pageLayout = new QVBoxLayout(page);
     pageLayout->setContentsMargins(6, 4, 6, 4);
-    pageLayout->setSpacing(10);
+    pageLayout->setSpacing(8);
 
     // 主页面只呈现系统核心的车牌检测识别任务。行人/违法后端继续保留，
     // 由独立违法检测页使用，不在这里形成并列主任务。
-    QWidget *leftPanel = new QWidget(page);
-    leftPanel->setFixedWidth(455);
-    QVBoxLayout *leftLayout = new QVBoxLayout(leftPanel);
-    leftLayout->setContentsMargins(0, 0, 0, 0);
-    leftLayout->setSpacing(8);
-
-    QGroupBox *configGroup = new QGroupBox(QStringLiteral("车牌识别模式与参数"), leftPanel);
-    QGridLayout *grid = new QGridLayout(configGroup);
-    grid->setContentsMargins(12, 18, 12, 10);
-    grid->setHorizontalSpacing(8);
-    grid->setVerticalSpacing(4);
-    grid->setColumnMinimumWidth(0, 94);
-    grid->setColumnStretch(0, 0);
-    grid->setColumnStretch(1, 1);
-
-    auto createChoiceRow = [this, configGroup](QButtonGroup **groupOut,
-                                                const QList<QPair<QString, int>> &choices,
-                                                const std::function<void(int)> &selected) {
+    auto createChoiceRow = [this](QWidget *parent,
+                                  QButtonGroup **groupOut,
+                                  const QList<QPair<QString, int>> &choices,
+                                  const QString &objectName,
+                                  int minimumHeight,
+                                  const std::function<void(int)> &selected) {
         QButtonGroup *group = new QButtonGroup(this);
         group->setExclusive(true);
-        QWidget *widget = new QWidget(configGroup);
+        QWidget *widget = new QWidget(parent);
         QHBoxLayout *layout = new QHBoxLayout(widget);
         layout->setContentsMargins(0, 0, 0, 0);
-        layout->setSpacing(6);
+        layout->setSpacing(8);
         for (const auto &choice : choices) {
             QPushButton *button = new QPushButton(choice.first, widget);
-            button->setObjectName(QStringLiteral("aiChoiceButton"));
+            button->setObjectName(objectName);
             button->setCheckable(true);
-            button->setMinimumHeight(46);
+            button->setMinimumHeight(minimumHeight);
             button->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
             group->addButton(button, choice.second);
             layout->addWidget(button, 1);
@@ -123,11 +111,35 @@ QWidget *ControlPanelWindow::createAiPage()
         return widget;
     };
 
+    QGroupBox *modeGroup = new QGroupBox(QStringLiteral("车牌识别模式"), page);
+    QVBoxLayout *modeLayout = new QVBoxLayout(modeGroup);
+    modeLayout->setContentsMargins(12, 18, 12, 10);
+    modeLayout->setSpacing(7);
+
+    QWidget *sourceWidget = new QWidget(modeGroup);
+    QHBoxLayout *sourceLayout = new QHBoxLayout(sourceWidget);
+    sourceLayout->setContentsMargins(0, 0, 0, 0);
+    sourceLayout->setSpacing(10);
+    QLabel *sourceTitle = new QLabel(QStringLiteral("当前输入源"), sourceWidget);
+    sourceTitle->setMinimumWidth(100);
+    QLabel *sourceValue = new QLabel(
+                QStringLiteral("视频显示页选定输入：总览全图或 CH1~CH9"),
+                sourceWidget);
+    sourceValue->setObjectName(QStringLiteral("ptzState"));
+    sourceValue->setMinimumHeight(34);
+    sourceValue->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    sourceLayout->addWidget(sourceTitle);
+    sourceLayout->addWidget(sourceValue, 1);
+    modeLayout->addWidget(sourceWidget);
+
     QWidget *modeWidget = createChoiceRow(
+                modeGroup,
                 &m_plateModeButtonGroup,
                 {{QStringLiteral("标准模式\nLegacy+配套后处理"), PlateUiStandard},
                  {QStringLiteral("规则模式\nv2.9.1+规则分类"), PlateUiRule},
                  {QStringLiteral("原图ROI实验\nv2.9.1+原图裁剪"), PlateUiOriginalRoi}},
+                QStringLiteral("aiModeButton"),
+                68,
                 [this](int value) {
         if (m_aiTaskSwitchPending) return;
         applyPlateUiMode(static_cast<PlateUiMode>(value),
@@ -146,11 +158,41 @@ QWidget *ControlPanelWindow::createAiPage()
         }
         updateAiTaskButtons();
     });
+    modeLayout->addWidget(modeWidget);
+
+    m_aiConfigSummaryLabel = new QLabel(modeGroup);
+    m_aiConfigSummaryLabel->setWordWrap(false);
+    m_aiConfigSummaryLabel->setObjectName(QStringLiteral("ptzState"));
+    m_aiConfigSummaryLabel->setMinimumHeight(34);
+    m_aiConfigSummaryLabel->setSizePolicy(QSizePolicy::Expanding,
+                                          QSizePolicy::Fixed);
+    modeLayout->addWidget(m_aiConfigSummaryLabel);
+    pageLayout->addWidget(modeGroup, 0);
+
+    QHBoxLayout *contentLayout = new QHBoxLayout;
+    contentLayout->setContentsMargins(0, 0, 0, 0);
+    contentLayout->setSpacing(10);
+
+    QWidget *leftPanel = new QWidget(page);
+    QVBoxLayout *leftLayout = new QVBoxLayout(leftPanel);
+    leftLayout->setContentsMargins(0, 0, 0, 0);
+
+    QGroupBox *configGroup = new QGroupBox(QStringLiteral("识别参数"), leftPanel);
+    QGridLayout *grid = new QGridLayout(configGroup);
+    grid->setContentsMargins(12, 18, 12, 10);
+    grid->setHorizontalSpacing(10);
+    grid->setVerticalSpacing(7);
+    grid->setColumnMinimumWidth(0, 112);
+    grid->setColumnStretch(0, 0);
+    grid->setColumnStretch(1, 1);
 
     QWidget *postprocessWidget = createChoiceRow(
+                configGroup,
                 &m_platePostprocessButtonGroup,
                 {{QStringLiteral("逐帧结果（测试）"), static_cast<int>(NpuPlatePostprocess::Raw)},
                  {QStringLiteral("稳定显示（默认）"), static_cast<int>(NpuPlatePostprocess::Stable)}},
+                QStringLiteral("aiChoiceButton"),
+                46,
                 [this](int value) {
         if (m_aiTaskSwitchPending) return;
         m_aiRequestedPlatePostprocess = static_cast<NpuPlatePostprocess>(value);
@@ -168,11 +210,6 @@ QWidget *ControlPanelWindow::createAiPage()
         }
         updateAiTaskButtons();
     });
-
-    QLabel *sourceValue = new QLabel(
-                QStringLiteral("视频显示页选定输入：总览全图或CH1~CH9"), configGroup);
-    sourceValue->setObjectName(QStringLiteral("ptzState"));
-    sourceValue->setMinimumHeight(38);
 
     auto makeTouchButton = [configGroup](const QString &text) {
         QPushButton *button = new QPushButton(text, configGroup);
@@ -252,49 +289,42 @@ QWidget *ControlPanelWindow::createAiPage()
     m_btnAiStop->setObjectName(QStringLiteral("aiStopButton"));
     m_btnAiStop->setMinimumHeight(50);
 
-    grid->addWidget(new QLabel(QStringLiteral("输入源"), configGroup), 0, 0);
-    grid->addWidget(sourceValue, 0, 1);
-    grid->addWidget(new QLabel(QStringLiteral("识别模式"), configGroup), 1, 0);
-    grid->addWidget(modeWidget, 1, 1);
-    grid->addWidget(new QLabel(QStringLiteral("结果策略"), configGroup), 2, 0);
-    grid->addWidget(postprocessWidget, 2, 1);
+    grid->addWidget(new QLabel(QStringLiteral("结果策略"), configGroup), 0, 0);
+    grid->addWidget(postprocessWidget, 0, 1);
 
-    addTouchAdjustRow(3,
+    addTouchAdjustRow(1,
                       QStringLiteral("目标推理帧率"),
                       m_npuFpsSpin,
                       [this]() { m_npuFpsSpin->stepDown(); },
                       [this]() { m_npuFpsSpin->stepUp(); });
-    addTouchAdjustRow(4,
+    addTouchAdjustRow(2,
                       QStringLiteral("检测置信度"),
                       m_confSpin,
                       [this]() { m_confSpin->stepDown(); },
                       [this]() { m_confSpin->stepUp(); });
-    addTouchAdjustRow(5,
+    addTouchAdjustRow(3,
                       QStringLiteral("NMS阈值"),
                       m_nmsSpin,
                       [this]() { m_nmsSpin->stepDown(); },
                       [this]() { m_nmsSpin->stepUp(); });
 
-    grid->addWidget(m_btnAiApply, 6, 0, 1, 2);
-    grid->addWidget(m_btnAiStop, 7, 0, 1, 2);
-
-    m_aiConfigSummaryLabel = new QLabel(configGroup);
-    m_aiConfigSummaryLabel->setWordWrap(true);
-    m_aiConfigSummaryLabel->setObjectName(QStringLiteral("ptzState"));
-    m_aiConfigSummaryLabel->setMaximumHeight(52);
-    grid->addWidget(m_aiConfigSummaryLabel, 8, 0, 1, 2);
+    QWidget *actionWidget = new QWidget(configGroup);
+    QHBoxLayout *actionLayout = new QHBoxLayout(actionWidget);
+    actionLayout->setContentsMargins(0, 0, 0, 0);
+    actionLayout->setSpacing(10);
+    actionLayout->addWidget(m_btnAiApply, 1);
+    actionLayout->addWidget(m_btnAiStop, 1);
+    grid->addWidget(actionWidget, 4, 0, 1, 2);
 
     QLabel *touchHint = new QLabel(
-                QStringLiteral("精度对比使用“逐帧结果”；实际演示使用“稳定显示”。"
-                               "行人违法规则请使用独立“违法检测”页面。"),
+                QStringLiteral("精度对比使用“逐帧结果”；实际演示使用“稳定显示”。"),
                 configGroup);
     touchHint->setObjectName(QStringLiteral("navHint"));
     touchHint->setWordWrap(true);
-    grid->addWidget(touchHint, 9, 0, 1, 2);
+    grid->addWidget(touchHint, 5, 0, 1, 2);
 
-    leftLayout->addWidget(configGroup);
-    leftLayout->addStretch(1);
-    pageLayout->addWidget(leftPanel, 0);
+    leftLayout->addWidget(configGroup, 1);
+    contentLayout->addWidget(leftPanel, 9);
 
     QWidget *rightPanel = new QWidget(page);
     QVBoxLayout *rightLayout = new QVBoxLayout(rightPanel);
@@ -302,7 +332,7 @@ QWidget *ControlPanelWindow::createAiPage()
     rightLayout->setSpacing(8);
 
     QGroupBox *runtimeGroup = new QGroupBox(QStringLiteral("运行状态"), rightPanel);
-    runtimeGroup->setMaximumHeight(220);
+    runtimeGroup->setMinimumHeight(190);
     QVBoxLayout *runtimeLayout = new QVBoxLayout(runtimeGroup);
     runtimeLayout->setContentsMargins(10, 18, 10, 8);
     m_aiRuntimeLabel = new QLabel(QStringLiteral("AI未启用"), runtimeGroup);
@@ -311,7 +341,7 @@ QWidget *ControlPanelWindow::createAiPage()
     m_aiRuntimeLabel->setAlignment(Qt::AlignLeft | Qt::AlignTop);
     m_aiRuntimeLabel->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
     runtimeLayout->addWidget(m_aiRuntimeLabel);
-    rightLayout->addWidget(runtimeGroup, 0);
+    rightLayout->addWidget(runtimeGroup, 1);
 
     QGroupBox *resultGroup = new QGroupBox(QStringLiteral("当前结果"), rightPanel);
     QVBoxLayout *resultLayout = new QVBoxLayout(resultGroup);
@@ -328,7 +358,8 @@ QWidget *ControlPanelWindow::createAiPage()
     resultLayout->addWidget(m_aiCurrentResultLabel, 1);
     rightLayout->addWidget(resultGroup, 1);
 
-    pageLayout->addWidget(rightPanel, 1);
+    contentLayout->addWidget(rightPanel, 11);
+    pageLayout->addLayout(contentLayout, 1);
 
     connect(m_btnAiApply, &QPushButton::clicked,
             this, &ControlPanelWindow::onApplyAiConfigClicked);
