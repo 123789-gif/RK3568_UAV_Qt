@@ -3,6 +3,8 @@
 #include "demo_types.h"
 #include "plate_type_ids.h"
 
+#include <cstddef>
+
 namespace demo {
 namespace plate_v291 {
 
@@ -256,6 +258,21 @@ Mat crop_plate_from_original_bgr(const Mat& orig_bgr,
                                  const std::vector<Point2f>& input_points,
                                  PlateCropDebug* debug = nullptr,
                                  Size shape = Size(94, 24));
+
+// 将已经完成排序/可靠性检查/x补偿的检测输入四点映射到原始RGB565选路图，
+// 只转换局部包围区域并直接透视生成OCR所需BGR图。此接口不会再次补偿角点。
+bool crop_plate_from_original_rgb565(const uint8_t* source_rgb565,
+                                     std::size_t source_bytes,
+                                     int source_width,
+                                     int source_height,
+                                     int detector_frame_width,
+                                     int detector_frame_height,
+                                     const std::vector<Point2f>& final_input_quad,
+                                     Mat& crop_bgr,
+                                     std::string* reason = nullptr,
+                                     double* convert_ms = nullptr,
+                                     double* warp_ms = nullptr,
+                                     Size shape = Size(94, 24));
 
 // Generic YOLOv8 object detector for DFL raw heads and noDFL decoded heads.
 bool detect_yolov8_objects(const Mat& mid_img,

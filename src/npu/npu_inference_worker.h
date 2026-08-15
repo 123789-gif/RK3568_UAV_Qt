@@ -9,6 +9,21 @@
 #include <memory>
 #include <vector>
 
+// 捕获线程在submitFrame()调用期间有效的只读原始帧视图。
+// worker只在原图ROI实验模式下同步复制roi区域，不跨线程保存data裸指针。
+struct NpuOriginalFrameView
+{
+    const uint8_t *data = nullptr;
+    std::size_t bytes = 0;
+    int width = 0;
+    int height = 0;
+    int stridePixels = 0;
+    int roiX = 0;
+    int roiY = 0;
+    int roiWidth = 0;
+    int roiHeight = 0;
+};
+
 class NpuInferenceWorker
 {
 public:
@@ -47,7 +62,8 @@ public:
                      int width,
                      int height,
                      int sourceChannel,
-                     uint64_t sourceRevision);
+                     uint64_t sourceRevision,
+                     const NpuOriginalFrameView *originalView = nullptr);
     NpuFrameResult latestResult() const;
     std::vector<NpuFrameResult> resultsAfter(uint64_t frameId, std::size_t maxResults = 64) const;
 

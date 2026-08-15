@@ -2744,6 +2744,135 @@ Mat crop_plate_from_original_bgr(const Mat& orig_bgr,
     return plate_crop(orig_bgr, orig_box, orig_points, debug, shape);
 }
 
+bool crop_plate_from_original_rgb565(const uint8_t* source_rgb565,
+                                     std::size_t source_bytes,
+                                     int source_width,
+                                     int source_height,
+                                     int detector_frame_width,
+                                     int detector_frame_height,
+                                     const std::vector<Point2f>& final_input_quad,
+                                     Mat& crop_bgr,
+                                     std::string* reason,
+                                     double* convert_ms,
+                                     double* warp_ms,
+                                     Size shape) {
+    crop_bgr.release();
+    if (reason) reason->clear();
+    if (convert_ms) *convert_ms = 0.0;
+    if (warp_ms) *warp_ms = 0.0;
+
+    const std::size_t required = source_width > 0 && source_height > 0
+            ? static_cast<std::size_t>(source_width) *
+              static_cast<std::size_t>(source_height) * 2u
+            : 0u;
+    if (!source_rgb565 || required == 0u || source_bytes < required) {
+        if (reason) *reason = "original_source_invalid";
+        return false;
+    }
+    if (detector_frame_width <= 0 || detector_frame_height <= 0 ||
+        shape.width <= 0 || shape.height <= 0 || final_input_quad.size() != 4u) {
+        if (reason) *reason = "original_quad_contract_invalid";
+        return false;
+    }
+
+    // 先严格反算到实际送检的640x360坐标，再按比例映射到原始选路图。
+    // final_input_quad已经完成v2.9.1补偿，禁止在高分辨率坐标系重复补偿。
+    std::vector<Point2f> detector_quad;
+    convert_input_points_to_orig(final_input_quad,
+                                 detector_quad,
+                                 detector_frame_width,
+                                 detector_frame_height);
+    if (detector_quad.size() != 4u) {
+        if (reason) *reason = "original_quad_map_failed";
+        return false;
+    }
+
+    std::vector<Point2f> source_quad;
+    source_quad.reserve(4);
+    const float scale_x = static_cast<float>(source_width) /
+            static_cast<float>(detector_frame_width);
+    const float scale_y = static_cast<float>(source_height) /
+            static_cast<float>(detector_frame_height);
+    for (const Point2f& point : detector_quad) {
+        Point2f mapped(point.x * scale_x, point.y * scale_y);
+        if (!std::isfinite(mapped.x) || !std::isfinite(mapped.y)) {
+            if (reason) *reason = "original_quad_non_finite";
+            return false;
+        }
+        mapped.x = std::max(0.0f, std::min(mapped.x,
+                                           static_cast<float>(source_width - 1)));
+        mapped.y = std::max(0.0f, std::min(mapped.y,
+                                           static_cast<float>(source_height - 1)));
+        source_quad.push_back(mapped);
+    }
+    if (quad_area_abs(source_quad) <= 1.0f) {
+        if (reason) *reason = "original_quad_degenerate";
+        return false;
+    }
+
+    float min_x = source_quad[0].x;
+    float max_x = source_quad[0].x;
+    float min_y = source_quad[0].y;
+    float max_y = source_quad[0].y;
+    for (const Point2f& point : source_quad) {
+        min_x = std::min(min_x, point.x);
+        max_x = std::max(max_x, point.x);
+        min_y = std::min(min_y, point.y);
+        max_y = std::max(max_y, point.y);
+    }
+
+    // 2像素仅用于给双线性采样保留边界，不改变最终四点几何。
+    const int x0 = std::max(0, static_cast<int>(std::floor(min_x)) - 2);
+    const int y0 = std::max(0, static_cast<int>(std::floor(min_y)) - 2);
+    const int x1 = std::min(source_width,
+                            static_cast<int>(std::ceil(max_x)) + 3);
+    const int y1 = std::min(source_height,
+                            static_cast<int>(std::ceil(max_y)) + 3);
+    const int local_width = x1 - x0;
+    const int local_height = y1 - y0;
+    if (local_width < 2 || local_height < 2) {
+        if (reason) *reason = "original_local_roi_invalid";
+        return false;
+    }
+
+    const auto convert_begin = std::chrono::high_resolution_clock::now();
+    Mat local_bgr(local_height, local_width, CV_8UC3);
+    for (int row = 0; row < local_height; ++row) {
+        const uint8_t* src = source_rgb565 +
+                (static_cast<std::size_t>(y0 + row) *
+                 static_cast<std::size_t>(source_width) +
+                 static_cast<std::size_t>(x0)) * 2u;
+        uint8_t* dst = local_bgr.ptr<uint8_t>(row);
+        for (int col = 0; col < local_width; ++col) {
+            const uint16_t px = static_cast<uint16_t>(src[col * 2]) |
+                    static_cast<uint16_t>(src[col * 2 + 1] << 8);
+            dst[col * 3 + 0] = static_cast<uint8_t>((px & 0x1Fu) << 3);
+            dst[col * 3 + 1] = static_cast<uint8_t>(((px >> 5) & 0x3Fu) << 2);
+            dst[col * 3 + 2] = static_cast<uint8_t>(((px >> 11) & 0x1Fu) << 3);
+        }
+    }
+    if (convert_ms) *convert_ms = ms_since(convert_begin);
+
+    std::vector<Point2f> local_quad;
+    local_quad.reserve(4);
+    for (const Point2f& point : source_quad) {
+        local_quad.emplace_back(point.x - static_cast<float>(x0),
+                                point.y - static_cast<float>(y0));
+    }
+
+    const auto warp_begin = std::chrono::high_resolution_clock::now();
+    crop_bgr = crop_from_quad(local_bgr, local_quad, shape);
+    if (warp_ms) *warp_ms = ms_since(warp_begin);
+    if (crop_bgr.empty() || crop_bgr.cols != shape.width ||
+        crop_bgr.rows != shape.height || crop_bgr.type() != CV_8UC3) {
+        crop_bgr.release();
+        if (reason) *reason = "original_warp_failed";
+        return false;
+    }
+    if (reason) *reason = "ok";
+    return true;
+}
+
 bool detect_yolov8_objects(const Mat& mid_img,
                            RknnModel& model,
                            int class_count,

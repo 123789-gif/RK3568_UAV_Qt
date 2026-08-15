@@ -47,6 +47,11 @@ struct FrameCopy
     int height = 0;
     double copyMs = 0.0;
     std::vector<uint8_t> data;
+    int originalWidth = 0;
+    int originalHeight = 0;
+    double originalCopyMs = 0.0;
+    std::vector<uint8_t> originalData;
+    std::string originalCopyError;
 };
 
 constexpr int64_t kNanosecondsPerSecond = 1000000000LL;
@@ -1754,7 +1759,8 @@ struct NpuInferenceWorker::Impl
                 int width,
                 int height,
                 int sourceChannel,
-                uint64_t sourceRevision)
+                uint64_t sourceRevision,
+                const NpuOriginalFrameView* originalView)
     {
         const NpuTaskConfig cfg = configSnapshot();
         if (!cfg.enabled || !running.load() || !rgb565 || width <= 0 || height <= 0) {
@@ -1788,6 +1794,48 @@ struct NpuInferenceWorker::Impl
         const auto copyBegin = std::chrono::steady_clock::now();
         copy.data.assign(rgb565, rgb565 + need);
         copy.copyMs = elapsedMs(copyBegin);
+
+        const bool wantsOriginal = cfg.task == NpuTaskType::PlateCascade &&
+                cfg.plateModelProfile == NpuPlateModelProfile::V291Candidate &&
+                cfg.plateCropSource == NpuPlateCropSource::OriginalSource;
+        if (wantsOriginal) {
+            const auto originalCopyBegin = std::chrono::steady_clock::now();
+            if (!originalView || !originalView->data) {
+                copy.originalCopyError = "original_frame_missing";
+            } else if (originalView->width <= 0 || originalView->height <= 0 ||
+                       originalView->stridePixels < originalView->width ||
+                       originalView->roiX < 0 || originalView->roiY < 0 ||
+                       originalView->roiWidth <= 0 || originalView->roiHeight <= 0 ||
+                       originalView->roiX + originalView->roiWidth > originalView->width ||
+                       originalView->roiY + originalView->roiHeight > originalView->height) {
+                copy.originalCopyError = "original_view_invalid";
+            } else {
+                const std::size_t requiredBytes =
+                        static_cast<std::size_t>(originalView->stridePixels) *
+                        static_cast<std::size_t>(originalView->height) * 2u;
+                if (originalView->bytes < requiredBytes) {
+                    copy.originalCopyError = "original_view_truncated";
+                } else {
+                    copy.originalWidth = originalView->roiWidth;
+                    copy.originalHeight = originalView->roiHeight;
+                    const std::size_t rowBytes =
+                            static_cast<std::size_t>(copy.originalWidth) * 2u;
+                    copy.originalData.resize(rowBytes *
+                                             static_cast<std::size_t>(copy.originalHeight));
+                    for (int row = 0; row < copy.originalHeight; ++row) {
+                        const std::size_t srcOffset =
+                                (static_cast<std::size_t>(originalView->roiY + row) *
+                                 static_cast<std::size_t>(originalView->stridePixels) +
+                                 static_cast<std::size_t>(originalView->roiX)) * 2u;
+                        std::memcpy(copy.originalData.data() +
+                                    static_cast<std::size_t>(row) * rowBytes,
+                                    originalView->data + srcOffset,
+                                    rowBytes);
+                    }
+                }
+            }
+            copy.originalCopyMs = elapsedMs(originalCopyBegin);
+        }
 
         {
             std::lock_guard<std::mutex> lk(pendingMutex);
@@ -1868,6 +1916,7 @@ struct NpuInferenceWorker::Impl
         NpuFrameResult result;
         result.frameId = frame.id;
         result.copyMs = frame.copyMs;
+        result.originalFrameCopyMs = frame.originalCopyMs;
         result.sourceChannel = frame.sourceChannel;
         result.sourceRevision = frame.sourceRevision;
         result.task = cfg.task;
@@ -1875,6 +1924,9 @@ struct NpuInferenceWorker::Impl
         result.confidence = cfg.confidence;
         result.nmsThreshold = cfg.nmsThreshold;
         result.configRevision = cfg.revision;
+        result.actualPlateCropSource = NpuPlateCropSource::DetectorInput;
+        result.originalSourceWidth = frame.originalWidth;
+        result.originalSourceHeight = frame.originalHeight;
 
         if (!ensureModels(cfg)) {
             result.ready = false;
@@ -1931,6 +1983,9 @@ struct NpuInferenceWorker::Impl
             std::vector<demo::Mat> crops;
             std::vector<demo::Rect2f> plateBoxesIn;
             std::vector<int> plateColorIds;
+            const bool wantsOriginalRoi = plateBackend == PlateBackend::V291 &&
+                    cfg.plateCropSource == NpuPlateCropSource::OriginalSource;
+            std::vector<demo::plate_v291::PlateCropDebug> cropDebugs;
             if (plateBackend == PlateBackend::V291) {
                 demo::plate_v291::RknnStageTiming plateTiming;
                 demo::plate_v291::detect_plate_candidates(input,
@@ -1942,7 +1997,11 @@ struct NpuInferenceWorker::Impl
                                                            plateColorIds,
                                                            true,
                                                            &result.plateMs,
-                                                           &plateTiming);
+                                                           &plateTiming,
+                                                           nullptr,
+                                                           nullptr,
+                                                           wantsOriginalRoi
+                                                           ? &cropDebugs : nullptr);
                 accumulateStageTiming(result, plateTiming);
             } else {
                 demo::vision::RknnStageTiming plateTiming;
@@ -1958,6 +2017,64 @@ struct NpuInferenceWorker::Impl
                                                       &plateTiming);
                 accumulateStageTiming(result, plateTiming);
                 normalizeLegacyPlateTypes(&plateColorIds);
+            }
+
+            if (wantsOriginalRoi) {
+                if (frame.originalData.empty() || frame.originalWidth <= 0 ||
+                    frame.originalHeight <= 0) {
+                    result.originalRoiFallbackCount =
+                            std::max(1, static_cast<int>(crops.size()));
+                    result.originalRoiFallbackReason = frame.originalCopyError.empty()
+                            ? "original_frame_missing" : frame.originalCopyError;
+                } else {
+                    result.actualPlateCropSource = NpuPlateCropSource::OriginalSource;
+                    const std::size_t count = std::min(crops.size(), cropDebugs.size());
+                    for (std::size_t i = 0; i < crops.size(); ++i) {
+                        if (i >= count || cropDebugs[i].warp_quad.size() != 4u) {
+                            ++result.originalRoiFallbackCount;
+                            if (result.originalRoiFallbackReason.empty()) {
+                                result.originalRoiFallbackReason =
+                                        "final_warp_quad_missing";
+                            }
+                            continue;
+                        }
+
+                        demo::Mat originalCrop;
+                        std::string cropReason;
+                        double convertMs = 0.0;
+                        double warpMs = 0.0;
+                        const bool cropped =
+                                demo::plate_v291::crop_plate_from_original_rgb565(
+                                    frame.originalData.data(),
+                                    frame.originalData.size(),
+                                    frame.originalWidth,
+                                    frame.originalHeight,
+                                    frame.width,
+                                    frame.height,
+                                    cropDebugs[i].warp_quad,
+                                    originalCrop,
+                                    &cropReason,
+                                    &convertMs,
+                                    &warpMs);
+                        result.originalRoiConvertMs += convertMs;
+                        result.originalRoiWarpMs += warpMs;
+                        if (cropped) {
+                            crops[i] = std::move(originalCrop);
+                            ++result.originalRoiCropCount;
+                        } else {
+                            ++result.originalRoiFallbackCount;
+                            if (result.originalRoiFallbackReason.empty()) {
+                                result.originalRoiFallbackReason = cropReason.empty()
+                                        ? "original_crop_failed" : cropReason;
+                            }
+                        }
+                    }
+                    // 一张车牌都没能使用原图时，实际数据源仍是低分辨率回退链路。
+                    if (!crops.empty() && result.originalRoiCropCount == 0) {
+                        result.actualPlateCropSource =
+                                NpuPlateCropSource::DetectorInput;
+                    }
+                }
             }
 
             const int64_t plateNowMs = steadyMs();
@@ -2300,10 +2417,11 @@ void NpuInferenceWorker::submitFrame(uint64_t frameId,
                                      int width,
                                      int height,
                                      int sourceChannel,
-                                     uint64_t sourceRevision)
+                                     uint64_t sourceRevision,
+                                     const NpuOriginalFrameView *originalView)
 {
     m_impl->submit(frameId, rgb565, bytes, width, height,
-                   sourceChannel, sourceRevision);
+                   sourceChannel, sourceRevision, originalView);
 }
 
 NpuFrameResult NpuInferenceWorker::latestResult() const

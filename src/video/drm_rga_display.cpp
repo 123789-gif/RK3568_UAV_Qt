@@ -143,13 +143,26 @@ static void prepare_and_submit_npu_frame(NpuInferenceWorker *worker,
         return;
     }
 
+    NpuOriginalFrameView originalView;
+    originalView.data = frameData;
+    originalView.bytes = static_cast<std::size_t>(PCIE_FRAME_W) *
+            static_cast<std::size_t>(PCIE_FRAME_H) * PCIE_BPP;
+    originalView.width = PCIE_FRAME_W;
+    originalView.height = PCIE_FRAME_H;
+    originalView.stridePixels = PCIE_FRAME_W;
+    originalView.roiX = sourceRoi.x;
+    originalView.roiY = sourceRoi.y;
+    originalView.roiWidth = sourceRoi.width;
+    originalView.roiHeight = sourceRoi.height;
+
     worker->submitFrame(frameId,
                         npuTileBuffer.data(),
                         npuTileBuffer.size(),
                         640,
                         360,
                         sourceChannel,
-                        sourceRevision);
+                        sourceRevision,
+                        &originalView);
 }
 
 static VideoRoute decodeVideoRoute(uint64_t state)
