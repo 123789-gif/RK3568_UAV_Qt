@@ -406,6 +406,21 @@ static NpuPlatePostprocess platePostprocessModeFromEnvironment()
                                 : NpuPlatePostprocess::Stable;
 }
 
+static NpuPlateCropSource plateCropSourceFromEnvironment()
+{
+    const char* value = std::getenv("PTZ_PLATE_CROP_SOURCE");
+    if (!value) {
+        return NpuPlateCropSource::DetectorInput;
+    }
+    std::string normalized(value);
+    for (char& ch : normalized) {
+        ch = static_cast<char>(std::toupper(static_cast<unsigned char>(ch)));
+    }
+    return normalized == "ORIGINAL" || normalized == "ORIGINAL_SOURCE"
+            ? NpuPlateCropSource::OriginalSource
+            : NpuPlateCropSource::DetectorInput;
+}
+
 static NpuPlateModelProfile plateModelProfileFromEnvironment()
 {
     const char* value = std::getenv("PTZ_NPU_MODEL_PROFILE");
@@ -1346,6 +1361,8 @@ struct NpuInferenceWorker::Impl
         requestedConfig = sanitizeNpuTaskConfig(requestedConfig);
         requestedConfig.plateModelProfile = plateModelProfileFromEnvironment();
         requestedConfig.platePostprocess = platePostprocessModeFromEnvironment();
+        requestedConfig.plateCropSource = plateCropSourceFromEnvironment();
+        requestedConfig = sanitizeNpuTaskConfig(requestedConfig);
         violationConfig = sanitizeViolationRuleConfig(violationConfig);
         v291ForceCpu = v291ForceCpuFromEnvironment();
     }
@@ -1394,6 +1411,7 @@ struct NpuInferenceWorker::Impl
         }
         result->requestedPlateModelProfile = cfg.plateModelProfile;
         result->platePostprocess = cfg.platePostprocess;
+        result->requestedPlateCropSource = cfg.plateCropSource;
         result->modelSwitching = modelSwitching.load();
         const int active = loadedPlateProfileValue.load();
         result->activePlateModelProfileValid = active >= 0;
@@ -1428,7 +1446,8 @@ struct NpuInferenceWorker::Impl
             std::lock_guard<std::mutex> lk(configMutex);
             executionChanged = next.task != requestedConfig.task ||
                     next.plateModelProfile != requestedConfig.plateModelProfile ||
-                    next.platePostprocess != requestedConfig.platePostprocess;
+                    next.platePostprocess != requestedConfig.platePostprocess ||
+                    next.plateCropSource != requestedConfig.plateCropSource;
             next.revision = requestedConfig.revision + 1;
             requestedConfig = next;
         }

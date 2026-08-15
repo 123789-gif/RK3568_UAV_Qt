@@ -51,10 +51,12 @@ struct NpuFrameResult
     uint64_t configRevision = 0;
     uint64_t sourceRevision = 0;
     int sourceChannel = 0;
-    NpuTaskType task = NpuTaskType::Pedestrian;
-    NpuPlateModelProfile requestedPlateModelProfile = NpuPlateModelProfile::V291Candidate;
-    NpuPlateModelProfile activePlateModelProfile = NpuPlateModelProfile::V291Candidate;
+    NpuTaskType task = NpuTaskType::PlateCascade;
+    NpuPlateModelProfile requestedPlateModelProfile = NpuPlateModelProfile::Legacy;
+    NpuPlateModelProfile activePlateModelProfile = NpuPlateModelProfile::Legacy;
     NpuPlatePostprocess platePostprocess = NpuPlatePostprocess::Stable;
+    NpuPlateCropSource requestedPlateCropSource = NpuPlateCropSource::DetectorInput;
+    NpuPlateCropSource actualPlateCropSource = NpuPlateCropSource::DetectorInput;
     bool activePlateModelProfileValid = false;
     bool modelSwitching = false;
     bool enabled = false;
@@ -68,6 +70,9 @@ struct NpuFrameResult
     double lastMs = 0.0;
     double preMs = 0.0;
     double copyMs = 0.0;
+    double originalFrameCopyMs = 0.0;
+    double originalRoiConvertMs = 0.0;
+    double originalRoiWarpMs = 0.0;
     double rknnInputMs = 0.0;
     double rknnRunMs = 0.0;
     double rknnOutputMs = 0.0;
@@ -78,6 +83,11 @@ struct NpuFrameResult
     double vehicleMs = 0.0;
     int processed = 0;
     int dropped = 0;
+    int originalSourceWidth = 0;
+    int originalSourceHeight = 0;
+    int originalRoiCropCount = 0;
+    int originalRoiFallbackCount = 0;
+    std::string originalRoiFallbackReason;
     std::string status;
     std::string error;
     std::vector<NpuBox> plates;

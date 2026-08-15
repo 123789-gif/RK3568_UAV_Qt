@@ -223,7 +223,7 @@ QWidget *ControlPanelWindow::createNavPanel()
 
     QStringList names;
     names << "视频显示" << "PTZ控制" << "FPGA配置" << "CPU配置"
-          << "AI推理" << "违法检测" << "系统状态";
+          << "车牌识别" << "违法检测" << "系统状态";
 
     QButtonGroup *group = new QButtonGroup(nav);
     group->setExclusive(true);

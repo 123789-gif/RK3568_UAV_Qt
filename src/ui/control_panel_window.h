@@ -229,7 +229,7 @@ private:
     QLabel *m_ethernetCurrentStateLabel = nullptr;
     QLabel *m_ethernetApplyStatusLabel = nullptr;
     QButtonGroup *m_npuTaskButtonGroup = nullptr;
-    QButtonGroup *m_plateModelButtonGroup = nullptr;
+    QButtonGroup *m_plateModeButtonGroup = nullptr;
     QButtonGroup *m_platePostprocessButtonGroup = nullptr;
     QPushButton *m_btnAiApply = nullptr;
     QPushButton *m_btnAiStop = nullptr;
@@ -326,11 +326,12 @@ private:
     int m_aiPedestrianCount = 0;
     int m_aiVehicleCount = 0;
     QString m_aiStatus = "off";
-    NpuTaskType m_aiTask = NpuTaskType::Pedestrian;
-    NpuTaskType m_aiRequestedTask = NpuTaskType::Pedestrian;
-    NpuPlateModelProfile m_aiRequestedPlateProfile = NpuPlateModelProfile::V291Candidate;
-    NpuPlateModelProfile m_aiActivePlateProfile = NpuPlateModelProfile::V291Candidate;
+    NpuTaskType m_aiTask = NpuTaskType::PlateCascade;
+    NpuTaskType m_aiRequestedTask = NpuTaskType::PlateCascade;
+    NpuPlateModelProfile m_aiRequestedPlateProfile = NpuPlateModelProfile::Legacy;
+    NpuPlateModelProfile m_aiActivePlateProfile = NpuPlateModelProfile::Legacy;
     NpuPlatePostprocess m_aiRequestedPlatePostprocess = NpuPlatePostprocess::Stable;
+    NpuPlateCropSource m_aiRequestedPlateCropSource = NpuPlateCropSource::DetectorInput;
     bool m_aiActivePlateProfileValid = false;
     bool m_aiPlateOptionsDirty = false;
     std::uint64_t m_aiRequestedConfigRevision = 0;

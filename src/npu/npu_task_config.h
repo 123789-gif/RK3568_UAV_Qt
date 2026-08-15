@@ -22,6 +22,14 @@ enum class NpuPlatePostprocess : std::uint8_t
     Raw = 1
 };
 
+// OCR车牌图的像素来源。检测模型始终使用现有低分辨率输入；
+// OriginalSource只改变四点透视裁剪的数据源，不改变RKNN模型输入契约。
+enum class NpuPlateCropSource : std::uint8_t
+{
+    DetectorInput = 0,
+    OriginalSource = 1
+};
+
 inline constexpr int NPU_TARGET_FPS_MIN = 1;
 inline constexpr int NPU_TARGET_FPS_DEFAULT = 15;
 inline constexpr int NPU_TARGET_FPS_MAX = 60;
@@ -29,9 +37,10 @@ inline constexpr int NPU_TARGET_FPS_MAX = 60;
 struct NpuTaskConfig
 {
     bool enabled = false;
-    NpuTaskType task = NpuTaskType::Pedestrian;
-    NpuPlateModelProfile plateModelProfile = NpuPlateModelProfile::V291Candidate;
+    NpuTaskType task = NpuTaskType::PlateCascade;
+    NpuPlateModelProfile plateModelProfile = NpuPlateModelProfile::Legacy;
     NpuPlatePostprocess platePostprocess = NpuPlatePostprocess::Stable;
+    NpuPlateCropSource plateCropSource = NpuPlateCropSource::DetectorInput;
     int targetFps = NPU_TARGET_FPS_DEFAULT;
     float confidence = 0.50f;
     float nmsThreshold = 0.45f;
@@ -49,6 +58,15 @@ inline NpuTaskConfig sanitizeNpuTaskConfig(NpuTaskConfig config)
         config.platePostprocess != NpuPlatePostprocess::Raw) {
         config.platePostprocess = NpuPlatePostprocess::Stable;
     }
+    if (config.plateCropSource != NpuPlateCropSource::DetectorInput &&
+        config.plateCropSource != NpuPlateCropSource::OriginalSource) {
+        config.plateCropSource = NpuPlateCropSource::DetectorInput;
+    }
+    // 第一轮原图ROI实验仅接入具备四点诊断输出的v2.9.1后端。
+    // legacy仍保持已验证链路，避免“标准模式”被实验代码影响。
+    if (config.plateModelProfile == NpuPlateModelProfile::Legacy) {
+        config.plateCropSource = NpuPlateCropSource::DetectorInput;
+    }
     config.targetFps = std::max(NPU_TARGET_FPS_MIN,
                                 std::min(NPU_TARGET_FPS_MAX, config.targetFps));
     config.confidence = std::max(0.10f, std::min(0.95f, config.confidence));
@@ -65,6 +83,12 @@ inline const char* npuPlateModelProfileKey(NpuPlateModelProfile profile)
 inline const char* npuPlatePostprocessKey(NpuPlatePostprocess mode)
 {
     return mode == NpuPlatePostprocess::Raw ? "raw" : "stable";
+}
+
+inline const char* npuPlateCropSourceKey(NpuPlateCropSource source)
+{
+    return source == NpuPlateCropSource::OriginalSource
+            ? "original" : "detector";
 }
 
 inline const char* npuTaskKey(NpuTaskType task)
