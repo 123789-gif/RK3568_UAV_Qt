@@ -33,10 +33,9 @@ enum class NpuPlateCropSource : std::uint8_t
 
 inline constexpr int NPU_TARGET_FPS_MIN = 1;
 inline constexpr int NPU_TARGET_FPS_DEFAULT = 15;
-// 车牌是检测+OCR级联任务，单独采用30 fps默认值：与60 fps视频源
-// 整数分频，兼顾交互流畅性和四种模型/ROI组合的最坏路径预算。
-// 45/60 fps仍可由页面手动选择用于板端压力测试。
-inline constexpr int NPU_PLATE_TARGET_FPS_DEFAULT = 30;
+// 车牌是检测+OCR级联任务。45 fps作为latest-only调度上限，优先缩短
+// 静态测试图片切换后的结果刷新时间；实际帧率仍由模型和原图ROI路径决定。
+inline constexpr int NPU_PLATE_TARGET_FPS_DEFAULT = 45;
 inline constexpr int NPU_TARGET_FPS_MAX = 60;
 
 struct NpuTaskConfig

@@ -1,4 +1,5 @@
 #include "npu/npu_inference_worker.h"
+#include "npu/plate_temporal_policy.h"
 
 #include "npu/plate_type_ids.h"
 #include "npu/plate_v291.h"
@@ -565,8 +566,6 @@ constexpr double kPlateOcrReuseSignatureDiff = 20.0;
 constexpr int64_t kPlateOcrReuseTtlMs = 900;
 constexpr int64_t kPlateOcrCacheKeepMs = 2500;
 constexpr std::size_t kPlateMaxTracks = 4;
-constexpr int kPlateMinConfirmedHits = 3;
-constexpr int kPlateTrackTtlMs = 600;
 constexpr float kPlateTrackIouMin = 0.25f;
 constexpr float kPlateTrackCenterDistanceMax = 0.50f;
 constexpr float kPlateStaticCenterDeadZonePx = 3.0f;
@@ -824,8 +823,11 @@ struct PlateTemporalTrack
     std::string stablePinyin;
     int stableColorId = -1;
     std::deque<int> colorVotes;
+    std::vector<uint8_t> signature;
     int consecutiveBlueCount = 0;
     int hitCount = 0;
+    int missedInferenceCount = 0;
+    bool matchedThisInference = false;
     int64_t lastSeenMs = 0;
 };
 
@@ -966,6 +968,10 @@ public:
             return ax < bx;
         });
 
+        for (PlateTemporalTrack& track : tracks_) {
+            track.matchedThisInference = false;
+        }
+
         std::vector<bool> used(candidates->size(), false);
         for (PlateTemporalTrack& track : tracks_) {
             if (!track.active) {
@@ -993,8 +999,15 @@ public:
             }
             if (bestIndex >= 0) {
                 used[static_cast<std::size_t>(bestIndex)] = true;
+                const PlateTemporalCandidate& candidate =
+                        (*candidates)[static_cast<std::size_t>(bestIndex)];
+                if (trackIdentityChanged(track, candidate)) {
+                    // 相同位置出现不同车牌时不能继续显示上一张图片的文字。
+                    // 保留槽位，但清空身份相关状态并重新完成两次一致确认。
+                    resetTrackIdentity(&track);
+                }
                 updateTrack(track,
-                            (*candidates)[static_cast<std::size_t>(bestIndex)],
+                            candidate,
                             nowMs,
                             demo::DEFAULT_PLATE_BOX_EMA,
                             demo::DEFAULT_PLATE_TEXT_VOTE_N,
@@ -1006,7 +1019,7 @@ public:
             if (used[i]) {
                 continue;
             }
-            const int slot = firstFreeSlot();
+            const int slot = claimSlotForNewTrack();
             if (slot < 0) {
                 continue;
             }
@@ -1024,7 +1037,13 @@ public:
             tracks_.push_back(std::move(track));
         }
 
-        const int ttlMs = kPlateTrackTtlMs;
+        for (PlateTemporalTrack& track : tracks_) {
+            if (track.active && !track.matchedThisInference) {
+                ++track.missedInferenceCount;
+            }
+        }
+
+        const int ttlMs = plate_temporal_policy::kTrackTtlMs;
         tracks_.erase(std::remove_if(tracks_.begin(), tracks_.end(),
                                      [nowMs, ttlMs](const PlateTemporalTrack& track) {
             return !track.active || nowMs - track.lastSeenMs > ttlMs;
@@ -1039,9 +1058,11 @@ public:
         stableOutput->reserve(tracks_.size());
         for (const PlateTemporalTrack& track : tracks_) {
             if (!track.active ||
-                track.hitCount < kPlateMinConfirmedHits ||
-                nowMs - track.lastSeenMs > ttlMs ||
-                !isDisplayablePlateText(track.stablePlate)) {
+                !plate_temporal_policy::shouldDisplay(
+                    track.hitCount,
+                    track.missedInferenceCount,
+                    nowMs - track.lastSeenMs,
+                    isDisplayablePlateText(track.stablePlate))) {
                 continue;
             }
             PlateTemporalCandidate item;
@@ -1055,6 +1076,33 @@ public:
     }
 
 private:
+    static bool trackIdentityChanged(
+            const PlateTemporalTrack& track,
+            const PlateTemporalCandidate& candidate)
+    {
+        return plate_temporal_policy::identityChanged(
+                    isDisplayablePlateText(track.stablePlate),
+                    track.stablePlate,
+                    isDisplayablePlateText(candidate.plate),
+                    candidate.plate,
+                    plateSignatureDifference(track.signature,
+                                             candidate.signature));
+    }
+
+    static void resetTrackIdentity(PlateTemporalTrack* track)
+    {
+        if (!track) return;
+        track->textVotes.clear();
+        track->stablePlate.clear();
+        track->stablePinyin.clear();
+        track->stableColorId = -1;
+        track->colorVotes.clear();
+        track->signature.clear();
+        track->consecutiveBlueCount = 0;
+        track->hitCount = 0;
+        track->missedInferenceCount = 0;
+    }
+
     int findReusableOcr(const PlateTemporalCandidate& candidate,
                         const std::vector<bool>& used,
                         int64_t nowMs) const
@@ -1233,7 +1281,8 @@ private:
 
         pushTextVote(&track.textVotes, candidate, voteCount);
         const std::pair<std::string, int> voted = majorityPlate(track.textVotes);
-        if (track.stablePlate.empty() && !voted.first.empty()) {
+        if (track.stablePlate.empty() && !voted.first.empty() &&
+            voted.second >= plate_temporal_policy::kInitialTextVoteMin) {
             track.stablePlate = voted.first;
             track.stablePinyin = latestPinyinForPlate(track.textVotes,
                                                       track.stablePlate);
@@ -1310,6 +1359,9 @@ private:
         }
 
         ++track.hitCount;
+        track.signature = candidate.signature;
+        track.matchedThisInference = true;
+        track.missedInferenceCount = 0;
         track.lastSeenMs = nowMs;
     }
 
@@ -1328,6 +1380,33 @@ private:
             }
         }
         return -1;
+    }
+
+    int claimSlotForNewTrack()
+    {
+        const int freeSlot = firstFreeSlot();
+        if (freeSlot >= 0) {
+            return freeSlot;
+        }
+
+        // 场景切换时旧轨迹可能占满四个槽位。优先替换本推理周期未匹配
+        // 且最久未出现的轨迹，避免新图片等待600 ms TTL后才能显示。
+        auto replace = tracks_.end();
+        for (auto it = tracks_.begin(); it != tracks_.end(); ++it) {
+            if (!it->active || it->matchedThisInference) {
+                continue;
+            }
+            if (replace == tracks_.end() ||
+                it->lastSeenMs < replace->lastSeenMs) {
+                replace = it;
+            }
+        }
+        if (replace == tracks_.end()) {
+            return -1;
+        }
+        const int slot = replace->slotId;
+        tracks_.erase(replace);
+        return slot;
     }
 
     bool contextValid_ = false;

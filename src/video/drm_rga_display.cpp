@@ -2465,6 +2465,11 @@ void DrmRgaDisplay::workerMain()
         std::vector<uint8_t> npuTileBuffer(640u * 360u * PCIE_BPP);
         std::vector<uint8_t> previewBuffer(640u * 360u * PCIE_BPP);
         uint64_t lastPreviewNs = 0;
+        uint64_t lastAiFrameId = 0;
+        uint64_t lastAiConfigRevision = 0;
+        uint64_t lastAiSourceRevision = 0;
+        uint64_t lastAiResultUpdateNs = 0;
+        constexpr uint64_t kAiOverlayFreshNs = 200000000ULL;
 
         while (!m_stopReq.load()) {
             PcieFrameReceiver::FrameView frame;
@@ -2518,8 +2523,20 @@ void DrmRgaDisplay::workerMain()
             }
 
             NpuFrameResult ai = latestNpuResult();
+            if (ai.frameId != lastAiFrameId ||
+                ai.configRevision != lastAiConfigRevision ||
+                ai.sourceRevision != lastAiSourceRevision) {
+                lastAiFrameId = ai.frameId;
+                lastAiConfigRevision = ai.configRevision;
+                lastAiSourceRevision = ai.sourceRevision;
+                lastAiResultUpdateNs = sensorNow;
+            }
+            const bool aiResultFresh = ai.frameId != 0 &&
+                    lastAiResultUpdateNs != 0 &&
+                    sensorNow >= lastAiResultUpdateNs &&
+                    sensorNow - lastAiResultUpdateNs <= kAiOverlayFreshNs;
             const bool hasMatchingAi = ai.sourceChannel == sourceChannel &&
-                    ai.sourceRevision == routeRevision;
+                    ai.sourceRevision == routeRevision && aiResultFresh;
             if (ai.enabled) {
                 osdStats.aiFps = ai.fps;
                 osdStats.aiTargetFps = ai.targetFps;

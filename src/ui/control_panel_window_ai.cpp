@@ -18,29 +18,20 @@ QString platePostprocessDisplayName(NpuPlatePostprocess mode)
 enum PlateUiMode
 {
     PlateUiStandard = 0,
-    PlateUiStandardEnhanced = 1,
-    PlateUiRule = 2,
-    PlateUiRuleEnhanced = 3
+    PlateUiRuleEnhanced = 1
 };
 
 PlateUiMode plateUiModeFromConfig(NpuPlateModelProfile profile,
                                   NpuPlateCropSource cropSource)
 {
-    if (profile == NpuPlateModelProfile::Legacy) {
-        return cropSource == NpuPlateCropSource::OriginalSource
-                ? PlateUiStandardEnhanced : PlateUiStandard;
-    }
-    return cropSource == NpuPlateCropSource::OriginalSource
-            ? PlateUiRuleEnhanced : PlateUiRule;
+    return profile == NpuPlateModelProfile::V291Candidate &&
+            cropSource == NpuPlateCropSource::OriginalSource
+            ? PlateUiRuleEnhanced : PlateUiStandard;
 }
 
 QString plateUiModeDisplayName(PlateUiMode mode)
 {
     switch (mode) {
-    case PlateUiStandardEnhanced:
-        return QStringLiteral("标准加强");
-    case PlateUiRule:
-        return QStringLiteral("规则模式");
     case PlateUiRuleEnhanced:
         return QStringLiteral("规则加强");
     case PlateUiStandard:
@@ -61,14 +52,6 @@ void applyPlateUiMode(PlateUiMode mode,
 {
     if (!profile || !cropSource) return;
     switch (mode) {
-    case PlateUiStandardEnhanced:
-        *profile = NpuPlateModelProfile::Legacy;
-        *cropSource = NpuPlateCropSource::OriginalSource;
-        break;
-    case PlateUiRule:
-        *profile = NpuPlateModelProfile::V291Candidate;
-        *cropSource = NpuPlateCropSource::DetectorInput;
-        break;
     case PlateUiRuleEnhanced:
         *profile = NpuPlateModelProfile::V291Candidate;
         *cropSource = NpuPlateCropSource::OriginalSource;
@@ -134,8 +117,6 @@ QWidget *ControlPanelWindow::createAiPage()
                 modeGroup,
                 &m_plateModeButtonGroup,
                 {{QStringLiteral("标准模式\nLegacy·检测图ROI"), PlateUiStandard},
-                 {QStringLiteral("标准加强\nLegacy·原图ROI"), PlateUiStandardEnhanced},
-                 {QStringLiteral("规则模式\nv2.9.1·检测图ROI"), PlateUiRule},
                  {QStringLiteral("规则加强\nv2.9.1·原图ROI"), PlateUiRuleEnhanced}},
                 QStringLiteral("aiModeButton"),
                 60,
@@ -782,15 +763,15 @@ void ControlPanelWindow::loadAiSettings()
     }
 
     QSettings settings(aiSettingsPath(), QSettings::IniFormat);
-    constexpr int kPlateSettingsVersion = 2;
+    constexpr int kPlateSettingsVersion = 3;
     const int settingsVersion = settings.value(
                 QStringLiteral("ai/settings_version"), 1).toInt();
     int fps = settings.value(QStringLiteral("ai/target_fps"),
                              NPU_PLATE_TARGET_FPS_DEFAULT).toInt();
-    // v1程序会把15 fps默认值写入配置。首次升级时只迁移这个旧默认值；
-    // 用户明确保存的其他帧率保持不变。
+    // v1/v2分别可能保存15/30 fps旧默认值。升级到v3时只迁移这两个
+    // 已知默认值，其他用户明确保存的帧率保持不变。
     if (settingsVersion < kPlateSettingsVersion &&
-        fps == NPU_TARGET_FPS_DEFAULT) {
+        (fps == NPU_TARGET_FPS_DEFAULT || fps == 30)) {
         fps = NPU_PLATE_TARGET_FPS_DEFAULT;
     }
     const double confidence = settings.value(
@@ -836,7 +817,7 @@ void ControlPanelWindow::saveAiSettings(const NpuTaskConfig &config)
     settings.setValue(QStringLiteral("ai/enabled"), false);
     settings.setValue(QStringLiteral("ai/task"),
                       static_cast<int>(NpuTaskType::PlateCascade));
-    settings.setValue(QStringLiteral("ai/settings_version"), 2);
+    settings.setValue(QStringLiteral("ai/settings_version"), 3);
     settings.setValue(QStringLiteral("ai/target_fps"), config.targetFps);
     settings.setValue(QStringLiteral("ai/confidence"), config.confidence);
     settings.setValue(QStringLiteral("ai/nms"), config.nmsThreshold);

@@ -48,6 +48,7 @@ HEADERS += \
     src/pcie/pcie_frame_receiver.h \
     src/pcie/pango_pci_uapi.h \
     src/npu/npu_inference_worker.h \
+    src/npu/plate_temporal_policy.h \
     src/npu/pedestrian_violation_engine.h \
     src/npu/pedestrian_rule_logic.h \
     src/npu/violation_rule_config.h \
@@ -149,9 +150,12 @@ DISTFILES += \
     docs/SOURCE_VALIDATION_20260725.txt
 
 OTHER_FILES += \
+    docs/PLATE_TRANSITION_V9.md \
     tests/plate_mode_config_test.cpp \
+    tests/plate_temporal_policy_test.cpp \
     tests/pedestrian_rule_logic_test.cpp \
     tests/vehicle_wrong_way_engine_test.cpp \
     tools/test_plate_modes_host.sh \
+    tools/test_plate_temporal_policy_host.sh \
     tools/test_pedestrian_rule_host.sh \
     tools/test_vehicle_wrong_way_host.sh
