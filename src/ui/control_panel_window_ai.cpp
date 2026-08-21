@@ -87,6 +87,9 @@ QWidget *ControlPanelWindow::createAiPage()
 {
     QWidget *page = new QWidget(this);
     QVBoxLayout *pageLayout = new QVBoxLayout(page);
+    // 外层无滚动条viewport负责裁剪边界；禁止子控件sizeHint反向扩大
+    // 顶层DSI窗口并侵入右侧HDMI桌面。
+    pageLayout->setSizeConstraint(QLayout::SetNoConstraint);
     pageLayout->setContentsMargins(6, 4, 6, 4);
     pageLayout->setSpacing(8);
 
@@ -120,7 +123,9 @@ QWidget *ControlPanelWindow::createAiPage()
     };
 
     QGroupBox *modeGroup = new QGroupBox(QStringLiteral("车牌识别模式"), page);
-    modeGroup->setFixedHeight(170);
+    // 34 + 60 + 34 + spacing(14) + layout margins(28) +
+    // QGroupBox stylesheet top margin(16) = 186 px，保留4 px字体余量。
+    modeGroup->setFixedHeight(190);
     QVBoxLayout *modeLayout = new QVBoxLayout(modeGroup);
     modeLayout->setContentsMargins(12, 18, 12, 10);
     modeLayout->setSpacing(7);
@@ -150,7 +155,7 @@ QWidget *ControlPanelWindow::createAiPage()
                  {QStringLiteral("规则模式\nv2.9.1·检测图ROI"), PlateUiRule},
                  {QStringLiteral("规则加强\nv2.9.1·原图ROI"), PlateUiRuleEnhanced}},
                 QStringLiteral("aiModeButton"),
-                58,
+                60,
                 [this](int value) {
         if (m_aiTaskSwitchPending) return;
         applyPlateUiMode(static_cast<PlateUiMode>(value),
@@ -581,7 +586,7 @@ void ControlPanelWindow::updateAiPanel(const NpuFrameResult &result)
         m_aiStatus = QStringLiteral("pending");
     }
 
-    if (m_aiRuntimeLabel) {
+    if (m_aiRuntimeLabel && m_currentPage == PlatePage) {
         if (result.enabled && result.task != NpuTaskType::PlateCascade) {
             m_aiRuntimeLabel->setText(
                         QStringLiteral("当前NPU由“%1”页面占用。\n"
@@ -630,10 +635,25 @@ void ControlPanelWindow::updateAiPanel(const NpuFrameResult &result)
         }
     }
 
-    updateAiCurrentResult(result);
-    updatePedestrianPanel(result);
-    updateWrongWayPanel(result);
-    updateAiTaskButtons();
+    // 后端状态始终更新；只有当前可见业务页才刷新文本、按钮和预览。
+    // 这能避免隐藏页面每200 ms触发样式重算和X11无效重绘。
+    m_pedestrianRunning = result.enabled &&
+            (result.task == NpuTaskType::Pedestrian ||
+             result.task == NpuTaskType::TrafficViolation);
+    m_pedestrianViolationRuleEnabled = m_pedestrianRunning &&
+            result.pedestrianViolationRuleEnabled;
+    m_wrongWayRunning = result.enabled &&
+            result.task == NpuTaskType::VehicleWrongWay;
+    m_wrongWayRuleEnabled = m_wrongWayRunning && result.wrongWayRuleEnabled;
+
+    if (m_currentPage == PlatePage) {
+        updateAiCurrentResult(result);
+        updateAiTaskButtons();
+    } else if (m_currentPage == PedestrianPage) {
+        updatePedestrianPanel(result);
+    } else if (m_currentPage == WrongWayPage) {
+        updateWrongWayPanel(result);
+    }
 }
 void ControlPanelWindow::updateAiCurrentResult(const NpuFrameResult &result)
 {

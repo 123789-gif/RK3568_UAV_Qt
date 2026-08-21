@@ -137,6 +137,18 @@ private slots:
     void onFanPwmChanged(int value);
 
 private:
+    enum PageIndex
+    {
+        VideoPage = 0,
+        PtzPage = 1,
+        FpgaPage = 2,
+        CpuPage = 3,
+        PlatePage = 4,
+        PedestrianPage = 5,
+        WrongWayPage = 6,
+        StatusPage = 7
+    };
+
     void setupControlUi();
     QWidget *createNavPanel();
     QWidget *createVideoPage();
@@ -148,6 +160,8 @@ private:
     QWidget *createWrongWayPage();
     QWidget *createStatusPage();
     void setCurrentPage(int index);
+    void logCurrentPageGeometry() const;
+    void scheduleDisplayRestart(const QString &reason);
     void updateFanUi();
     void requestFpgaMode(quint32 mode);
     void updateFpgaModeButtons();
@@ -198,6 +212,7 @@ private:
     QTimer *m_ptzFrameTimer = nullptr;
     QTimer *m_ptzDeviceMonitorTimer = nullptr;
     QTimer *m_aiUiTimer = nullptr;
+    QTimer *m_displayRestartTimer = nullptr;
 
     QStackedWidget *m_stack = nullptr;
     QLabel *m_bottomStatus = nullptr;
@@ -284,6 +299,12 @@ private:
     VehicleDirectionConfig m_wrongWayConfig;
     std::uint64_t m_wrongWayLastEventId = 0;
     bool m_osdEnabled = true;
+    // “期望运行”与worker当前状态分离。DRM瞬态退出后只在用户仍期望
+    // HDMI运行时做有限次数重建，手动停止不会被自动拉起。
+    bool m_displayDesired = false;
+    int m_displayRestartAttempts = 0;
+    int m_displayHealthySamples = 0;
+    int m_displayRecoveryTotal = 0;
 
     bool m_fpgaControlAvailable = false;
     bool m_fpgaApplyPending = false;

@@ -112,14 +112,66 @@ void ControlPanelWindow::onStartStopClicked()
         return;
     }
 
-    if (!m_display->isRunning()) {
+    // 以用户意图为准，而不是只看worker瞬时状态。这样在自动恢复等待期
+    // 再次点击可可靠取消恢复，不会把已经退出的会话误当成“再次启动”。
+    if (!m_displayDesired) {
+        m_displayDesired = true;
+        m_displayRestartAttempts = 0;
+        m_displayHealthySamples = 0;
+        if (m_displayRestartTimer) {
+            m_displayRestartTimer->stop();
+        }
         onApplyVideoConfigClicked();
-        m_display->startDisplay();
+        if (!m_display->startDisplay()) {
+            m_lastError = m_display->lastErrorString();
+            scheduleDisplayRestart(m_lastError);
+        }
     } else {
+        m_displayDesired = false;
+        m_displayRestartAttempts = 0;
+        m_displayHealthySamples = 0;
+        if (m_displayRestartTimer) {
+            m_displayRestartTimer->stop();
+        }
         m_display->stopDisplay();
+        m_lastAction = QStringLiteral("用户停止HDMI显示");
     }
 
     m_displayRunning = m_display->isRunning();
+    updateStatusText();
+}
+
+void ControlPanelWindow::scheduleDisplayRestart(const QString &reason)
+{
+    constexpr int kMaxRestartAttempts = 2;
+    if (!m_display || !m_displayDesired || m_display->isRunning() ||
+        !m_displayRestartTimer || m_displayRestartTimer->isActive()) {
+        return;
+    }
+
+    if (m_displayRestartAttempts >= kMaxRestartAttempts) {
+        m_displayDesired = false;
+        m_displayHealthySamples = 0;
+        m_lastError = QStringLiteral("HDMI显示连续恢复%1次失败：%2；已停止自动重试")
+                .arg(kMaxRestartAttempts)
+                .arg(reason.isEmpty() ? QStringLiteral("未知错误") : reason);
+        qCritical() << "[HDMI-RECOVERY] exhausted" << m_lastError;
+        updateStatusText();
+        return;
+    }
+
+    ++m_displayRestartAttempts;
+    m_displayHealthySamples = 0;
+    const int delayMs = (m_displayRestartAttempts == 1) ? 400 : 1000;
+    m_displayState = QStringLiteral("HDMI异常退出，%1 ms后恢复（%2/%3）")
+            .arg(delayMs)
+            .arg(m_displayRestartAttempts)
+            .arg(kMaxRestartAttempts);
+    qWarning() << "[HDMI-RECOVERY] scheduled"
+               << "attempt=" << m_displayRestartAttempts
+               << "delay_ms=" << delayMs
+               << "reason=" << reason;
+    m_displayRestartTimer->start(delayMs);
     updateStatusText();
 }
 void ControlPanelWindow::onOsdClicked()
@@ -182,6 +234,13 @@ void ControlPanelWindow::onDisplayStateChanged(QString state)
         m_displayRunning = m_display->isRunning();
     }
 
+    if (state == QStringLiteral("RGA/DRM display running")) {
+        m_displayHealthySamples = 0;
+    } else if (state == QStringLiteral("RGA/DRM exited") &&
+               m_displayDesired) {
+        scheduleDisplayRestart(m_lastError);
+    }
+
     updateFpgaUiAvailability();
     updateStatusText();
 }
@@ -215,6 +274,21 @@ void ControlPanelWindow::onDisplayStatsUpdated(double readFps,
     m_osdAvgUs = osdAvgUs;
     m_plateOsdAvgUs = plateOsdAvgUs;
     m_npuPrepareAvgUs = npuPrepareAvgUs;
+
+    // 连续三个统计周期有有效page flip，才视为恢复成功并重新开放
+    // 后续两次自动恢复额度，避免启动瞬间抖动形成无限重启环。
+    if (m_displayDesired && m_displayRunning && flipFps > 1.0) {
+        if (++m_displayHealthySamples >= 3) {
+            if (m_displayRestartAttempts > 0) {
+                qInfo() << "[HDMI-RECOVERY] session stable"
+                        << "recoveries_total=" << m_displayRecoveryTotal;
+            }
+            m_displayHealthySamples = 3;
+            m_displayRestartAttempts = 0;
+        }
+    } else {
+        m_displayHealthySamples = 0;
+    }
 
     updateStatusText();
 }

@@ -23,6 +23,7 @@
 #include <QDoubleSpinBox>
 #include <QAbstractSpinBox>
 #include <QScrollArea>
+#include <QScrollBar>
 #include <QSettings>
 #include <QCoreApplication>
 #include <QFrame>

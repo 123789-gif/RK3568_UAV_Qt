@@ -4,7 +4,7 @@
 ControlPanelWindow::ControlPanelWindow(QWidget *parent)
     : QMainWindow(parent)
 {
-    setWindowTitle(QStringLiteral("智能交通感知控制台｜BUILD-CHECK-01"));
+    setWindowTitle(QStringLiteral("智能交通感知控制台｜BUILD-CHECK-05"));
 
     m_display = new DrmRgaDisplay(this);
     m_ptzCapture = new PtzCaptureWorker(this);
@@ -78,10 +78,10 @@ ControlPanelWindow::ControlPanelWindow(QWidget *parent)
                    quint64 sourceRevision) {
         Q_UNUSED(frameId)
         Q_UNUSED(sourceRevision)
-        if (m_pedestrianPreview) {
+        if (m_currentPage == PedestrianPage && m_pedestrianPreview) {
             m_pedestrianPreview->setFrame(image);
         }
-        if (m_wrongWayPreview) {
+        if (m_currentPage == WrongWayPage && m_wrongWayPreview) {
             m_wrongWayPreview->setFrame(image);
         }
         if (sourceChannel != m_wrongWaySourceChannel) {
@@ -101,6 +101,24 @@ ControlPanelWindow::ControlPanelWindow(QWidget *parent)
     connect(m_aiUiTimer, &QTimer::timeout,
             this, &ControlPanelWindow::onAiUiTimer);
     m_aiUiTimer->start(200);
+
+    m_displayRestartTimer = new QTimer(this);
+    m_displayRestartTimer->setSingleShot(true);
+    connect(m_displayRestartTimer, &QTimer::timeout, this, [this]() {
+        if (!m_display || !m_displayDesired || m_display->isRunning()) {
+            return;
+        }
+        ++m_displayRecoveryTotal;
+        m_lastAction = QStringLiteral("自动重建HDMI显示会话：第%1次")
+                .arg(m_displayRestartAttempts);
+        qWarning() << "[HDMI-RECOVERY] restart attempt"
+                   << m_displayRestartAttempts
+                   << "total=" << m_displayRecoveryTotal;
+        if (!m_display->startDisplay()) {
+            scheduleDisplayRestart(m_display->lastErrorString());
+        }
+        updateStatusText();
+    });
 
     // Qt按20 fps取最新帧。当前低CPU版本的PTZ采集同样为20 fps，
     // 不向主线程排队，也不影响PCIe HDMI显示链路。
@@ -141,6 +159,11 @@ ControlPanelWindow::~ControlPanelWindow()
     if (m_aiUiTimer) {
         m_aiUiTimer->stop();
     }
+
+    if (m_displayRestartTimer) {
+        m_displayRestartTimer->stop();
+    }
+    m_displayDesired = false;
 
     if (m_ptzFrameTimer) {
         m_ptzFrameTimer->stop();
@@ -185,8 +208,12 @@ void ControlPanelWindow::showWindows()
     setWindowFlag(Qt::FramelessWindowHint, true);
     const QRect target = controlScreen
             ? controlScreen->availableGeometry() : QRect(0, 0, 1280, 720);
-    setGeometry(target);
+    // 页面内容不得通过minimumSizeHint把顶层窗口推入右侧HDMI桌面。
+    // 固定DSI窗口几何；局部低分辨率兼容由各页面viewport负责。
+    setFixedSize(target.size());
+    move(target.topLeft());
     show();
+    QTimer::singleShot(0, this, [this]() { logCurrentPageGeometry(); });
 
     qDebug() << "ControlPanelWindow geometry:" << geometry();
 
@@ -209,7 +236,7 @@ void ControlPanelWindow::setupControlUi()
     QLabel *title = new QLabel(QStringLiteral("智能交通感知控制台"), central);
     title->setObjectName("titleLabel");
     title->setAlignment(Qt::AlignCenter);
-    title->setFixedHeight(38);
+    title->setFixedHeight(42);
     root->addWidget(title);
 
     QHBoxLayout *body = new QHBoxLayout();
@@ -218,25 +245,31 @@ void ControlPanelWindow::setupControlUi()
     body->addWidget(createNavPanel(), 0);
 
     m_stack = new QStackedWidget(central);
-    const auto addScrollablePage = [this](QWidget *page) {
+    const auto addPageViewport = [this](QWidget *page,
+                                        Qt::ScrollBarPolicy verticalPolicy) {
         QScrollArea *scroll = new QScrollArea(m_stack);
         scroll->setObjectName(QStringLiteral("pageScrollArea"));
         scroll->setWidgetResizable(true);
+        scroll->setSizeAdjustPolicy(QAbstractScrollArea::AdjustIgnored);
+        scroll->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Ignored);
         scroll->setFrameShape(QFrame::NoFrame);
-        scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
-        scroll->setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+        scroll->setHorizontalScrollBarPolicy(
+                    verticalPolicy == Qt::ScrollBarAlwaysOff
+                    ? Qt::ScrollBarAlwaysOff : Qt::ScrollBarAsNeeded);
+        scroll->setVerticalScrollBarPolicy(verticalPolicy);
         scroll->setWidget(page);
         m_stack->addWidget(scroll);
     };
-    addScrollablePage(createVideoPage());
-    addScrollablePage(createPtzPage());
-    addScrollablePage(createFpgaPage());
-    addScrollablePage(createCpuPage());
-    // 车牌页按1280x720有效高度固定排布，禁止内容尺寸变化触发整页滚动。
-    m_stack->addWidget(createAiPage());
-    addScrollablePage(createPedestrianPage());
-    addScrollablePage(createWrongWayPage());
-    addScrollablePage(createStatusPage());
+    addPageViewport(createVideoPage(), Qt::ScrollBarAsNeeded);
+    addPageViewport(createPtzPage(), Qt::ScrollBarAsNeeded);
+    addPageViewport(createFpgaPage(), Qt::ScrollBarAsNeeded);
+    addPageViewport(createCpuPage(), Qt::ScrollBarAsNeeded);
+    // 车牌页仍使用viewport隔离sizeHint，但明确关闭竖向滚动条。
+    // 页面内部按1280x720有效高度固定布局，不允许滚动掩盖布局错误。
+    addPageViewport(createAiPage(), Qt::ScrollBarAlwaysOff);
+    addPageViewport(createPedestrianPage(), Qt::ScrollBarAsNeeded);
+    addPageViewport(createWrongWayPage(), Qt::ScrollBarAsNeeded);
+    addPageViewport(createStatusPage(), Qt::ScrollBarAsNeeded);
     body->addWidget(m_stack, 1);
 
     root->addLayout(body, 1);
@@ -294,5 +327,36 @@ void ControlPanelWindow::setCurrentPage(int index)
 
     m_currentPage = index;
     m_stack->setCurrentIndex(index);
+    if (m_display) {
+        updateAiPanel(m_display->latestNpuResult());
+    }
     updateStatusText();
+    QTimer::singleShot(0, this, [this]() { logCurrentPageGeometry(); });
+}
+
+void ControlPanelWindow::logCurrentPageGeometry() const
+{
+    if (!m_stack || m_currentPage < 0 || m_currentPage >= m_stack->count()) {
+        return;
+    }
+    QWidget *page = m_stack->widget(m_currentPage);
+    QScrollArea *scroll = qobject_cast<QScrollArea *>(page);
+    QWidget *content = scroll ? scroll->widget() : page;
+    QRect screenGeometry;
+    for (QScreen *candidate : QApplication::screens()) {
+        if (candidate && candidate->geometry().contains(frameGeometry().center())) {
+            screenGeometry = candidate->geometry();
+            break;
+        }
+    }
+    qInfo() << "[UI-GEOMETRY] page=" << m_currentPage
+            << "window=" << geometry()
+            << "stack=" << m_stack->geometry()
+            << "page=" << (page ? page->geometry() : QRect())
+            << "content=" << (content ? content->geometry() : QRect())
+            << "content_min_hint=" << (content ? content->minimumSizeHint() : QSize())
+            << "h_scroll=" << (scroll && scroll->horizontalScrollBar()->isVisible())
+            << "v_scroll=" << (scroll && scroll->verticalScrollBar()->isVisible())
+            << "screen=" << screenGeometry
+            << "display_running=" << (m_display && m_display->isRunning());
 }

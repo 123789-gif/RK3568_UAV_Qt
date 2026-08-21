@@ -441,9 +441,12 @@ void ControlPanelWindow::updateWrongWayButtons()
             (m_display && m_display->latestNpuResult().modelSwitching);
     if (m_btnWrongWayStart) {
         m_btnWrongWayStart->setEnabled(!m_wrongWayRunning && routeReady && !switching);
-        m_btnWrongWayStart->setProperty("violationActive", m_wrongWayRunning);
-        m_btnWrongWayStart->style()->unpolish(m_btnWrongWayStart);
-        m_btnWrongWayStart->style()->polish(m_btnWrongWayStart);
+        if (m_btnWrongWayStart->property("violationActive").toBool() !=
+                m_wrongWayRunning) {
+            m_btnWrongWayStart->setProperty("violationActive", m_wrongWayRunning);
+            m_btnWrongWayStart->style()->unpolish(m_btnWrongWayStart);
+            m_btnWrongWayStart->style()->polish(m_btnWrongWayStart);
+        }
     }
     if (m_btnWrongWayStop)
         m_btnWrongWayStop->setEnabled(m_wrongWayRunning && !switching);

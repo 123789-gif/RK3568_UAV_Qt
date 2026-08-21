@@ -28,7 +28,7 @@ QWidget *ControlPanelWindow::createPedestrianPage()
     QPushButton *save = new QPushButton(QStringLiteral("保存配置"), regionButtons);
     for (QPushButton *button : {editLight, editCrosswalk, undo, clear, save}) {
         button->setObjectName(QStringLiteral("violationCompactButton"));
-        button->setFixedHeight(40);
+        button->setFixedHeight(42);
         regionLayout->addWidget(button, 1);
     }
     previewLayout->addWidget(regionButtons);
@@ -58,21 +58,21 @@ QWidget *ControlPanelWindow::createPedestrianPage()
     m_btnPedestrianStop = new QPushButton(QStringLiteral("关闭行人模型"), modelGroup);
     m_btnPedestrianStart->setObjectName(QStringLiteral("violationRunButton"));
     m_btnPedestrianStop->setObjectName(QStringLiteral("violationRunButton"));
-    m_btnPedestrianStart->setFixedHeight(44);
-    m_btnPedestrianStop->setFixedHeight(44);
+    m_btnPedestrianStart->setFixedHeight(48);
+    m_btnPedestrianStop->setFixedHeight(48);
 
     m_pedestrianConfSpin = new QDoubleSpinBox(modelGroup);
     m_pedestrianConfSpin->setRange(0.10, 0.95);
     m_pedestrianConfSpin->setSingleStep(0.05);
     m_pedestrianConfSpin->setDecimals(2);
     m_pedestrianConfSpin->setValue(0.50);
-    m_pedestrianConfSpin->setFixedHeight(40);
+    m_pedestrianConfSpin->setFixedHeight(42);
     m_pedestrianNmsSpin = new QDoubleSpinBox(modelGroup);
     m_pedestrianNmsSpin->setRange(0.10, 0.90);
     m_pedestrianNmsSpin->setSingleStep(0.05);
     m_pedestrianNmsSpin->setDecimals(2);
     m_pedestrianNmsSpin->setValue(0.45);
-    m_pedestrianNmsSpin->setFixedHeight(40);
+    m_pedestrianNmsSpin->setFixedHeight(42);
 
     modelGrid->addWidget(m_btnPedestrianStart, 0, 0, 1, 2);
     modelGrid->addWidget(m_btnPedestrianStop, 0, 2, 1, 2);
@@ -105,7 +105,7 @@ QWidget *ControlPanelWindow::createPedestrianPage()
         QPushButton *button = new QPushButton(text, lightModeWidget);
         button->setCheckable(true);
         button->setObjectName(QStringLiteral("violationLightButton"));
-        button->setFixedHeight(38);
+        button->setFixedHeight(40);
         m_pedestrianLightModeGroup->addButton(button, static_cast<int>(mode));
         lightModeLayout->addWidget(button, 1);
     };
@@ -359,9 +359,12 @@ void ControlPanelWindow::updatePedestrianButtons()
             m_display->videoRoute() == VideoRoute::Overview;
     if (m_btnPedestrianStart) {
         m_btnPedestrianStart->setEnabled(!m_pedestrianRunning && overview && !switching);
-        m_btnPedestrianStart->setProperty("violationActive", m_pedestrianRunning);
-        m_btnPedestrianStart->style()->unpolish(m_btnPedestrianStart);
-        m_btnPedestrianStart->style()->polish(m_btnPedestrianStart);
+        if (m_btnPedestrianStart->property("violationActive").toBool() !=
+                m_pedestrianRunning) {
+            m_btnPedestrianStart->setProperty("violationActive", m_pedestrianRunning);
+            m_btnPedestrianStart->style()->unpolish(m_btnPedestrianStart);
+            m_btnPedestrianStart->style()->polish(m_btnPedestrianStart);
+        }
     }
     if (m_btnPedestrianStop)
         m_btnPedestrianStop->setEnabled(m_pedestrianRunning && !switching);

@@ -278,6 +278,9 @@ void ControlPanelWindow::updateStatusText()
     detail += QString("HDMI运行 : %1\n").arg(m_displayRunning ? "RUN" : "STOP");
     detail += QString("显示后端 : PCIe + RGA + DRM/KMS\n");
     detail += QString("显示状态 : %1\n").arg(m_displayState);
+    detail += QString("显示意图 : %1｜恢复次数：%2\n")
+            .arg(m_displayDesired ? QStringLiteral("RUN") : QStringLiteral("STOP"))
+            .arg(m_displayRecoveryTotal);
     detail += QString("显示规格 : %1x%2 RGB565\n")
             .arg(m_display ? m_display->outputWidth() : 0)
             .arg(m_display ? m_display->outputHeight() : 0);
