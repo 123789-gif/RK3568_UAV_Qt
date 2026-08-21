@@ -23,6 +23,7 @@
 #include <ctime>
 #include <cctype>
 #include <cmath>
+#include <memory>
 #include <vector>
 #include <string>
 #include <system_error>
@@ -1473,11 +1474,37 @@ static void drm_destroy_fb(DrmState &d, DrmFb &fb)
     }
 }
 
-static void drm_cleanup(DrmState &d)
+static void drm_cleanup(DrmState &d, bool restorePreviousCrtc)
 {
-    if (d.fd >= 0 && d.oldCrtc) {
-        drmModeSetCrtc(d.fd, d.oldCrtc->crtc_id, d.oldCrtc->buffer_id,
-                       d.oldCrtc->x, d.oldCrtc->y, &d.connId, 1, &d.oldCrtc->mode);
+    if (d.fd >= 0) {
+        if (restorePreviousCrtc) {
+            if (d.oldCrtc) {
+                drmModeSetCrtc(d.fd, d.oldCrtc->crtc_id,
+                               d.oldCrtc->buffer_id,
+                               d.oldCrtc->x, d.oldCrtc->y,
+                               &d.connId, 1, &d.oldCrtc->mode);
+            }
+        } else if (d.crtcId != 0) {
+            // 异常重启期间不能恢复启动前的X11桌面。先从当前CRTC安全
+            // 解绑本进程FB，再释放资源；解绑失败时回退到旧CRTC，避免
+            // 删除仍被扫描输出引用的dumb buffer。
+            if (drmModeSetCrtc(d.fd, d.crtcId, 0, 0, 0,
+                               nullptr, 0, nullptr) != 0) {
+                const int saved = errno;
+                fprintf(stderr,
+                        "drm abnormal detach failed: errno=%d(%s); restoring previous CRTC\n",
+                        saved, strerror(saved));
+                if (d.oldCrtc) {
+                    drmModeSetCrtc(d.fd, d.oldCrtc->crtc_id,
+                                   d.oldCrtc->buffer_id,
+                                   d.oldCrtc->x, d.oldCrtc->y,
+                                   &d.connId, 1, &d.oldCrtc->mode);
+                }
+            } else {
+                fprintf(stderr,
+                        "drm abnormal cleanup: HDMI detached without restoring X11 desktop\n");
+            }
+        }
     }
     drm_destroy_fb(d, d.fb[0]);
     drm_destroy_fb(d, d.fb[1]);
@@ -1608,15 +1635,83 @@ static bool drm_init(DrmState &d, const char *cardPath, int reqW, int reqH)
     return true;
 }
 
-// FlipWaitState 必须至少与 DRM fd 同生命周期。不能把栈内临时对象作为
-// drmModePageFlip() 的 user_data 后在超时路径提前返回：迟到事件随后由
-// drmHandleEvent() 分发时会访问已经失效的地址。
-struct FlipWaitState { bool pending = false; };
+// 每一笔flip使用独立事件对象。超时事件可能迟到，不能复用同一个pending
+// 布尔量，否则上一笔迟到事件会错误完成下一笔flip。
+struct FlipEventState
+{
+    bool delivered = false;
+    uint64_t sequence = 0;
+    uint32_t fbId = 0;
+};
+
+// lateEvents至少与DRM fd同生命周期。只有drmHandleEvent确认事件已交付后
+// 才能释放对应user_data；关闭fd后内核不会再向用户态分发这些事件。
+struct FlipWaitState
+{
+    uint64_t nextSequence = 1;
+    int consecutiveRecoveries = 0;
+    uint64_t timeoutTotal = 0;
+    uint64_t forcedModesetTotal = 0;
+    std::vector<std::unique_ptr<FlipEventState>> lateEvents;
+};
 
 static void page_flip_handler(int, unsigned int, unsigned int, unsigned int, void *data)
 {
-    FlipWaitState *st = static_cast<FlipWaitState *>(data);
-    if (st) st->pending = 0;
+    FlipEventState *event = static_cast<FlipEventState *>(data);
+    if (event) event->delivered = true;
+}
+
+static void prune_delivered_flip_events(FlipWaitState &wait)
+{
+    wait.lateEvents.erase(
+                std::remove_if(wait.lateEvents.begin(), wait.lateEvents.end(),
+                               [](const std::unique_ptr<FlipEventState> &event) {
+        return !event || event->delivered;
+    }), wait.lateEvents.end());
+}
+
+static bool drain_late_flip_events(DrmState &d,
+                                   FlipWaitState &wait,
+                                   drmEventContext &ev)
+{
+    // drmHandleEvent一次通常会消费当前fd上的全部已排队事件；循环上限防止
+    // 异常驱动持续返回可读导致显示线程长时间停在清理路径。
+    for (int i = 0; i < 8; ++i) {
+        struct pollfd pfd {};
+        pfd.fd = d.fd;
+        pfd.events = POLLIN;
+        const int pr = poll(&pfd, 1, 0);
+        if (pr < 0) {
+            if (errno == EINTR) {
+                --i;
+                continue;
+            }
+            perror("poll late DRM event");
+            return false;
+        }
+        if (pr == 0) break;
+        if (!(pfd.revents & POLLIN)) {
+            fprintf(stderr, "unexpected late DRM poll revents=0x%x\n",
+                    pfd.revents);
+            return false;
+        }
+        if (drmHandleEvent(d.fd, &ev) != 0) {
+            if (errno == EINTR) {
+                --i;
+                continue;
+            }
+            perror("drmHandleEvent late");
+            return false;
+        }
+    }
+    prune_delivered_flip_events(wait);
+    return true;
+}
+
+static bool force_present_fb(DrmState &d, uint32_t fbId)
+{
+    return drmModeSetCrtc(d.fd, d.crtcId, fbId, 0, 0,
+                          &d.connId, 1, &d.mode) == 0;
 }
 
 static bool drm_present_fb_blocking(DrmState &d,
@@ -1624,28 +1719,55 @@ static bool drm_present_fb_blocking(DrmState &d,
                                     FlipWaitState &wait,
                                     const std::atomic<bool> &stopReq)
 {
-    // 正常阻塞流程在返回前已经消费上一笔事件，因此这里出现 pending
-    // 说明前一笔 flip 没有被完整收尾。停止当前显示会话比在热路径强制
-    // drmModeSetCrtc 更安全，后者会造成 HDMI 重新同步和可见闪烁。
-    if (wait.pending) {
-        fprintf(stderr, "drm present refused: previous pageflip still pending\n");
-        return false;
-    }
-
-    wait.pending = true;
-    int ret = drmModePageFlip(d.fd, d.crtcId, fbId, DRM_MODE_PAGE_FLIP_EVENT, &wait);
-    if (ret != 0) {
-        const int saved = errno;
-        wait.pending = false;  // pageFlip 失败，没有属于本次请求的事件。
-        fprintf(stderr, "drm present failed: errno=%d(%s), fb_id=%u crtc=%u conn=%u mode=%dx%d\n",
-                saved, strerror(saved), fbId, d.crtcId, d.connId, d.modeW, d.modeH);
-        return false;
-    }
+    constexpr std::size_t kMaxLateEvents = 16;
+    constexpr int kMaxConsecutiveRecoveries = 3;
 
     drmEventContext ev {};
     ev.version = DRM_EVENT_CONTEXT_VERSION;
     ev.page_flip_handler = page_flip_handler;
-    while (wait.pending && !stopReq.load()) {
+
+    if (!drain_late_flip_events(d, wait, ev)) {
+        return false;
+    }
+    if (wait.lateEvents.size() >= kMaxLateEvents) {
+        fprintf(stderr,
+                "drm present refused: unresolved late events=%zu\n",
+                wait.lateEvents.size());
+        return false;
+    }
+
+    std::unique_ptr<FlipEventState> event(new FlipEventState);
+    event->sequence = wait.nextSequence++;
+    event->fbId = fbId;
+    const uint64_t sequence = event->sequence;
+
+    const int ret = drmModePageFlip(d.fd, d.crtcId, fbId,
+                                    DRM_MODE_PAGE_FLIP_EVENT, event.get());
+    if (ret != 0) {
+        const int saved = errno;
+        // EBUSY通常表示前一笔超时事件尚未被驱动完整收尾。使用同一fd和
+        // 已分配FB做一次受限重同步，避免直接拆毁会话并露出X11桌面。
+        if (saved == EBUSY &&
+            wait.consecutiveRecoveries < kMaxConsecutiveRecoveries &&
+            force_present_fb(d, fbId)) {
+            ++wait.consecutiveRecoveries;
+            ++wait.forcedModesetTotal;
+            fprintf(stderr,
+                    "drm pageflip busy recovered by modeset: seq=%" PRIu64
+                    " fb_id=%u consecutive=%d forced_total=%" PRIu64 "\n",
+                    sequence, fbId, wait.consecutiveRecoveries,
+                    wait.forcedModesetTotal);
+            return true;
+        }
+        fprintf(stderr,
+                "drm present failed: seq=%" PRIu64
+                " errno=%d(%s), fb_id=%u crtc=%u conn=%u mode=%dx%d\n",
+                sequence, saved, strerror(saved), fbId, d.crtcId,
+                d.connId, d.modeW, d.modeH);
+        return false;
+    }
+
+    while (!event->delivered && !stopReq.load()) {
         struct pollfd pfd {};
         pfd.fd = d.fd;
         pfd.events = POLLIN;
@@ -1656,10 +1778,45 @@ static bool drm_present_fb_blocking(DrmState &d,
             return false;
         }
         if (pr == 0) {
-            // 保留 pending=true，直到 DRM fd 在本次显示会话 cleanup 中关闭。
-            // 调用方必须退出当前显示循环，不能继续提交下一笔 page flip。
-            fprintf(stderr, "drm pageflip event timeout, fb_id=%u; stopping display session\n",
-                    fbId);
+            uint32_t currentFb = 0;
+            drmModeCrtc *currentCrtc = drmModeGetCrtc(d.fd, d.crtcId);
+            if (currentCrtc) {
+                currentFb = currentCrtc->buffer_id;
+                drmModeFreeCrtc(currentCrtc);
+            }
+
+            bool recovered = currentFb == fbId;
+            const char *method = "confirmed-current-fb";
+            if (!recovered &&
+                wait.consecutiveRecoveries < kMaxConsecutiveRecoveries) {
+                recovered = force_present_fb(d, fbId);
+                method = "forced-modeset";
+                if (recovered) ++wait.forcedModesetTotal;
+            }
+
+            // flip已经成功提交，因此无论是否恢复，user_data都必须保留到
+            // 迟到事件被消费或DRM fd关闭。
+            wait.lateEvents.emplace_back(std::move(event));
+            if (recovered &&
+                wait.consecutiveRecoveries < kMaxConsecutiveRecoveries) {
+                ++wait.consecutiveRecoveries;
+                ++wait.timeoutTotal;
+                fprintf(stderr,
+                        "drm pageflip timeout recovered: seq=%" PRIu64
+                        " target_fb=%u current_fb=%u method=%s"
+                        " consecutive=%d timeout_total=%" PRIu64
+                        " forced_total=%" PRIu64 "\n",
+                        sequence, fbId, currentFb, method,
+                        wait.consecutiveRecoveries,
+                        wait.timeoutTotal, wait.forcedModesetTotal);
+                return true;
+            }
+
+            fprintf(stderr,
+                    "drm pageflip timeout unrecovered: seq=%" PRIu64
+                    " target_fb=%u current_fb=%u consecutive=%d\n",
+                    sequence, fbId, currentFb,
+                    wait.consecutiveRecoveries);
             return false;
         }
         if (pfd.revents & POLLIN) {
@@ -1674,7 +1831,13 @@ static bool drm_present_fb_blocking(DrmState &d,
             return false;
         }
     }
-    return !stopReq.load() && !wait.pending;
+    if (!event->delivered) {
+        // stop请求可能与已提交flip并发；保留user_data到随后的fd关闭。
+        wait.lateEvents.emplace_back(std::move(event));
+        return false;
+    }
+    wait.consecutiveRecoveries = 0;
+    return !stopReq.load();
 }
 
 DrmRgaDisplay::DrmRgaDisplay(QObject *parent)
@@ -1958,6 +2121,7 @@ void DrmRgaDisplay::workerMain()
     PcieFrameReceiver pcie;
     DrmState drm;
     FlipWaitState flipWait {};
+    bool drmOutputActivated = false;
     std::atomic<bool> fpgaControlStop {false};
     std::thread fpgaControlThread;
 
@@ -2287,6 +2451,7 @@ void DrmRgaDisplay::workerMain()
             setLastError(QString("drmModeSetCrtc failed: %1").arg(strerror(errno)));
             goto cleanup;
         }
+        drmOutputActivated = true;
 
         uint64_t lastNs = now_ns();
         uint64_t lastSensorNs = 0;
@@ -2464,11 +2629,11 @@ void DrmRgaDisplay::workerMain()
             } else {
                 failCnt++;
                 failTotal++;
-                // page flip 失败/超时后不能继续复用可能仍有 pending 事件的
-                // DRM fd。退出本次会话，由用户重新启动显示完成干净重建。
+                // 同一会话内的受限恢复已失败；关闭当前DRM fd，让控制层
+                // 自动重建干净会话。迟到事件的user_data保持到fd关闭。
                 if (!m_stopReq.load()) {
                     setLastError(QStringLiteral(
-                            "DRM page flip失败，显示会话已安全停止；请重新启动PCIe视频"));
+                            "DRM page flip连续恢复失败，正在重建HDMI显示会话"));
                 }
                 break;
             }
@@ -2560,9 +2725,11 @@ cleanup:
                                     0, 0, 0, 0, 0,
                                     QStringLiteral("PCIe显示已停止，网络视频输出控制不可用"));
     pcie.close();
-    // drm_init 失败时也可能已经打开 fd、获取 connector/CRTC 或创建首个 FB。
-    // drm_cleanup 对空成员安全，始终调用以释放部分初始化资源。
-    drm_cleanup(drm);
+    // 用户主动停止/正常退出时恢复原桌面；运行中异常退出时先保持HDMI
+    // 与X11隔离，等待控制层自动重建DRM会话，避免短暂退回Linaro桌面。
+    // drm_init失败时尚未接管输出，仍恢复原CRTC并安全释放部分资源。
+    const bool restorePreviousCrtc = !drmOutputActivated || m_stopReq.load();
+    drm_cleanup(drm, restorePreviousCrtc);
     if (m_npuWorker) m_npuWorker->stop();
 
     m_running.store(false);
