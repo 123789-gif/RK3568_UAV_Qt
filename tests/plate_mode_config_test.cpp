@@ -30,6 +30,11 @@ void verifyMode(NpuPlateModelProfile profile,
 
 int main()
 {
+    NpuTaskConfig vehicleConfig;
+    vehicleConfig.task = NpuTaskType::VehicleWrongWay;
+    vehicleConfig.wrongWayRuleEnabled = true;
+    require(sanitizeNpuTaskConfig(vehicleConfig).wrongWayRuleEnabled,
+            "vehicle rule enable flag was not preserved");
     verifyMode(NpuPlateModelProfile::Legacy,
                NpuPlateCropSource::DetectorInput,
                "legacy detector ROI was not preserved");

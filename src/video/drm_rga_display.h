@@ -183,6 +183,7 @@ private:
 
     std::unique_ptr<NpuInferenceWorker> m_npuWorker;
 
+    mutable std::mutex m_lastErrorMutex;
     QString m_lastError = "none";
 };
 

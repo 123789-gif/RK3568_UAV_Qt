@@ -229,17 +229,22 @@ void ViolationPreviewWidget::paintEvent(QPaintEvent* event)
         painter.drawPolygon(polygon);
     }
 
-    if (m_result.task == NpuTaskType::TrafficViolation && m_result.ready) {
+    if ((m_result.task == NpuTaskType::Pedestrian ||
+         m_result.task == NpuTaskType::TrafficViolation) && m_result.ready) {
         for (const NpuBox& box : m_result.pedestrians) {
             const QRectF pedestrian(target.left() + box.x / 640.0 * target.width(),
                                     target.top() + box.y / 360.0 * target.height(),
                                     box.w / 640.0 * target.width(),
                                     box.h / 360.0 * target.height());
-            painter.setPen(QPen(pedestrianColor(box.pedestrianState), 3.0));
+            const bool rawModel = m_result.task == NpuTaskType::Pedestrian;
+            painter.setPen(QPen(rawModel ? QColor(45, 230, 115)
+                                        : pedestrianColor(box.pedestrianState), 3.0));
             painter.setBrush(Qt::NoBrush);
             painter.drawRect(pedestrian);
             painter.drawText(pedestrian.topLeft() + QPointF(2.0, 18.0),
-                             QStringLiteral("ID %1").arg(box.trackId));
+                             rawModel
+                             ? QStringLiteral("PED %1").arg(box.score, 0, 'f', 2)
+                             : QStringLiteral("ID %1").arg(box.trackId));
         }
     }
 

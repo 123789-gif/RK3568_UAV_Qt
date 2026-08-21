@@ -144,7 +144,7 @@ private:
     QWidget *createFpgaPage();
     QWidget *createCpuPage();
     QWidget *createAiPage();
-    QWidget *createViolationPage();
+    QWidget *createPedestrianPage();
     QWidget *createWrongWayPage();
     QWidget *createStatusPage();
     void setCurrentPage(int index);
@@ -162,16 +162,14 @@ private:
     void updateAiTaskButtons();
     void loadAiSettings();
     void saveAiSettings(const NpuTaskConfig &config);
-    void loadViolationSettings();
-    bool saveViolationSettings();
-    void startViolationDetection();
-    void stopViolationDetection(bool restorePreviousConfig = true);
-    void updateViolationPanel(const NpuFrameResult &result);
-    void updateViolationButtons();
+    void startPedestrianDetection();
+    void stopPedestrianDetection();
+    void updatePedestrianPanel(const NpuFrameResult &result);
+    void updatePedestrianButtons();
     void loadWrongWaySettings(int sourceChannel);
     bool saveWrongWaySettings();
     void startWrongWayDetection();
-    void stopWrongWayDetection(bool restorePreviousConfig = true);
+    void stopWrongWayDetection();
     void updateWrongWayPanel(const NpuFrameResult &result);
     void updateWrongWayButtons();
     void updateWrongWayLaneSelector();
@@ -250,36 +248,31 @@ private:
     QLabel *m_aiRuntimeLabel = nullptr;
     QLabel *m_aiCurrentResultLabel = nullptr;
 
-    ViolationPreviewWidget *m_violationPreview = nullptr;
-    QButtonGroup *m_violationLightModeGroup = nullptr;
-    QPushButton *m_btnViolationStart = nullptr;
-    QPushButton *m_btnViolationStop = nullptr;
-    QLabel *m_violationEditStatusLabel = nullptr;
-    QLabel *m_violationRuntimeLabel = nullptr;
-    QLabel *m_violationResultLabel = nullptr;
+    ViolationPreviewWidget *m_pedestrianPreview = nullptr;
+    QPushButton *m_btnPedestrianStart = nullptr;
+    QPushButton *m_btnPedestrianStop = nullptr;
+    QDoubleSpinBox *m_pedestrianConfSpin = nullptr;
+    QDoubleSpinBox *m_pedestrianNmsSpin = nullptr;
+    QLabel *m_pedestrianRuntimeLabel = nullptr;
+    QLabel *m_pedestrianResultLabel = nullptr;
 
     WrongWayPreviewWidget *m_wrongWayPreview = nullptr;
     QButtonGroup *m_wrongWayPresetGroup = nullptr;
     QPushButton *m_btnWrongWayStart = nullptr;
     QPushButton *m_btnWrongWayStop = nullptr;
+    QPushButton *m_btnWrongWayRule = nullptr;
     QLabel *m_wrongWayEditStatusLabel = nullptr;
     QComboBox *m_wrongWayLaneCombo = nullptr;
     QLabel *m_wrongWayRuntimeLabel = nullptr;
     QLabel *m_wrongWayResultLabel = nullptr;
 
     bool m_displayRunning = false;
-    bool m_violationRunning = false;
-    bool m_violationConfigDirty = false;
-    ViolationRuleConfig m_violationConfig;
-    NpuTaskConfig m_violationPreviousAiConfig;
-    bool m_violationPreviousAiConfigValid = false;
-    std::uint64_t m_violationLastEventId = 0;
+    bool m_pedestrianRunning = false;
     bool m_wrongWayRunning = false;
+    bool m_wrongWayRuleEnabled = false;
     bool m_wrongWayConfigDirty = false;
     int m_wrongWaySourceChannel = -1;
     VehicleDirectionConfig m_wrongWayConfig;
-    NpuTaskConfig m_wrongWayPreviousAiConfig;
-    bool m_wrongWayPreviousAiConfigValid = false;
     std::uint64_t m_wrongWayLastEventId = 0;
     bool m_osdEnabled = true;
 

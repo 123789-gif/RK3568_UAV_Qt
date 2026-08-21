@@ -386,15 +386,16 @@ void ControlPanelWindow::onApplyAiConfigClicked()
         return;
     }
 
-    if (m_violationRunning) {
-        stopViolationDetection(false);
-    }
+    m_pedestrianRunning = false;
+    m_wrongWayRunning = false;
+    m_wrongWayRuleEnabled = false;
 
     const NpuTaskConfig previous = m_display->npuConfig();
     NpuTaskConfig config = previous;
     m_aiRequestedTask = NpuTaskType::PlateCascade;
     config.enabled = true;
     config.task = NpuTaskType::PlateCascade;
+    config.wrongWayRuleEnabled = false;
     config.plateModelProfile = m_aiRequestedPlateProfile;
     config.platePostprocess = m_aiRequestedPlatePostprocess;
     config.plateCropSource = m_aiRequestedPlateCropSource;
@@ -444,6 +445,8 @@ void ControlPanelWindow::onApplyAiConfigClicked()
             .arg(config.confidence, 0, 'f', 2)
             .arg(config.nmsThreshold, 0, 'f', 2);
     m_lastError = QStringLiteral("none");
+    updatePedestrianButtons();
+    updateWrongWayButtons();
     updateStatusText();
 }
 void ControlPanelWindow::onStopAiInferenceClicked()
@@ -452,13 +455,14 @@ void ControlPanelWindow::onStopAiInferenceClicked()
         return;
     }
 
-    if (m_violationRunning) {
-        stopViolationDetection(false);
-    }
+    m_pedestrianRunning = false;
+    m_wrongWayRunning = false;
+    m_wrongWayRuleEnabled = false;
 
     NpuTaskConfig config = m_display->npuConfig();
     config.enabled = false;
     config.task = NpuTaskType::PlateCascade;
+    config.wrongWayRuleEnabled = false;
     config.plateModelProfile = m_aiRequestedPlateProfile;
     config.platePostprocess = m_aiRequestedPlatePostprocess;
     config.plateCropSource = m_aiRequestedPlateCropSource;
@@ -486,6 +490,8 @@ void ControlPanelWindow::onStopAiInferenceClicked()
 
     clearAiCurrentResult();
     updateAiTaskButtons();
+    updatePedestrianButtons();
+    updateWrongWayButtons();
 
     if (m_aiConfigSummaryLabel) {
         m_aiConfigSummaryLabel->setText(
@@ -570,6 +576,12 @@ void ControlPanelWindow::updateAiPanel(const NpuFrameResult &result)
     }
 
     if (m_aiRuntimeLabel) {
+        if (result.enabled && result.task != NpuTaskType::PlateCascade) {
+            m_aiRuntimeLabel->setText(
+                        QStringLiteral("当前NPU由“%1”页面占用。\n"
+                                       "请在对应页面关闭模型，或直接应用车牌模式完成任务切换。")
+                        .arg(aiTaskDisplayName(result.task)));
+        } else {
         const int resultCount = m_aiPlateCount + m_aiPedestrianCount + m_aiVehicleCount;
         m_aiRuntimeLabel->setText(
                     QStringLiteral("状态：%1｜输入：%2｜模式：%3\n"
@@ -609,10 +621,11 @@ void ControlPanelWindow::updateAiPanel(const NpuFrameResult &result)
                     .arg(result.error.empty()
                          ? QStringLiteral("无")
                          : QString::fromStdString(result.error)));
+        }
     }
 
     updateAiCurrentResult(result);
-    updateViolationPanel(result);
+    updatePedestrianPanel(result);
     updateWrongWayPanel(result);
     updateAiTaskButtons();
 }

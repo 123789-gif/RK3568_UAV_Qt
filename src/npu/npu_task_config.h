@@ -45,6 +45,9 @@ struct NpuTaskConfig
     int targetFps = NPU_TARGET_FPS_DEFAULT;
     float confidence = 0.50f;
     float nmsThreshold = 0.45f;
+    // VehicleWrongWay 任务始终只加载一次车辆模型；该开关只控制CPU侧
+    // 车道跟踪和逆行规则，关闭时保留原始车辆检测框。
+    bool wrongWayRuleEnabled = false;
     int resultHistoryDepth = 50;
     std::uint64_t revision = 0;
 };

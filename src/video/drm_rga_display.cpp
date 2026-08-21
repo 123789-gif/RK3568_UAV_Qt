@@ -1224,7 +1224,8 @@ static void draw_wrong_way_regions(void *fb,
                                    int fbH,
                                    const NpuFrameResult& result)
 {
-    if (result.task != NpuTaskType::VehicleWrongWay) return;
+    if (result.task != NpuTaskType::VehicleWrongWay ||
+        !result.wrongWayRuleEnabled) return;
     static const uint16_t colors[] = {
         rgb565(0, 220, 255), rgb565(255, 70, 220),
         rgb565(255, 190, 0), rgb565(80, 220, 100)
@@ -1380,7 +1381,8 @@ static void draw_npu_boxes(void *fb, int pitchBytes, int fbW, int fbH,
         const int h = std::max(2, scale_capture_y(box.h, fbH, sourceH));
         uint16_t color = vehicle_osd_color(box.classId);
         const char *stateLabel = vehicle_osd_label(box.classId);
-        if (result.task == NpuTaskType::VehicleWrongWay) {
+        if (result.task == NpuTaskType::VehicleWrongWay &&
+            result.wrongWayRuleEnabled) {
             switch (box.vehicleDirectionState) {
             case NpuVehicleDirectionState::WrongWay:
                 color = red;
@@ -1404,7 +1406,8 @@ static void draw_npu_boxes(void *fb, int pitchBytes, int fbW, int fbH,
         draw_rect_outline_rgb565(fb, pitchBytes, fbW, fbH, x, y, w, h, 3, color);
 
         char label[64];
-        if (result.task == NpuTaskType::VehicleWrongWay) {
+        if (result.task == NpuTaskType::VehicleWrongWay &&
+            result.wrongWayRuleEnabled) {
             snprintf(label, sizeof(label), "%s", stateLabel);
         } else {
             snprintf(label, sizeof(label), "%s %.2F", vehicle_osd_label(box.classId), box.score);
@@ -1586,7 +1589,10 @@ static bool drm_init(DrmState &d, const char *cardPath, int reqW, int reqH)
     return true;
 }
 
-struct FlipWaitState { volatile int pending = 0; };
+// FlipWaitState 必须至少与 DRM fd 同生命周期。不能把栈内临时对象作为
+// drmModePageFlip() 的 user_data 后在超时路径提前返回：迟到事件随后由
+// drmHandleEvent() 分发时会访问已经失效的地址。
+struct FlipWaitState { bool pending = false; };
 
 static void page_flip_handler(int, unsigned int, unsigned int, unsigned int, void *data)
 {
@@ -1594,38 +1600,27 @@ static void page_flip_handler(int, unsigned int, unsigned int, unsigned int, voi
     if (st) st->pending = 0;
 }
 
-static bool drm_present_fb_blocking(DrmState &d, uint32_t fbId, bool *usedSetCrtc, const std::atomic<bool> &stopReq)
+static bool drm_present_fb_blocking(DrmState &d,
+                                    uint32_t fbId,
+                                    FlipWaitState &wait,
+                                    const std::atomic<bool> &stopReq)
 {
-    if (usedSetCrtc) *usedSetCrtc = false;
-    FlipWaitState wait {};
-    wait.pending = 1;
+    // 正常阻塞流程在返回前已经消费上一笔事件，因此这里出现 pending
+    // 说明前一笔 flip 没有被完整收尾。停止当前显示会话比在热路径强制
+    // drmModeSetCrtc 更安全，后者会造成 HDMI 重新同步和可见闪烁。
+    if (wait.pending) {
+        fprintf(stderr, "drm present refused: previous pageflip still pending\n");
+        return false;
+    }
+
+    wait.pending = true;
     int ret = drmModePageFlip(d.fd, d.crtcId, fbId, DRM_MODE_PAGE_FLIP_EVENT, &wait);
     if (ret != 0) {
-        int saved = errno;
-        if (saved == EBUSY) {
-            drmEventContext ev {};
-            ev.version = DRM_EVENT_CONTEXT_VERSION;
-            ev.page_flip_handler = page_flip_handler;
-            struct pollfd pfd {};
-            pfd.fd = d.fd;
-            pfd.events = POLLIN;
-            int pr = poll(&pfd, 1, 100);
-            if (pr > 0 && (pfd.revents & POLLIN)) (void)drmHandleEvent(d.fd, &ev);
-            wait.pending = 1;
-            ret = drmModePageFlip(d.fd, d.crtcId, fbId, DRM_MODE_PAGE_FLIP_EVENT, &wait);
-            saved = errno;
-        }
-        if (ret != 0) {
-            if (saved == EINVAL || saved == EBUSY) {
-                if (drmModeSetCrtc(d.fd, d.crtcId, fbId, 0, 0, &d.connId, 1, &d.mode) == 0) {
-                    if (usedSetCrtc) *usedSetCrtc = true;
-                    return true;
-                }
-            }
-            fprintf(stderr, "drm present failed: errno=%d(%s), fb_id=%u crtc=%u conn=%u mode=%dx%d\n",
-                    saved, strerror(saved), fbId, d.crtcId, d.connId, d.modeW, d.modeH);
-            return false;
-        }
+        const int saved = errno;
+        wait.pending = false;  // pageFlip 失败，没有属于本次请求的事件。
+        fprintf(stderr, "drm present failed: errno=%d(%s), fb_id=%u crtc=%u conn=%u mode=%dx%d\n",
+                saved, strerror(saved), fbId, d.crtcId, d.connId, d.modeW, d.modeH);
+        return false;
     }
 
     drmEventContext ev {};
@@ -1642,7 +1637,10 @@ static bool drm_present_fb_blocking(DrmState &d, uint32_t fbId, bool *usedSetCrt
             return false;
         }
         if (pr == 0) {
-            fprintf(stderr, "drm pageflip event timeout, fb_id=%u\n", fbId);
+            // 保留 pending=true，直到 DRM fd 在本次显示会话 cleanup 中关闭。
+            // 调用方必须退出当前显示循环，不能继续提交下一笔 page flip。
+            fprintf(stderr, "drm pageflip event timeout, fb_id=%u; stopping display session\n",
+                    fbId);
             return false;
         }
         if (pfd.revents & POLLIN) {
@@ -1657,7 +1655,7 @@ static bool drm_present_fb_blocking(DrmState &d, uint32_t fbId, bool *usedSetCrt
             return false;
         }
     }
-    return !stopReq.load();
+    return !stopReq.load() && !wait.pending;
 }
 
 DrmRgaDisplay::DrmRgaDisplay(QObject *parent)
@@ -1915,11 +1913,18 @@ std::vector<NpuFrameResult> DrmRgaDisplay::npuResultsAfter(uint64_t frameId,
             : std::vector<NpuFrameResult>();
 }
 
-QString DrmRgaDisplay::lastErrorString() const { return m_lastError; }
+QString DrmRgaDisplay::lastErrorString() const
+{
+    std::lock_guard<std::mutex> lock(m_lastErrorMutex);
+    return m_lastError;
+}
 
 void DrmRgaDisplay::setLastError(const QString &msg)
 {
-    m_lastError = msg;
+    {
+        std::lock_guard<std::mutex> lock(m_lastErrorMutex);
+        m_lastError = msg;
+    }
     qDebug() << "[DrmRgaDisplay]" << msg;
     emit errorOccurred(msg);
 }
@@ -1933,6 +1938,7 @@ void DrmRgaDisplay::workerMain()
 
     PcieFrameReceiver pcie;
     DrmState drm;
+    FlipWaitState flipWait {};
     std::atomic<bool> fpgaControlStop {false};
     std::thread fpgaControlThread;
 
@@ -2388,9 +2394,8 @@ void DrmRgaDisplay::workerMain()
                 }
             }
 
-            bool usedSetCrtc = false;
-            if (drm_present_fb_blocking(drm, drm.fb[back].fbId, &usedSetCrtc, m_stopReq)) {
-                Q_UNUSED(usedSetCrtc);
+            if (drm_present_fb_blocking(drm, drm.fb[back].fbId,
+                                        flipWait, m_stopReq)) {
                 front = back;
                 flipCnt++;
 
@@ -2440,7 +2445,13 @@ void DrmRgaDisplay::workerMain()
             } else {
                 failCnt++;
                 failTotal++;
-                usleep(1000);
+                // page flip 失败/超时后不能继续复用可能仍有 pending 事件的
+                // DRM fd。退出本次会话，由用户重新启动显示完成干净重建。
+                if (!m_stopReq.load()) {
+                    setLastError(QStringLiteral(
+                            "DRM page flip失败，显示会话已安全停止；请重新启动PCIe视频"));
+                }
+                break;
             }
 
             uint64_t now = now_ns();

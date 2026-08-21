@@ -16,6 +16,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <deque>
+#include <exception>
 #include <iostream>
 #include <initializer_list>
 #include <limits.h>
@@ -371,6 +372,26 @@ static bool validateVehicleContract(const demo::RknnModel& model,
         *error = "unsupported vehicle model contract: input=" + tensorShape(input) +
                 " output=" + tensorShape(output) +
                 " expected input=[1,3,320,640] output=[1,68,4200]";
+    }
+    return valid;
+}
+
+static bool validatePedestrianContract(const demo::RknnModel& model,
+                                       std::string* error)
+{
+    if (model.num_in != 1 || model.num_out != 1 ||
+        !model.in_attrs || !model.out_attrs) {
+        if (error) *error = "pedestrian model requires exactly one input and one output";
+        return false;
+    }
+    const rknn_tensor_attr& input = model.in_attrs[0];
+    const rknn_tensor_attr& output = model.out_attrs[0];
+    const bool valid = tensorMatches(input, {3, 448, 768}, 3u * 448u * 768u) &&
+            tensorMatches(output, {65, 7056}, 65u * 7056u);
+    if (!valid && error) {
+        *error = "unsupported pedestrian model contract: input=" + tensorShape(input) +
+                " output=" + tensorShape(output) +
+                " expected input=[1,3,448,768] output=[1,65,7056]";
     }
     return valid;
 }
@@ -1359,6 +1380,9 @@ struct NpuInferenceWorker::Impl
     std::condition_variable pendingCv;
     bool pendingValid = false;
     FrameCopy pending;
+    // 两个 latest-only 槽之间复用已分配容量，避免总览原图模式每帧反复
+    // malloc/free 约 4.15 MB 缓冲造成堆抖动和异常退出风险。
+    FrameCopy spare;
 
     mutable std::mutex resultMutex;
     NpuFrameResult latest;
@@ -1382,6 +1406,7 @@ struct NpuInferenceWorker::Impl
     std::atomic<int> loadedTaskValue {-1};
     std::string modelError;
     uint64_t activePlateConfigRevision = 0;
+    uint64_t activeWrongWayRuleRevision = 0;
 
     int64_t fpsWindowMs = 0;
     int fpsWindowCount = 0;
@@ -1419,12 +1444,28 @@ struct NpuInferenceWorker::Impl
         loadedTaskValue.store(-1);
         modelsLoaded.store(false);
         activePlateConfigRevision = 0;
+        activeWrongWayRuleRevision = 0;
     }
 
     NpuTaskConfig configSnapshot() const
     {
         std::lock_guard<std::mutex> lk(configMutex);
         return requestedConfig;
+    }
+
+    static std::size_t frameCapacity(const FrameCopy& frame)
+    {
+        return frame.data.capacity() + frame.originalData.capacity();
+    }
+
+    void keepLargerSpareLocked(FrameCopy&& frame)
+    {
+        frame.data.clear();
+        frame.originalData.clear();
+        frame.originalCopyError.clear();
+        if (frameCapacity(frame) >= frameCapacity(spare)) {
+            spare = std::move(frame);
+        }
     }
 
     bool modelsMatchConfig(const NpuTaskConfig& cfg) const
@@ -1507,6 +1548,7 @@ struct NpuInferenceWorker::Impl
 
         if (!next.enabled || executionChanged) {
             std::lock_guard<std::mutex> lk(pendingMutex);
+            keepLargerSpareLocked(std::move(pending));
             pending = FrameCopy();
             pendingValid = false;
         }
@@ -1525,6 +1567,7 @@ struct NpuInferenceWorker::Impl
         } else if (next.task == NpuTaskType::VehicleWrongWay) {
             state.wrongWayConfig = wrongWayConfigSnapshot();
             state.wrongWayRegionsConfigured = state.wrongWayConfig.regionsValid();
+            state.wrongWayRuleEnabled = next.wrongWayRuleEnabled;
         }
         state.status = next.enabled ? "pending" : "off";
         state.processed = processed.load();
@@ -1567,6 +1610,7 @@ struct NpuInferenceWorker::Impl
 
         {
             std::lock_guard<std::mutex> lk(pendingMutex);
+            keepLargerSpareLocked(std::move(pending));
             pending = FrameCopy();
             pendingValid = false;
         }
@@ -1588,6 +1632,7 @@ struct NpuInferenceWorker::Impl
         } else if (cfg.task == NpuTaskType::VehicleWrongWay) {
             state.wrongWayConfig = wrongWayConfigSnapshot();
             state.wrongWayRegionsConfigured = state.wrongWayConfig.regionsValid();
+            state.wrongWayRuleEnabled = cfg.wrongWayRuleEnabled;
         }
         state.status = cfg.enabled ? "pending" : "off";
         state.processed = processed.load();
@@ -1720,10 +1765,12 @@ struct NpuInferenceWorker::Impl
             // 违法检测第一轮只复用行人模型。交通灯状态由人工ROI内HSV判断，
             // 不再额外运行车辆模型，降低NPU占用并提高规则刷新率。
             const std::string pedPath = findModelPath(kPedModel);
-            ok = loadModel(pedPath, &ped, &error);
+            ok = loadModel(pedPath, &ped, &error) &&
+                    validatePedestrianContract(ped, &error);
         } else {
             const std::string pedPath = findModelPath(kPedModel);
-            ok = loadModel(pedPath, &ped, &error);
+            ok = loadModel(pedPath, &ped, &error) &&
+                    validatePedestrianContract(ped, &error);
         }
 
         if (!ok) {
@@ -1842,13 +1889,24 @@ struct NpuInferenceWorker::Impl
         }
 
         FrameCopy copy;
+        {
+            std::lock_guard<std::mutex> lk(pendingMutex);
+            copy = std::move(spare);
+            spare = FrameCopy();
+        }
         copy.id = frameId;
         copy.sourceChannel = sourceChannel;
         copy.sourceRevision = sourceRevision;
         copy.width = width;
         copy.height = height;
+        copy.originalWidth = 0;
+        copy.originalHeight = 0;
+        copy.originalCopyMs = 0.0;
+        copy.originalData.clear();
+        copy.originalCopyError.clear();
         const auto copyBegin = std::chrono::steady_clock::now();
-        copy.data.assign(rgb565, rgb565 + need);
+        copy.data.resize(need);
+        std::memcpy(copy.data.data(), rgb565, need);
         copy.copyMs = elapsedMs(copyBegin);
 
         const bool wantsOriginal = cfg.task == NpuTaskType::PlateCascade &&
@@ -1896,6 +1954,7 @@ struct NpuInferenceWorker::Impl
             std::lock_guard<std::mutex> lk(pendingMutex);
             if (pendingValid) {
                 droppedFrames.fetch_add(1);
+                keepLargerSpareLocked(std::move(pending));
             }
             pending = std::move(copy);
             pendingValid = true;
@@ -1917,7 +1976,33 @@ struct NpuInferenceWorker::Impl
                 pending = FrameCopy();
                 pendingValid = false;
             }
-            process(frame);
+            try {
+                process(frame);
+            } catch (const std::exception& error) {
+                const NpuTaskConfig cfg = configSnapshot();
+                NpuFrameResult result;
+                result.frameId = frame.id;
+                result.sourceChannel = frame.sourceChannel;
+                result.sourceRevision = frame.sourceRevision;
+                result.ready = false;
+                result.error = std::string("inference exception: ") + error.what();
+                result.status = "inference exception";
+                publish(std::move(result), cfg);
+            } catch (...) {
+                const NpuTaskConfig cfg = configSnapshot();
+                NpuFrameResult result;
+                result.frameId = frame.id;
+                result.sourceChannel = frame.sourceChannel;
+                result.sourceRevision = frame.sourceRevision;
+                result.ready = false;
+                result.error = "unknown inference exception";
+                result.status = "inference exception";
+                publish(std::move(result), cfg);
+            }
+            {
+                std::lock_guard<std::mutex> lk(pendingMutex);
+                keepLargerSpareLocked(std::move(frame));
+            }
         }
     }
 
@@ -1935,6 +2020,7 @@ struct NpuInferenceWorker::Impl
         result.confidence = cfg.confidence;
         result.nmsThreshold = cfg.nmsThreshold;
         result.configRevision = cfg.revision;
+        result.wrongWayRuleEnabled = cfg.wrongWayRuleEnabled;
         fillModelState(&result, current);
         result.processed = processed.load();
         result.dropped = droppedFrames.load();
@@ -2335,21 +2421,30 @@ struct NpuInferenceWorker::Impl
                                                   label));
             }
 
-            VehicleDirectionConfig directionSnapshot;
-            {
-                std::lock_guard<std::mutex> lk(wrongWayConfigMutex);
-                directionSnapshot = wrongWayConfig;
+            if (cfg.wrongWayRuleEnabled) {
+                VehicleDirectionConfig directionSnapshot;
+                {
+                    std::lock_guard<std::mutex> lk(wrongWayConfigMutex);
+                    directionSnapshot = wrongWayConfig;
+                }
+                if (activeWrongWayRuleRevision != cfg.revision) {
+                    wrongWayEngine.reset();
+                    activeWrongWayRuleRevision = cfg.revision;
+                }
+                wrongWayEngine.setConfig(directionSnapshot);
+                wrongWayEngine.process(frame.id,
+                                       static_cast<std::uint64_t>(steadyMs()),
+                                       static_cast<std::uint64_t>(systemMs()),
+                                       frame.width,
+                                       frame.height,
+                                       frame.sourceChannel,
+                                       frame.sourceRevision,
+                                       &result.vehicles,
+                                       &result);
+            } else if (activeWrongWayRuleRevision != 0) {
+                wrongWayEngine.reset();
+                activeWrongWayRuleRevision = 0;
             }
-            wrongWayEngine.setConfig(directionSnapshot);
-            wrongWayEngine.process(frame.id,
-                                   static_cast<std::uint64_t>(steadyMs()),
-                                   static_cast<std::uint64_t>(systemMs()),
-                                   frame.width,
-                                   frame.height,
-                                   frame.sourceChannel,
-                                   frame.sourceRevision,
-                                   &result.vehicles,
-                                   &result);
         } else {
             std::vector<demo::Rect2f> pedBoxesIn;
             std::vector<float> pedScores;
@@ -2372,7 +2467,10 @@ struct NpuInferenceWorker::Impl
                 demo::vision::convert_input_box_to_orig(pedBoxesIn[i], orig,
                                                         frame.width, frame.height);
                 const float score = (i < pedScores.size()) ? pedScores[i] : 0.0f;
-                if (!isStandingPedestrianBox(orig)) {
+                // 原始行人模型页用于验证模型本身，只保留置信度和NMS结果。
+                // 站立姿态几何过滤仅属于旧违法规则任务，不能污染模型评估。
+                if (cfg.task == NpuTaskType::TrafficViolation &&
+                    !isStandingPedestrianBox(orig)) {
                     continue;
                 }
                 result.pedestrians.push_back(
@@ -2567,8 +2665,32 @@ void NpuInferenceWorker::submitFrame(uint64_t frameId,
                                      uint64_t sourceRevision,
                                      const NpuOriginalFrameView *originalView)
 {
-    m_impl->submit(frameId, rgb565, bytes, width, height,
-                   sourceChannel, sourceRevision, originalView);
+    try {
+        m_impl->submit(frameId, rgb565, bytes, width, height,
+                       sourceChannel, sourceRevision, originalView);
+    } catch (const std::exception& error) {
+        m_impl->droppedFrames.fetch_add(1);
+        const NpuTaskConfig cfg = m_impl->configSnapshot();
+        NpuFrameResult result;
+        result.frameId = frameId;
+        result.sourceChannel = sourceChannel;
+        result.sourceRevision = sourceRevision;
+        result.ready = false;
+        result.error = std::string("frame submit exception: ") + error.what();
+        result.status = "frame submit exception";
+        m_impl->publish(std::move(result), cfg);
+    } catch (...) {
+        m_impl->droppedFrames.fetch_add(1);
+        const NpuTaskConfig cfg = m_impl->configSnapshot();
+        NpuFrameResult result;
+        result.frameId = frameId;
+        result.sourceChannel = sourceChannel;
+        result.sourceRevision = sourceRevision;
+        result.ready = false;
+        result.error = "unknown frame submit exception";
+        result.status = "frame submit exception";
+        m_impl->publish(std::move(result), cfg);
+    }
 }
 
 NpuFrameResult NpuInferenceWorker::latestResult() const

@@ -73,7 +73,8 @@ QWidget *ControlPanelWindow::createWrongWayPage()
     leftLayout->addWidget(previewGroup, 1);
 
     QWidget *rightPanel = new QWidget(page);
-    rightPanel->setFixedWidth(385);
+    rightPanel->setMinimumWidth(350);
+    rightPanel->setMaximumWidth(390);
     QVBoxLayout *rightLayout = new QVBoxLayout(rightPanel);
     rightLayout->setContentsMargins(0, 0, 0, 0);
     rightLayout->setSpacing(7);
@@ -83,12 +84,16 @@ QWidget *ControlPanelWindow::createWrongWayPage()
     controlGrid->setContentsMargins(10, 18, 10, 9);
     controlGrid->setHorizontalSpacing(6);
     controlGrid->setVerticalSpacing(6);
-    m_btnWrongWayStart = new QPushButton(QStringLiteral("开始检测"), controlGroup);
-    m_btnWrongWayStop = new QPushButton(QStringLiteral("停止检测"), controlGroup);
+    m_btnWrongWayStart = new QPushButton(QStringLiteral("开启车辆模型"), controlGroup);
+    m_btnWrongWayStop = new QPushButton(QStringLiteral("关闭车辆模型"), controlGroup);
+    m_btnWrongWayRule = new QPushButton(QStringLiteral("逆行判定：关闭"), controlGroup);
     m_btnWrongWayStart->setObjectName(QStringLiteral("violationRunButton"));
     m_btnWrongWayStop->setObjectName(QStringLiteral("violationRunButton"));
+    m_btnWrongWayRule->setObjectName(QStringLiteral("violationLightButton"));
+    m_btnWrongWayRule->setCheckable(true);
     m_btnWrongWayStart->setMinimumHeight(48);
     m_btnWrongWayStop->setMinimumHeight(48);
+    m_btnWrongWayRule->setMinimumHeight(44);
 
     QLabel *presetLabel = new QLabel(QStringLiteral("状态稳定策略"), controlGroup);
     QWidget *presetWidget = new QWidget(controlGroup);
@@ -115,9 +120,10 @@ QWidget *ControlPanelWindow::createWrongWayPage()
     hint->setWordWrap(true);
     controlGrid->addWidget(m_btnWrongWayStart, 0, 0);
     controlGrid->addWidget(m_btnWrongWayStop, 0, 1);
-    controlGrid->addWidget(presetLabel, 1, 0, 1, 2);
-    controlGrid->addWidget(presetWidget, 2, 0, 1, 2);
-    controlGrid->addWidget(hint, 3, 0, 1, 2);
+    controlGrid->addWidget(m_btnWrongWayRule, 1, 0, 1, 2);
+    controlGrid->addWidget(presetLabel, 2, 0, 1, 2);
+    controlGrid->addWidget(presetWidget, 3, 0, 1, 2);
+    controlGrid->addWidget(hint, 4, 0, 1, 2);
     rightLayout->addWidget(controlGroup, 0);
 
     QGroupBox *runtimeGroup = new QGroupBox(QStringLiteral("运行状态"), rightPanel);
@@ -180,7 +186,41 @@ QWidget *ControlPanelWindow::createWrongWayPage()
     connect(m_btnWrongWayStart, &QPushButton::clicked,
             this, &ControlPanelWindow::startWrongWayDetection);
     connect(m_btnWrongWayStop, &QPushButton::clicked,
-            this, [this]() { stopWrongWayDetection(true); });
+            this, &ControlPanelWindow::stopWrongWayDetection);
+    connect(m_btnWrongWayRule, &QPushButton::toggled,
+            this, [this](bool enabled) {
+        if (!m_display || !m_wrongWayRunning ||
+            (enabled && !m_wrongWayConfig.regionsValid())) {
+            const QSignalBlocker blocker(m_btnWrongWayRule);
+            m_btnWrongWayRule->setChecked(false);
+            m_wrongWayRuleEnabled = false;
+            if (enabled && m_wrongWayEditStatusLabel) {
+                m_wrongWayEditStatusLabel->setText(
+                            QStringLiteral("请先开启车辆模型并完成车道和方向配置。"));
+            }
+            updateWrongWayButtons();
+            return;
+        }
+        if (enabled && m_wrongWayConfigDirty && !saveWrongWaySettings()) {
+            const QSignalBlocker blocker(m_btnWrongWayRule);
+            m_btnWrongWayRule->setChecked(false);
+            m_wrongWayRuleEnabled = false;
+            updateWrongWayButtons();
+            return;
+        }
+        m_display->setWrongWayConfig(m_wrongWayConfig);
+        NpuTaskConfig config = m_display->npuConfig();
+        config.enabled = true;
+        config.task = NpuTaskType::VehicleWrongWay;
+        config.wrongWayRuleEnabled = enabled;
+        m_display->setNpuConfig(sanitizeNpuTaskConfig(config));
+        m_wrongWayRuleEnabled = enabled;
+        m_lastAction = enabled
+                ? QStringLiteral("开启CPU逆行判定规则")
+                : QStringLiteral("关闭CPU逆行判定规则，保留车辆模型");
+        updateWrongWayButtons();
+        updateStatusText();
+    });
     connect(m_wrongWayPresetGroup,
             static_cast<void (QButtonGroup::*)(int)>(&QButtonGroup::buttonClicked),
             this, [this](int id) {
@@ -254,8 +294,7 @@ void ControlPanelWindow::loadWrongWaySettings(int sourceChannel)
 {
     if (sourceChannel < 0 || sourceChannel > 9) sourceChannel = 0;
     if (sourceChannel == m_wrongWaySourceChannel) return;
-    if (m_wrongWayConfigDirty && m_wrongWaySourceChannel >= 0 &&
-        m_wrongWayConfig.regionsValid())
+    if (m_wrongWayConfigDirty && m_wrongWaySourceChannel >= 0)
         (void)saveWrongWaySettings();
 
     m_wrongWaySourceChannel = sourceChannel;
@@ -288,8 +327,31 @@ bool ControlPanelWindow::saveWrongWaySettings()
         return false;
     }
     ++m_wrongWayConfig.revision;
+    const QString settingsPath = wrongWaySettingsPath(m_wrongWaySourceChannel);
+    if (m_wrongWayConfig.lanes.empty()) {
+        QFile settingsFile(settingsPath);
+        if (settingsFile.exists() && !settingsFile.remove()) {
+            m_lastError = QStringLiteral("清除逆行配置失败：%1")
+                    .arg(settingsFile.errorString());
+            QMessageBox::warning(this, QStringLiteral("清除失败"), m_lastError);
+            return false;
+        }
+        m_wrongWayConfig = sanitizeVehicleDirectionConfig(m_wrongWayConfig);
+        m_wrongWayConfigDirty = false;
+        if (m_display) m_display->setWrongWayConfig(m_wrongWayConfig);
+        if (m_wrongWayEditStatusLabel) {
+            m_wrongWayEditStatusLabel->setText(QStringLiteral("%1逆行配置已清除。")
+                    .arg(wrongWaySourceDisplayName(m_wrongWaySourceChannel)));
+        }
+        m_lastAction = QStringLiteral("清除%1车辆逆行配置")
+                .arg(wrongWaySourceDisplayName(m_wrongWaySourceChannel));
+        m_lastError = QStringLiteral("none");
+        updateWrongWayButtons();
+        updateStatusText();
+        return true;
+    }
     QString error;
-    if (!saveVehicleDirectionConfig(wrongWaySettingsPath(m_wrongWaySourceChannel),
+    if (!saveVehicleDirectionConfig(settingsPath,
                                     m_wrongWayConfig, &error)) {
         m_lastError = error;
         QMessageBox::warning(this, QStringLiteral("保存失败"), error);
@@ -319,34 +381,30 @@ void ControlPanelWindow::startWrongWayDetection()
     }
     if (!m_display || !m_display->isRunning()) {
         m_lastError = QStringLiteral("请先启动PCIe视频");
-    } else if (!m_wrongWayConfig.regionsValid()) {
-        m_lastError = QStringLiteral("当前输入尚未配置有效车道和方向");
     } else {
-        NpuTaskConfig previous = m_display->npuConfig();
-        if (m_violationRunning && m_violationPreviousAiConfigValid)
-            previous = m_violationPreviousAiConfig;
-        if (m_violationRunning) stopViolationDetection(false);
-        if (!m_wrongWayRunning) {
-            m_wrongWayPreviousAiConfig = previous;
-            m_wrongWayPreviousAiConfigValid = true;
-        }
-        if (m_wrongWayConfigDirty && !saveWrongWaySettings()) return;
         m_display->setWrongWayConfig(m_wrongWayConfig);
         NpuTaskConfig config = m_display->npuConfig();
         config.enabled = true;
         config.task = NpuTaskType::VehicleWrongWay;
+        config.wrongWayRuleEnabled = false;
         config.targetFps = m_npuFpsSpin ? m_npuFpsSpin->value() : NPU_TARGET_FPS_DEFAULT;
         config.confidence = 0.25f;
         config.nmsThreshold = 0.45f;
         m_display->setNpuConfig(sanitizeNpuTaskConfig(config));
+        m_aiRequestedConfigRevision = m_display->npuConfig().revision;
         m_wrongWayRunning = true;
+        m_wrongWayRuleEnabled = false;
+        m_pedestrianRunning = false;
+        m_aiRequestedTask = NpuTaskType::VehicleWrongWay;
+        m_aiTaskSwitchPending = true;
         m_wrongWayLastEventId = 0;
-        m_lastAction = QStringLiteral("启动%1车辆逆行检测")
+        m_lastAction = QStringLiteral("启动%1车辆检测模型")
                 .arg(wrongWaySourceDisplayName(m_wrongWaySourceChannel));
         m_lastError = QStringLiteral("none");
         if (m_wrongWayRuntimeLabel)
-            m_wrongWayRuntimeLabel->setText(QStringLiteral("正在加载车辆模型并等待轨迹结果……"));
+            m_wrongWayRuntimeLabel->setText(QStringLiteral("正在加载车辆模型并等待检测结果……"));
         updateWrongWayButtons();
+        updatePedestrianButtons();
         updateStatusText();
         return;
     }
@@ -356,24 +414,20 @@ void ControlPanelWindow::startWrongWayDetection()
     updateStatusText();
 }
 
-void ControlPanelWindow::stopWrongWayDetection(bool restorePreviousConfig)
+void ControlPanelWindow::stopWrongWayDetection()
 {
     if (!m_display) return;
-    if (restorePreviousConfig && m_wrongWayPreviousAiConfigValid) {
-        m_display->setNpuConfig(m_wrongWayPreviousAiConfig);
-        m_aiRequestedTask = m_wrongWayPreviousAiConfig.task == NpuTaskType::VehicleWrongWay
-                ? NpuTaskType::Pedestrian : m_wrongWayPreviousAiConfig.task;
-    } else if (m_display->npuConfig().task == NpuTaskType::VehicleWrongWay) {
+    if (m_display->npuConfig().task == NpuTaskType::VehicleWrongWay) {
         NpuTaskConfig config = m_display->npuConfig();
         config.enabled = false;
-        config.task = NpuTaskType::Pedestrian;
+        config.wrongWayRuleEnabled = false;
         m_display->setNpuConfig(config);
     }
     m_wrongWayRunning = false;
-    m_wrongWayPreviousAiConfigValid = false;
-    m_lastAction = QStringLiteral("停止车辆逆行检测");
+    m_wrongWayRuleEnabled = false;
+    m_lastAction = QStringLiteral("关闭车辆检测模型");
     if (m_wrongWayRuntimeLabel)
-        m_wrongWayRuntimeLabel->setText(QStringLiteral("逆行检测已停止，当前CH配置仍保留。"));
+        m_wrongWayRuntimeLabel->setText(QStringLiteral("车辆模型已关闭，当前输入配置仍保留。"));
     updateWrongWayButtons();
     updateAiTaskButtons();
     updateStatusText();
@@ -382,14 +436,25 @@ void ControlPanelWindow::stopWrongWayDetection(bool restorePreviousConfig)
 void ControlPanelWindow::updateWrongWayButtons()
 {
     const bool routeReady = m_display != nullptr;
+    const bool switching = m_aiTaskSwitchPending ||
+            (m_display && m_display->latestNpuResult().modelSwitching);
     if (m_btnWrongWayStart) {
-        m_btnWrongWayStart->setEnabled(!m_wrongWayRunning && routeReady &&
-                                       m_wrongWayConfig.regionsValid());
+        m_btnWrongWayStart->setEnabled(!m_wrongWayRunning && routeReady && !switching);
         m_btnWrongWayStart->setProperty("violationActive", m_wrongWayRunning);
         m_btnWrongWayStart->style()->unpolish(m_btnWrongWayStart);
         m_btnWrongWayStart->style()->polish(m_btnWrongWayStart);
     }
-    if (m_btnWrongWayStop) m_btnWrongWayStop->setEnabled(m_wrongWayRunning);
+    if (m_btnWrongWayStop)
+        m_btnWrongWayStop->setEnabled(m_wrongWayRunning && !switching);
+    if (m_btnWrongWayRule) {
+        const QSignalBlocker blocker(m_btnWrongWayRule);
+        m_btnWrongWayRule->setChecked(m_wrongWayRuleEnabled);
+        m_btnWrongWayRule->setText(m_wrongWayRuleEnabled
+                ? QStringLiteral("逆行判定：开启")
+                : QStringLiteral("逆行判定：关闭"));
+        m_btnWrongWayRule->setEnabled(m_wrongWayRunning && !switching &&
+                                      m_wrongWayConfig.regionsValid());
+    }
 }
 
 void ControlPanelWindow::updateWrongWayPanel(const NpuFrameResult& result)
@@ -398,24 +463,27 @@ void ControlPanelWindow::updateWrongWayPanel(const NpuFrameResult& result)
     if (result.task != NpuTaskType::VehicleWrongWay || !result.enabled) {
         if (m_wrongWayRunning && result.task != NpuTaskType::VehicleWrongWay) {
             m_wrongWayRunning = false;
-            m_wrongWayPreviousAiConfigValid = false;
+            m_wrongWayRuleEnabled = false;
             updateWrongWayButtons();
         }
         if (!m_wrongWayRunning && m_wrongWayRuntimeLabel)
-            m_wrongWayRuntimeLabel->setText(QStringLiteral("逆行检测未启动｜%1｜车道：%2")
+            m_wrongWayRuntimeLabel->setText(QStringLiteral("车辆模型未启动｜%1｜车道：%2")
                                             .arg(wrongWaySourceDisplayName(
                                                      m_wrongWaySourceChannel))
                                             .arg(static_cast<int>(m_wrongWayConfig.lanes.size())));
         return;
     }
     m_wrongWayRunning = true;
+    m_wrongWayRuleEnabled = result.wrongWayRuleEnabled;
     updateWrongWayButtons();
     if (m_wrongWayRuntimeLabel) {
         m_wrongWayRuntimeLabel->setText(
-                    QStringLiteral("状态：%1｜输入：%2｜车道：%3\n"
-                                   "车辆：%4｜有效轨迹：%5｜逆行：%6\n"
-                                   "推理FPS：%7｜单帧耗时：%8 ms")
+                    QStringLiteral("模型：%1｜逆行规则：%2｜输入：%3\n"
+                                   "车道：%4｜车辆：%5｜有效轨迹：%6｜逆行：%7\n"
+                                   "推理FPS：%8｜单帧耗时：%9 ms")
                     .arg(result.ready ? QStringLiteral("运行中") : QStringLiteral("准备中"))
+                    .arg(result.wrongWayRuleEnabled
+                         ? QStringLiteral("开启") : QStringLiteral("关闭"))
                     .arg(wrongWaySourceDisplayName(result.sourceChannel))
                     .arg(static_cast<int>(result.wrongWayConfig.lanes.size()))
                     .arg(static_cast<int>(result.vehicles.size()))
@@ -431,10 +499,17 @@ void ControlPanelWindow::updateWrongWayPanel(const NpuFrameResult& result)
         return;
     }
     if (!result.ready) {
-        m_wrongWayResultLabel->setText(QStringLiteral("等待车辆模型和方向跟踪输出……"));
+        m_wrongWayResultLabel->setText(QStringLiteral("等待车辆模型输出……"));
         return;
     }
     QStringList lines;
+    lines << QStringLiteral("检测到车辆：%1个")
+             .arg(static_cast<int>(result.vehicles.size()));
+    if (!result.wrongWayRuleEnabled) {
+        lines << QStringLiteral("车辆模型验证模式：未运行轨迹和逆行规则。");
+        m_wrongWayResultLabel->setText(lines.join(QLatin1Char('\n')));
+        return;
+    }
     lines << QStringLiteral("当前逆行车辆：%1").arg(result.activeWrongWayCount);
     lines << QStringLiteral("累计逆行事件：%1").arg(static_cast<qulonglong>(result.wrongWayEventCount));
     if (result.hasRecentWrongWay) {

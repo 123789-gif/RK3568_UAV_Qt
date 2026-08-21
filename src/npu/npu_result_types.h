@@ -120,6 +120,7 @@ struct NpuFrameResult
     std::vector<NpuBox> vehicles;
 
     bool wrongWayRegionsConfigured = false;
+    bool wrongWayRuleEnabled = false;
     VehicleDirectionConfig wrongWayConfig;
     int activeVehicleTrackCount = 0;
     int activeWrongWayCount = 0;

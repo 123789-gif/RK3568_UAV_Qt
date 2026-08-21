@@ -192,7 +192,7 @@ void VehicleWrongWayEngine::process(std::uint64_t frameId,
     result->wrongWayConfig = m_config;
     result->wrongWayRegionsConfigured = m_config.regionsValid();
     if (!m_config.regionsValid()) {
-        vehicles->clear();
+        // 无车道配置时只关闭CPU规则，不能吞掉车辆模型的原始检测结果。
         return;
     }
 

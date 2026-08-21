@@ -66,7 +66,6 @@ ControlPanelWindow::ControlPanelWindow(QWidget *parent)
     setupControlUi();
     applyStyle();
     loadAiSettings();
-    loadViolationSettings();
     loadWrongWaySettings(videoRouteChannel(m_display->videoRoute()));
     loadPtzSettings();
 
@@ -78,8 +77,8 @@ ControlPanelWindow::ControlPanelWindow(QWidget *parent)
                    quint64 sourceRevision) {
         Q_UNUSED(frameId)
         Q_UNUSED(sourceRevision)
-        if (m_violationPreview) {
-            m_violationPreview->setFrame(image);
+        if (m_pedestrianPreview) {
+            m_pedestrianPreview->setFrame(image);
         }
         if (m_wrongWayPreview) {
             m_wrongWayPreview->setFrame(image);
@@ -206,10 +205,10 @@ void ControlPanelWindow::setupControlUi()
     root->setContentsMargins(10, 6, 10, 6);
     root->setSpacing(5);
 
-    QLabel *title = new QLabel(QStringLiteral("智能交通感知控制台｜BUILD-CHECK-01"), central);
+    QLabel *title = new QLabel(QStringLiteral("智能交通感知控制台"), central);
     title->setObjectName("titleLabel");
     title->setAlignment(Qt::AlignCenter);
-    title->setFixedHeight(38);
+    title->setFixedHeight(30);
     root->addWidget(title);
 
     QHBoxLayout *body = new QHBoxLayout();
@@ -218,21 +217,31 @@ void ControlPanelWindow::setupControlUi()
     body->addWidget(createNavPanel(), 0);
 
     m_stack = new QStackedWidget(central);
-    m_stack->addWidget(createVideoPage());
-    m_stack->addWidget(createPtzPage());
-    m_stack->addWidget(createFpgaPage());
-    m_stack->addWidget(createCpuPage());
-    m_stack->addWidget(createAiPage());
-    m_stack->addWidget(createViolationPage());
-    m_stack->addWidget(createWrongWayPage());
-    m_stack->addWidget(createStatusPage());
+    const auto addPage = [this](QWidget *page) {
+        QScrollArea *scroll = new QScrollArea(m_stack);
+        scroll->setObjectName(QStringLiteral("pageScrollArea"));
+        scroll->setWidgetResizable(true);
+        scroll->setFrameShape(QFrame::NoFrame);
+        scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+        scroll->setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+        scroll->setWidget(page);
+        m_stack->addWidget(scroll);
+    };
+    addPage(createVideoPage());
+    addPage(createPtzPage());
+    addPage(createFpgaPage());
+    addPage(createCpuPage());
+    addPage(createAiPage());
+    addPage(createPedestrianPage());
+    addPage(createWrongWayPage());
+    addPage(createStatusPage());
     body->addWidget(m_stack, 1);
 
     root->addLayout(body, 1);
 
     m_bottomStatus = new QLabel(central);
     m_bottomStatus->setObjectName("bottomStatus");
-    m_bottomStatus->setFixedHeight(36);
+    m_bottomStatus->setFixedHeight(30);
     m_bottomStatus->setAlignment(Qt::AlignVCenter | Qt::AlignLeft);
     root->addWidget(m_bottomStatus);
 }
@@ -248,7 +257,7 @@ QWidget *ControlPanelWindow::createNavPanel()
 
     QStringList names;
     names << "视频显示" << "PTZ控制" << "FPGA配置" << "CPU配置"
-          << "车牌识别" << "闯红灯检测" << "逆行检测" << "系统状态";
+          << "车牌识别" << "行人检测" << "逆行检测" << "系统状态";
 
     QButtonGroup *group = new QButtonGroup(nav);
     group->setExclusive(true);
@@ -256,11 +265,10 @@ QWidget *ControlPanelWindow::createNavPanel()
     for (int i = 0; i < names.size(); ++i) {
         QPushButton *btn = new QPushButton(names[i], nav);
         btn->setCheckable(true);
-        btn->setMinimumHeight(44);
-        btn->setMaximumHeight(46);
+        btn->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
         btn->setObjectName("navButton");
         group->addButton(btn, i);
-        layout->addWidget(btn);
+        layout->addWidget(btn, 1);
         if (i == 0) {
             btn->setChecked(true);
         }
@@ -270,13 +278,6 @@ QWidget *ControlPanelWindow::createNavPanel()
             static_cast<void (QButtonGroup::*)(int)>(&QButtonGroup::buttonClicked),
             this,
             &ControlPanelWindow::setCurrentPage);
-
-    layout->addStretch(1);
-
-    QLabel *hint = new QLabel("DSI：Qt + PTZ\nHDMI：PCIe视频", nav);
-    hint->setObjectName("navHint");
-    hint->setAlignment(Qt::AlignCenter);
-    layout->addWidget(hint);
 
     return nav;
 }

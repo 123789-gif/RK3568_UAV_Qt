@@ -248,7 +248,11 @@ void WrongWayPreviewWidget::paintEvent(QPaintEvent* event)
             painter.setPen(QPen(vehicleColor(box.vehicleDirectionState), 3.0));
             painter.setBrush(Qt::NoBrush);
             painter.drawRect(rect);
-            const QString state = vehicleStateText(box.vehicleDirectionState);
+            const QString state = m_result.wrongWayRuleEnabled
+                    ? vehicleStateText(box.vehicleDirectionState)
+                    : QStringLiteral("%1 %2")
+                      .arg(QString::fromStdString(box.label))
+                      .arg(box.score, 0, 'f', 2);
             if (!state.isEmpty()) painter.drawText(rect.topLeft() + QPointF(2, 18), state);
         }
     }

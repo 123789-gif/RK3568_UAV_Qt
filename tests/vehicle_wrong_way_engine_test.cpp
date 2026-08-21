@@ -106,6 +106,25 @@ void testOverviewTilesNeverShareTrack()
     assert(boxes[0].trackId != firstTrack);
 }
 
+void testMissingLaneKeepsDetectorOutput()
+{
+    VehicleWrongWayEngine engine;
+    VehicleDirectionConfig config;
+    std::vector<NpuBox> boxes(1);
+    boxes[0].x = 100.0f;
+    boxes[0].y = 80.0f;
+    boxes[0].w = 120.0f;
+    boxes[0].h = 70.0f;
+    boxes[0].score = 0.88f;
+    boxes[0].classId = 3;
+    NpuFrameResult result;
+    engine.setConfig(config);
+    engine.process(1, 0, 1000000, 640, 360, 1, 1, &boxes, &result);
+    assert(boxes.size() == 1);
+    assert(boxes[0].classId == 3);
+    assert(!result.wrongWayRegionsConfigured);
+}
+
 } // namespace
 
 int main()
@@ -113,6 +132,7 @@ int main()
     testWrongWayAndReset();
     testNormalDirectionDoesNotTrigger();
     testOverviewTilesNeverShareTrack();
+    testMissingLaneKeepsDetectorOutput();
     std::cout << "vehicle_wrong_way_engine_test: PASS\n";
     return 0;
 }
