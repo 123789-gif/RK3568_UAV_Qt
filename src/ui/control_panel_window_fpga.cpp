@@ -15,6 +15,8 @@ QWidget *ControlPanelWindow::createFpgaPage()
     grid->setVerticalSpacing(6);
     grid->setColumnStretch(0, 1);
     grid->setColumnStretch(1, 1);
+    grid->setRowStretch(0, 1);
+    grid->setRowStretch(1, 1);
 
     m_fpgaPreprocButtonGroup = new QButtonGroup(this);
     m_fpgaPreprocButtonGroup->setExclusive(false);
@@ -22,8 +24,8 @@ QWidget *ControlPanelWindow::createFpgaPage()
     auto createModeButton = [this, group](const QString &text, quint32 mode) {
         QPushButton *button = new QPushButton(text, group);
         button->setObjectName(QStringLiteral("fpgaModeButton"));
-        button->setFixedHeight(58);
-        button->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+        button->setMinimumHeight(72);
+        button->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
         button->setProperty("fpgaActive", false);
         button->setProperty("fpgaPending", false);
         m_fpgaPreprocButtonGroup->addButton(button, static_cast<int>(mode));
@@ -65,6 +67,7 @@ QWidget *ControlPanelWindow::createFpgaPage()
     ethernetGrid->setVerticalSpacing(8);
     ethernetGrid->setColumnStretch(0, 1);
     ethernetGrid->setColumnStretch(1, 1);
+    ethernetGrid->setRowStretch(0, 1);
 
     m_ethernetOutputButtonGroup = new QButtonGroup(this);
     m_ethernetOutputButtonGroup->setExclusive(false);
@@ -74,8 +77,8 @@ QWidget *ControlPanelWindow::createFpgaPage()
                     ethernetOutputButtonText(enable, false, false),
                     ethernetGroup);
         button->setObjectName(QStringLiteral("ethOutputButton"));
-        button->setMinimumHeight(58);
-        button->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
+        button->setMinimumHeight(72);
+        button->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
         button->setProperty("ethActive", false);
         button->setProperty("ethPending", false);
         m_ethernetOutputButtonGroup->addButton(button, enable ? 1 : 0);
@@ -102,9 +105,10 @@ QWidget *ControlPanelWindow::createFpgaPage()
     ethernetGrid->addWidget(m_ethernetCurrentStateLabel, 1, 0, 1, 2);
     ethernetGrid->addWidget(m_ethernetInfoLabel, 2, 0, 1, 2);
 
-    layout->addWidget(group);
-    layout->addWidget(ethernetGroup);
-    layout->addStretch(1);
+    // 两个区域按3:2使用整个页面高度。按钮所在行获得伸缩空间，状态和
+    // 硬件回读行保持内容高度，避免底部大面积无效留白。
+    layout->addWidget(group, 3);
+    layout->addWidget(ethernetGroup, 2);
 
     updateFpgaModeButtons();
     updateEthernetButtons();

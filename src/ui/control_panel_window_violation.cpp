@@ -6,13 +6,17 @@ QWidget *ControlPanelWindow::createPedestrianPage()
     QWidget *page = new QWidget(this);
     QHBoxLayout *pageLayout = new QHBoxLayout(page);
     pageLayout->setContentsMargins(6, 4, 6, 4);
-    pageLayout->setSpacing(9);
+    pageLayout->setSpacing(10);
 
+    QWidget *leftPanel = new QWidget(page);
+    QVBoxLayout *leftLayout = new QVBoxLayout(leftPanel);
+    leftLayout->setContentsMargins(0, 0, 0, 0);
+    leftLayout->setSpacing(7);
     QGroupBox *previewGroup = new QGroupBox(
-                QStringLiteral("总览1080P预览与违法区域"), page);
+                QStringLiteral("总览1080P预览与违法区域"), leftPanel);
     QVBoxLayout *previewLayout = new QVBoxLayout(previewGroup);
     previewLayout->setContentsMargins(9, 18, 9, 8);
-    previewLayout->setSpacing(5);
+    previewLayout->setSpacing(6);
 
     m_pedestrianPreview = new ViolationPreviewWidget(previewGroup);
     previewLayout->addWidget(m_pedestrianPreview, 1);
@@ -37,94 +41,68 @@ QWidget *ControlPanelWindow::createPedestrianPage()
                 QStringLiteral("在总览1080P画面中配置交通灯和斑马线区域。"),
                 previewGroup);
     m_pedestrianEditStatusLabel->setObjectName(QStringLiteral("violationEditStatus"));
-    m_pedestrianEditStatusLabel->setWordWrap(false);
-    m_pedestrianEditStatusLabel->setFixedHeight(34);
+    m_pedestrianEditStatusLabel->setWordWrap(true);
+    m_pedestrianEditStatusLabel->setMinimumHeight(36);
     previewLayout->addWidget(m_pedestrianEditStatusLabel);
-    pageLayout->addWidget(previewGroup, 1);
+    leftLayout->addWidget(previewGroup, 1);
 
     QWidget *rightPanel = new QWidget(page);
-    rightPanel->setFixedWidth(400);
+    rightPanel->setMinimumWidth(350);
+    rightPanel->setMaximumWidth(390);
     QVBoxLayout *rightLayout = new QVBoxLayout(rightPanel);
     rightLayout->setContentsMargins(0, 0, 0, 0);
-    rightLayout->setSpacing(6);
+    rightLayout->setSpacing(7);
 
-    QGroupBox *modelGroup = new QGroupBox(QStringLiteral("行人模型控制"), rightPanel);
-    modelGroup->setFixedHeight(150);
-    QGridLayout *modelGrid = new QGridLayout(modelGroup);
-    modelGrid->setContentsMargins(9, 18, 9, 8);
-    modelGrid->setHorizontalSpacing(6);
-    modelGrid->setVerticalSpacing(5);
-    m_btnPedestrianStart = new QPushButton(QStringLiteral("开启行人模型"), modelGroup);
-    m_btnPedestrianStop = new QPushButton(QStringLiteral("关闭行人模型"), modelGroup);
+    QGroupBox *controlGroup = new QGroupBox(QStringLiteral("运行控制"), rightPanel);
+    QGridLayout *controlGrid = new QGridLayout(controlGroup);
+    controlGrid->setContentsMargins(10, 18, 10, 9);
+    controlGrid->setHorizontalSpacing(6);
+    controlGrid->setVerticalSpacing(6);
+    m_btnPedestrianStart = new QPushButton(QStringLiteral("开启行人模型"), controlGroup);
+    m_btnPedestrianStop = new QPushButton(QStringLiteral("关闭行人模型"), controlGroup);
     m_btnPedestrianStart->setObjectName(QStringLiteral("violationRunButton"));
     m_btnPedestrianStop->setObjectName(QStringLiteral("violationRunButton"));
     m_btnPedestrianStart->setFixedHeight(48);
     m_btnPedestrianStop->setFixedHeight(48);
 
-    m_pedestrianConfSpin = new QDoubleSpinBox(modelGroup);
+    m_btnPedestrianViolationRule = new QPushButton(
+                QStringLiteral("开启行人违法判定"), controlGroup);
+    m_btnPedestrianViolationRule->setCheckable(true);
+    m_btnPedestrianViolationRule->setObjectName(
+                QStringLiteral("primaryRuleButton"));
+    m_btnPedestrianViolationRule->setFixedHeight(72);
+    m_btnPedestrianViolationRule->setProperty("ruleActive", false);
+
+    m_pedestrianConfSpin = new QDoubleSpinBox(controlGroup);
     m_pedestrianConfSpin->setRange(0.10, 0.95);
     m_pedestrianConfSpin->setSingleStep(0.05);
     m_pedestrianConfSpin->setDecimals(2);
     m_pedestrianConfSpin->setValue(0.50);
     m_pedestrianConfSpin->setFixedHeight(42);
-    m_pedestrianNmsSpin = new QDoubleSpinBox(modelGroup);
+    m_pedestrianNmsSpin = new QDoubleSpinBox(controlGroup);
     m_pedestrianNmsSpin->setRange(0.10, 0.90);
     m_pedestrianNmsSpin->setSingleStep(0.05);
     m_pedestrianNmsSpin->setDecimals(2);
     m_pedestrianNmsSpin->setValue(0.45);
     m_pedestrianNmsSpin->setFixedHeight(42);
 
-    modelGrid->addWidget(m_btnPedestrianStart, 0, 0, 1, 2);
-    modelGrid->addWidget(m_btnPedestrianStop, 0, 2, 1, 2);
-    modelGrid->addWidget(new QLabel(QStringLiteral("置信度"), modelGroup), 1, 0);
-    modelGrid->addWidget(m_pedestrianConfSpin, 1, 1);
-    modelGrid->addWidget(new QLabel(QStringLiteral("NMS"), modelGroup), 1, 2);
-    modelGrid->addWidget(m_pedestrianNmsSpin, 1, 3);
-    rightLayout->addWidget(modelGroup);
-
-    QGroupBox *ruleGroup = new QGroupBox(QStringLiteral("行人违法判定"), rightPanel);
-    ruleGroup->setFixedHeight(176);
-    QGridLayout *ruleGrid = new QGridLayout(ruleGroup);
-    ruleGrid->setContentsMargins(9, 18, 9, 8);
-    ruleGrid->setHorizontalSpacing(5);
-    ruleGrid->setVerticalSpacing(5);
-    m_btnPedestrianViolationRule = new QPushButton(
-                QStringLiteral("违法判定：关闭"), ruleGroup);
-    m_btnPedestrianViolationRule->setCheckable(true);
-    m_btnPedestrianViolationRule->setObjectName(QStringLiteral("violationLightButton"));
-    m_btnPedestrianViolationRule->setFixedHeight(42);
-
-    m_pedestrianLightModeGroup = new QButtonGroup(this);
-    m_pedestrianLightModeGroup->setExclusive(true);
-    QWidget *lightModeWidget = new QWidget(ruleGroup);
-    QHBoxLayout *lightModeLayout = new QHBoxLayout(lightModeWidget);
-    lightModeLayout->setContentsMargins(0, 0, 0, 0);
-    lightModeLayout->setSpacing(5);
-    const auto addLightMode = [this, lightModeWidget, lightModeLayout](
-            const QString& text, ViolationLightMode mode) {
-        QPushButton *button = new QPushButton(text, lightModeWidget);
-        button->setCheckable(true);
-        button->setObjectName(QStringLiteral("violationLightButton"));
-        button->setFixedHeight(40);
-        m_pedestrianLightModeGroup->addButton(button, static_cast<int>(mode));
-        lightModeLayout->addWidget(button, 1);
-    };
-    addLightMode(QStringLiteral("自动"), ViolationLightMode::Auto);
-    addLightMode(QStringLiteral("强制红灯"), ViolationLightMode::ForceRed);
-    addLightMode(QStringLiteral("强制绿灯"), ViolationLightMode::ForceGreen);
-
     QLabel *ruleHint = new QLabel(
-                QStringLiteral("仅稳定绿灯且脚点在斑马线内合法；其他已知灯态组合累计600 ms判违法。"),
-                ruleGroup);
+                QStringLiteral("核心任务会自动启动行人模型；仅自动识别为稳定绿灯且脚点在斑马线内合法。"),
+                controlGroup);
     ruleHint->setObjectName(QStringLiteral("navHint"));
     ruleHint->setWordWrap(true);
-    ruleGrid->addWidget(m_btnPedestrianViolationRule, 0, 0, 1, 2);
-    ruleGrid->addWidget(lightModeWidget, 1, 0, 1, 2);
-    ruleGrid->addWidget(ruleHint, 2, 0, 1, 2);
-    rightLayout->addWidget(ruleGroup);
+
+    controlGrid->addWidget(m_btnPedestrianStart, 0, 0, 1, 2);
+    controlGrid->addWidget(m_btnPedestrianStop, 0, 2, 1, 2);
+    controlGrid->addWidget(m_btnPedestrianViolationRule, 1, 0, 1, 4);
+    controlGrid->addWidget(new QLabel(QStringLiteral("置信度"), controlGroup), 2, 0);
+    controlGrid->addWidget(m_pedestrianConfSpin, 2, 1);
+    controlGrid->addWidget(new QLabel(QStringLiteral("NMS"), controlGroup), 2, 2);
+    controlGrid->addWidget(m_pedestrianNmsSpin, 2, 3);
+    controlGrid->addWidget(ruleHint, 3, 0, 1, 4);
+    rightLayout->addWidget(controlGroup, 0);
 
     QGroupBox *runtimeGroup = new QGroupBox(QStringLiteral("运行状态"), rightPanel);
-    runtimeGroup->setFixedHeight(118);
     QVBoxLayout *runtimeLayout = new QVBoxLayout(runtimeGroup);
     runtimeLayout->setContentsMargins(9, 18, 9, 8);
     m_pedestrianRuntimeLabel = new QLabel(QStringLiteral("行人模型未启动"), runtimeGroup);
@@ -134,7 +112,7 @@ QWidget *ControlPanelWindow::createPedestrianPage()
     runtimeLayout->addWidget(m_pedestrianRuntimeLabel);
     rightLayout->addWidget(runtimeGroup);
 
-    QGroupBox *resultGroup = new QGroupBox(QStringLiteral("模型与违法结果"), rightPanel);
+    QGroupBox *resultGroup = new QGroupBox(QStringLiteral("当前结果"), rightPanel);
     QVBoxLayout *resultLayout = new QVBoxLayout(resultGroup);
     resultLayout->setContentsMargins(9, 18, 9, 8);
     m_pedestrianResultLabel = new QLabel(QStringLiteral("等待行人检测结果。"), resultGroup);
@@ -144,7 +122,8 @@ QWidget *ControlPanelWindow::createPedestrianPage()
     m_pedestrianResultLabel->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
     resultLayout->addWidget(m_pedestrianResultLabel, 1);
     rightLayout->addWidget(resultGroup, 1);
-    pageLayout->addWidget(rightPanel);
+    pageLayout->addWidget(leftPanel, 1);
+    pageLayout->addWidget(rightPanel, 0);
 
     connect(editLight, &QPushButton::clicked,
             m_pedestrianPreview, &ViolationPreviewWidget::beginTrafficLightEdit);
@@ -159,6 +138,7 @@ QWidget *ControlPanelWindow::createPedestrianPage()
     });
     connect(m_pedestrianPreview, &ViolationPreviewWidget::configEdited,
             this, [this](ViolationRuleConfig config) {
+        config.lightMode = ViolationLightMode::Auto;
         m_pedestrianViolationConfig = sanitizeViolationRuleConfig(config);
         m_pedestrianViolationConfigDirty = true;
         if (m_display) m_display->setViolationConfig(m_pedestrianViolationConfig);
@@ -175,61 +155,33 @@ QWidget *ControlPanelWindow::createPedestrianPage()
             this, &ControlPanelWindow::stopPedestrianDetection);
     connect(m_btnPedestrianViolationRule, &QPushButton::toggled,
             this, [this](bool enabled) {
-        const bool overview = m_display &&
-                m_display->videoRoute() == VideoRoute::Overview;
-        if (!m_display || !m_pedestrianRunning || !overview ||
-            (enabled && !m_pedestrianViolationConfig.regionsValid())) {
-            const QSignalBlocker blocker(m_btnPedestrianViolationRule);
-            m_btnPedestrianViolationRule->setChecked(false);
-            m_pedestrianViolationRuleEnabled = false;
-            if (enabled && m_pedestrianEditStatusLabel) {
-                m_pedestrianEditStatusLabel->setText(
-                            QStringLiteral("请先在总览1080P下开启行人模型，并完成两个区域配置。"));
+        if (enabled) {
+            if (!applyPedestrianTask(true)) {
+                const QSignalBlocker blocker(m_btnPedestrianViolationRule);
+                m_btnPedestrianViolationRule->setChecked(false);
+                m_pedestrianViolationRuleEnabled = false;
+                updateStatusText();
             }
             updatePedestrianButtons();
             return;
         }
-        if (enabled && m_pedestrianViolationConfigDirty &&
-            !savePedestrianViolationSettings()) {
-            const QSignalBlocker blocker(m_btnPedestrianViolationRule);
-            m_btnPedestrianViolationRule->setChecked(false);
-            m_pedestrianViolationRuleEnabled = false;
-            updatePedestrianButtons();
-            return;
-        }
 
-        m_display->setViolationConfig(m_pedestrianViolationConfig);
-        NpuTaskConfig config = m_display->npuConfig();
-        config.enabled = true;
-        config.task = NpuTaskType::Pedestrian;
-        config.pedestrianViolationRuleEnabled = enabled;
-        config.wrongWayRuleEnabled = false;
-        m_display->setNpuConfig(sanitizeNpuTaskConfig(config));
-        m_aiRequestedConfigRevision = m_display->npuConfig().revision;
-        m_pedestrianViolationRuleEnabled = enabled;
-        m_pedestrianViolationLastEventId = 0;
-        m_lastAction = enabled
-                ? QStringLiteral("开启CPU行人违法判定")
-                : QStringLiteral("关闭CPU行人违法判定，保留行人模型");
+        // 关闭规则只修改CPU业务开关，行人模型继续运行，便于独立验证
+        // 模型原始框；若模型已被其他页面切走则只同步本地状态。
+        if (m_display && m_pedestrianRunning) {
+            NpuTaskConfig config = m_display->npuConfig();
+            config.enabled = true;
+            config.task = NpuTaskType::Pedestrian;
+            config.pedestrianViolationRuleEnabled = false;
+            config.wrongWayRuleEnabled = false;
+            m_display->setNpuConfig(sanitizeNpuTaskConfig(config));
+            m_aiRequestedConfigRevision = m_display->npuConfig().revision;
+        }
+        m_pedestrianViolationRuleEnabled = false;
+        m_lastAction = QStringLiteral("关闭CPU行人违法判定，保留行人模型");
         updatePedestrianButtons();
         updateStatusText();
     });
-    connect(m_pedestrianLightModeGroup,
-            static_cast<void (QButtonGroup::*)(int)>(&QButtonGroup::buttonClicked),
-            this, [this](int id) {
-        m_pedestrianViolationConfig.lightMode =
-                static_cast<ViolationLightMode>(id);
-        ++m_pedestrianViolationConfig.revision;
-        m_pedestrianViolationConfig = sanitizeViolationRuleConfig(
-                    m_pedestrianViolationConfig);
-        m_pedestrianViolationConfigDirty = true;
-        if (m_pedestrianPreview)
-            m_pedestrianPreview->setConfig(m_pedestrianViolationConfig);
-        if (m_display)
-            m_display->setViolationConfig(m_pedestrianViolationConfig);
-        updatePedestrianButtons();
-    });
-
     updatePedestrianButtons();
     return page;
 }
@@ -242,8 +194,10 @@ void ControlPanelWindow::loadPedestrianViolationSettings()
         m_lastError = error;
         config = ViolationRuleConfig();
     }
+    const bool migratedToAuto = config.lightMode != ViolationLightMode::Auto;
+    config.lightMode = ViolationLightMode::Auto;
     m_pedestrianViolationConfig = sanitizeViolationRuleConfig(config);
-    m_pedestrianViolationConfigDirty = false;
+    m_pedestrianViolationConfigDirty = migratedToAuto;
     if (m_pedestrianPreview)
         m_pedestrianPreview->setConfig(m_pedestrianViolationConfig);
     if (m_display)
@@ -251,7 +205,9 @@ void ControlPanelWindow::loadPedestrianViolationSettings()
     if (m_pedestrianEditStatusLabel) {
         m_pedestrianEditStatusLabel->setText(
                     m_pedestrianViolationConfig.regionsValid()
-                    ? QStringLiteral("已加载总览1080P交通灯和斑马线配置。")
+                    ? (migratedToAuto
+                       ? QStringLiteral("已加载区域配置；灯态已迁移为自动识别，启动前将保存。")
+                       : QStringLiteral("已加载总览1080P交通灯和斑马线配置。"))
                     : QStringLiteral("请配置交通灯矩形和斑马线四点区域。"));
     }
     updatePedestrianButtons();
@@ -259,6 +215,8 @@ void ControlPanelWindow::loadPedestrianViolationSettings()
 
 bool ControlPanelWindow::savePedestrianViolationSettings()
 {
+    // 正式UI不再提供强制红/绿灯，保存时同步清除旧版本遗留状态。
+    m_pedestrianViolationConfig.lightMode = ViolationLightMode::Auto;
     ++m_pedestrianViolationConfig.revision;
     m_pedestrianViolationConfig = sanitizeViolationRuleConfig(
                 m_pedestrianViolationConfig);
@@ -284,46 +242,74 @@ bool ControlPanelWindow::savePedestrianViolationSettings()
     return true;
 }
 
-void ControlPanelWindow::startPedestrianDetection()
+bool ControlPanelWindow::applyPedestrianTask(bool enableRule)
 {
     if (!m_display || !m_display->isRunning()) {
         m_lastError = QStringLiteral("请先在“视频显示”页面启动PCIe视频");
-    } else if (m_display->videoRoute() != VideoRoute::Overview) {
-        m_lastError = QStringLiteral("行人检测与违法规则统一使用总览1080P输入");
-    } else {
-        m_display->setViolationConfig(m_pedestrianViolationConfig);
-        NpuTaskConfig config = m_display->npuConfig();
-        config.enabled = true;
-        config.task = NpuTaskType::Pedestrian;
-        config.pedestrianViolationRuleEnabled = false;
-        config.wrongWayRuleEnabled = false;
-        // 行人任务不继承车牌页的可调帧率，避免车牌45/60 fps压力测试
-        // 意外传递到行人模型并放大显示链路负载。
-        config.targetFps = NPU_TARGET_FPS_DEFAULT;
-        config.confidence = m_pedestrianConfSpin
-                ? static_cast<float>(m_pedestrianConfSpin->value()) : 0.50f;
-        config.nmsThreshold = m_pedestrianNmsSpin
-                ? static_cast<float>(m_pedestrianNmsSpin->value()) : 0.45f;
-        m_display->setNpuConfig(sanitizeNpuTaskConfig(config));
-        m_aiRequestedConfigRevision = m_display->npuConfig().revision;
-        m_pedestrianRunning = true;
-        m_pedestrianViolationRuleEnabled = false;
-        m_wrongWayRunning = false;
-        m_wrongWayRuleEnabled = false;
-        m_aiRequestedTask = NpuTaskType::Pedestrian;
-        m_aiTaskSwitchPending = true;
-        m_pedestrianViolationLastEventId = 0;
-        m_lastAction = QStringLiteral("启动总览1080P行人模型");
-        m_lastError = QStringLiteral("none");
-        if (m_pedestrianRuntimeLabel)
-            m_pedestrianRuntimeLabel->setText(
-                        QStringLiteral("正在加载行人模型……\n输入：总览1080P\n违法规则：关闭"));
-        updatePedestrianButtons();
-        updateWrongWayButtons();
-        updateAiTaskButtons();
-        updateStatusText();
-        return;
+        return false;
     }
+    if (m_display->videoRoute() != VideoRoute::Overview) {
+        m_lastError = QStringLiteral("行人检测与违法规则统一使用总览1080P输入");
+        return false;
+    }
+
+    m_pedestrianViolationConfig.lightMode = ViolationLightMode::Auto;
+    if (enableRule && !m_pedestrianViolationConfig.regionsValid()) {
+        m_lastError = QStringLiteral("请先完成交通灯区域和斑马线区域配置");
+        if (m_pedestrianEditStatusLabel)
+            m_pedestrianEditStatusLabel->setText(m_lastError);
+        return false;
+    }
+    if (enableRule && m_pedestrianViolationConfigDirty &&
+        !savePedestrianViolationSettings()) {
+        return false;
+    }
+
+    m_display->setViolationConfig(m_pedestrianViolationConfig);
+    const NpuTaskConfig previous = m_display->npuConfig();
+    NpuTaskConfig config = previous;
+    config.enabled = true;
+    config.task = NpuTaskType::Pedestrian;
+    config.pedestrianViolationRuleEnabled = enableRule;
+    config.wrongWayRuleEnabled = false;
+    config.targetFps = NPU_TARGET_FPS_DEFAULT;
+    config.confidence = m_pedestrianConfSpin
+            ? static_cast<float>(m_pedestrianConfSpin->value()) : 0.50f;
+    config.nmsThreshold = m_pedestrianNmsSpin
+            ? static_cast<float>(m_pedestrianNmsSpin->value()) : 0.45f;
+    m_display->setNpuConfig(sanitizeNpuTaskConfig(config));
+    m_aiRequestedConfigRevision = m_display->npuConfig().revision;
+
+    // 后端把task枚举变化视为执行路径变化；即使旧TrafficViolation和
+    // 新Pedestrian共用模型，也要锁定按钮直到后台确认新配置生效。
+    const bool taskSwitch = !previous.enabled ||
+            previous.task != NpuTaskType::Pedestrian;
+    m_pedestrianRunning = true;
+    m_pedestrianViolationRuleEnabled = enableRule;
+    m_wrongWayRunning = false;
+    m_wrongWayRuleEnabled = false;
+    m_aiRequestedTask = NpuTaskType::Pedestrian;
+    m_aiTaskSwitchPending = taskSwitch;
+    m_pedestrianViolationLastEventId = 0;
+    m_lastAction = enableRule
+            ? QStringLiteral("启动总览1080P行人模型与违法判定")
+            : QStringLiteral("启动总览1080P行人模型验证");
+    m_lastError = QStringLiteral("none");
+    if (m_pedestrianRuntimeLabel) {
+        m_pedestrianRuntimeLabel->setText(enableRule
+                ? QStringLiteral("正在启动行人模型与违法判定……")
+                : QStringLiteral("正在启动行人模型验证……"));
+    }
+    updatePedestrianButtons();
+    updateWrongWayButtons();
+    updateAiTaskButtons();
+    updateStatusText();
+    return true;
+}
+
+void ControlPanelWindow::startPedestrianDetection()
+{
+    if (applyPedestrianTask(false)) return;
     if (m_pedestrianRuntimeLabel)
         m_pedestrianRuntimeLabel->setText(QStringLiteral("启动失败：%1").arg(m_lastError));
     updatePedestrianButtons();
@@ -340,6 +326,7 @@ void ControlPanelWindow::stopPedestrianDetection()
         config.task = NpuTaskType::Pedestrian;
         config.pedestrianViolationRuleEnabled = false;
         m_display->setNpuConfig(sanitizeNpuTaskConfig(config));
+        m_aiRequestedConfigRevision = m_display->npuConfig().revision;
     }
     m_pedestrianRunning = false;
     m_pedestrianViolationRuleEnabled = false;
@@ -358,8 +345,10 @@ void ControlPanelWindow::updatePedestrianButtons()
             (m_display && m_display->latestNpuResult().modelSwitching);
     const bool overview = m_display &&
             m_display->videoRoute() == VideoRoute::Overview;
+    const bool displayRunning = m_display && m_display->isRunning();
     if (m_btnPedestrianStart) {
-        m_btnPedestrianStart->setEnabled(!m_pedestrianRunning && overview && !switching);
+        m_btnPedestrianStart->setEnabled(
+                    !m_pedestrianRunning && displayRunning && overview && !switching);
         if (m_btnPedestrianStart->property("violationActive").toBool() !=
                 m_pedestrianRunning) {
             m_btnPedestrianStart->setProperty("violationActive", m_pedestrianRunning);
@@ -375,17 +364,20 @@ void ControlPanelWindow::updatePedestrianButtons()
                     m_pedestrianViolationRuleEnabled);
         m_btnPedestrianViolationRule->setText(
                     m_pedestrianViolationRuleEnabled
-                    ? QStringLiteral("违法判定：开启")
-                    : QStringLiteral("违法判定：关闭"));
+                    ? QStringLiteral("行人违法判定运行中")
+                    : QStringLiteral("开启行人违法判定"));
         m_btnPedestrianViolationRule->setEnabled(
-                    m_pedestrianRunning && overview && !switching &&
-                    m_pedestrianViolationConfig.regionsValid());
-    }
-    if (m_pedestrianLightModeGroup) {
-        if (QAbstractButton *button = m_pedestrianLightModeGroup->button(
-                    static_cast<int>(m_pedestrianViolationConfig.lightMode))) {
-            const QSignalBlocker blocker(m_pedestrianLightModeGroup);
-            button->setChecked(true);
+                    !switching &&
+                    (m_pedestrianViolationRuleEnabled ||
+                     (displayRunning && overview)));
+        if (m_btnPedestrianViolationRule->property("ruleActive").toBool() !=
+                m_pedestrianViolationRuleEnabled) {
+            m_btnPedestrianViolationRule->setProperty(
+                        "ruleActive", m_pedestrianViolationRuleEnabled);
+            m_btnPedestrianViolationRule->style()->unpolish(
+                        m_btnPedestrianViolationRule);
+            m_btnPedestrianViolationRule->style()->polish(
+                        m_btnPedestrianViolationRule);
         }
     }
 }

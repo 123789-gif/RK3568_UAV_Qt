@@ -36,17 +36,28 @@ int main()
             "pedestrian/vehicle default fps must remain 15");
 
     NpuTaskConfig pedestrianConfig;
+    pedestrianConfig.enabled = true;
     pedestrianConfig.task = NpuTaskType::Pedestrian;
     pedestrianConfig.pedestrianViolationRuleEnabled = true;
-    require(sanitizeNpuTaskConfig(pedestrianConfig)
-            .pedestrianViolationRuleEnabled,
+    const NpuTaskConfig pedestrianRuleConfig =
+            sanitizeNpuTaskConfig(pedestrianConfig);
+    require(pedestrianRuleConfig.enabled &&
+            pedestrianRuleConfig.pedestrianViolationRuleEnabled,
             "pedestrian violation rule flag was not preserved");
+    pedestrianConfig.pedestrianViolationRuleEnabled = false;
+    require(sanitizeNpuTaskConfig(pedestrianConfig).enabled,
+            "disabling pedestrian rule unexpectedly stopped the model");
 
     NpuTaskConfig vehicleConfig;
+    vehicleConfig.enabled = true;
     vehicleConfig.task = NpuTaskType::VehicleWrongWay;
     vehicleConfig.wrongWayRuleEnabled = true;
-    require(sanitizeNpuTaskConfig(vehicleConfig).wrongWayRuleEnabled,
+    const NpuTaskConfig vehicleRuleConfig = sanitizeNpuTaskConfig(vehicleConfig);
+    require(vehicleRuleConfig.enabled && vehicleRuleConfig.wrongWayRuleEnabled,
             "vehicle rule enable flag was not preserved");
+    vehicleConfig.wrongWayRuleEnabled = false;
+    require(sanitizeNpuTaskConfig(vehicleConfig).enabled,
+            "disabling wrong-way rule unexpectedly stopped the model");
 
     NpuTaskConfig plateConfig;
     plateConfig.task = NpuTaskType::PlateCascade;

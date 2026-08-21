@@ -176,6 +176,7 @@ private:
     void updateAiTaskButtons();
     void loadAiSettings();
     void saveAiSettings(const NpuTaskConfig &config);
+    bool applyPedestrianTask(bool enableRule);
     void startPedestrianDetection();
     void stopPedestrianDetection();
     void loadPedestrianViolationSettings();
@@ -184,6 +185,7 @@ private:
     void updatePedestrianButtons();
     void loadWrongWaySettings(int sourceChannel);
     bool saveWrongWaySettings();
+    bool applyWrongWayTask(bool enableRule);
     void startWrongWayDetection();
     void stopWrongWayDetection();
     void updateWrongWayPanel(const NpuFrameResult &result);
@@ -266,7 +268,6 @@ private:
     QPushButton *m_btnPedestrianStart = nullptr;
     QPushButton *m_btnPedestrianStop = nullptr;
     QPushButton *m_btnPedestrianViolationRule = nullptr;
-    QButtonGroup *m_pedestrianLightModeGroup = nullptr;
     QDoubleSpinBox *m_pedestrianConfSpin = nullptr;
     QDoubleSpinBox *m_pedestrianNmsSpin = nullptr;
     QLabel *m_pedestrianEditStatusLabel = nullptr;

@@ -125,7 +125,7 @@ QWidget *ControlPanelWindow::createAiPage()
     QGroupBox *modeGroup = new QGroupBox(QStringLiteral("车牌识别模式"), page);
     // 模式按钮是该区域唯一有效交互。输入源由视频页统一管理，运行/应用
     // 状态由右侧状态框和按钮颜色表达，避免冗余文字挤压两行按钮。
-    modeGroup->setFixedHeight(108);
+    modeGroup->setFixedHeight(124);
     QVBoxLayout *modeLayout = new QVBoxLayout(modeGroup);
     modeLayout->setContentsMargins(12, 18, 12, 10);
     modeLayout->setSpacing(0);
@@ -149,6 +149,9 @@ QWidget *ControlPanelWindow::createAiPage()
         clearAiCurrentResult();
         updateAiTaskButtons();
     });
+    // 按钮本体60 px，外层额外保留8 px，防止QGroupBox内容区裁掉
+    // 按钮底边和两个圆角。
+    modeWidget->setFixedHeight(68);
     modeLayout->addWidget(modeWidget);
     pageLayout->addWidget(modeGroup, 0);
 

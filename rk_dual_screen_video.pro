@@ -142,6 +142,7 @@ DISTFILES += \
     docs/BUILD.md \
     docs/DEPLOY.md \
     docs/ARCHITECTURE.md \
+    docs/CORE_RULE_UI_V8.md \
     docs/UI_REFACTOR.md \
     docs/PLATE_ORIGINAL_ROI_EXPERIMENT.md \
     docs/VEHICLE_WRONG_WAY_INTEGRATION.md \

@@ -4,7 +4,7 @@
 ControlPanelWindow::ControlPanelWindow(QWidget *parent)
     : QMainWindow(parent)
 {
-    setWindowTitle(QStringLiteral("智能交通感知控制台｜BUILD-CHECK-07"));
+    setWindowTitle(QStringLiteral("智能交通感知控制台｜BUILD-CHECK-08"));
 
     m_display = new DrmRgaDisplay(this);
     m_ptzCapture = new PtzCaptureWorker(this);
