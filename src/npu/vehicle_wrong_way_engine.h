@@ -47,6 +47,7 @@ public: // 仅供实现文件中的无状态运动估计辅助函数访问。
         std::uint64_t firstSeenMs = 0;
         std::uint64_t lastSeenMs = 0;
         int laneId = -1;
+        int overviewTileId = -1;
         int pendingLaneId = -1;
         int pendingLaneCount = 0;
         int reverseEvidenceMs = 0;

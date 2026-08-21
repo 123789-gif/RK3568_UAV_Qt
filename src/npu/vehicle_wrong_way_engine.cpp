@@ -9,6 +9,16 @@ namespace {
 float boxAnchorX(const NpuBox& box) { return box.x + box.w * 0.5f; }
 float boxAnchorY(const NpuBox& box) { return box.y + box.h; }
 
+int overviewTileForAnchor(float x, float y, int frameWidth, int frameHeight)
+{
+    if (frameWidth <= 0 || frameHeight <= 0) return -1;
+    const int column = std::max(0, std::min(2,
+            static_cast<int>(x * 3.0f / static_cast<float>(frameWidth))));
+    const int row = std::max(0, std::min(2,
+            static_cast<int>(y * 3.0f / static_cast<float>(frameHeight))));
+    return row * 3 + column;
+}
+
 float boxDiagonal(const NpuBox& box)
 {
     return std::max(1.0f, std::sqrt(box.w * box.w + box.h * box.h));
@@ -188,10 +198,17 @@ void VehicleWrongWayEngine::process(std::uint64_t frameId,
 
     struct Association { int track; int observation; float cost; };
     std::vector<int> observationLane(vehicles->size(), -1);
+    std::vector<int> observationTile(vehicles->size(), -1);
     for (std::size_t oi = 0; oi < vehicles->size(); ++oi) {
-        observationLane[oi] = laneForPoint(boxAnchorX((*vehicles)[oi]) / frameWidth,
-                                           boxAnchorY((*vehicles)[oi]) / frameHeight,
+        const float anchorX = boxAnchorX((*vehicles)[oi]);
+        const float anchorY = boxAnchorY((*vehicles)[oi]);
+        observationLane[oi] = laneForPoint(anchorX / frameWidth,
+                                           anchorY / frameHeight,
                                            -1);
+        if (sourceChannel == 0) {
+            observationTile[oi] = overviewTileForAnchor(anchorX, anchorY,
+                                                        frameWidth, frameHeight);
+        }
     }
 
     std::vector<Association> associations;
@@ -203,6 +220,9 @@ void VehicleWrongWayEngine::process(std::uint64_t frameId,
         const float predictedX = track.anchorX + track.velocityX * dtMs;
         const float predictedY = track.anchorY + track.velocityY * dtMs;
         for (std::size_t oi = 0; oi < vehicles->size(); ++oi) {
+            // 总览中的九个tile来自独立摄像头，禁止跨tile关联轨迹。
+            if (sourceChannel == 0 &&
+                track.overviewTileId != observationTile[oi]) continue;
             const NpuBox& observation = (*vehicles)[oi];
             const float dx = boxAnchorX(observation) - predictedX;
             const float dy = boxAnchorY(observation) - predictedY;
@@ -251,6 +271,7 @@ void VehicleWrongWayEngine::process(std::uint64_t frameId,
             track.firstSeenMs = monotonicMs;
             track.lastSeenMs = monotonicMs;
             track.laneId = observationLane[oi];
+            track.overviewTileId = observationTile[oi];
             track.history.push_back({monotonicMs, anchorX, anchorY, boxDiagonal(observation)});
             m_tracks.push_back(track);
             observationTrack[oi] = static_cast<int>(m_tracks.size() - 1);

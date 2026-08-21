@@ -1,6 +1,17 @@
 #include "ui/control_panel_window.h"
 #include "ui/control_panel_window_internal.h"
 
+namespace {
+
+QString wrongWaySourceDisplayName(int sourceChannel)
+{
+    return sourceChannel == 0
+            ? QStringLiteral("总览")
+            : QStringLiteral("CH%1").arg(sourceChannel);
+}
+
+} // namespace
+
 QWidget *ControlPanelWindow::createWrongWayPage()
 {
     QWidget *page = new QWidget(this);
@@ -32,23 +43,28 @@ QWidget *ControlPanelWindow::createWrongWayPage()
     QPushButton *undo = new QPushButton(QStringLiteral("撤销"), buttons);
     QPushButton *deleteLane = new QPushButton(QStringLiteral("删除车道"), buttons);
     QPushButton *clear = new QPushButton(QStringLiteral("清除全部"), buttons);
-    QPushButton *save = new QPushButton(QStringLiteral("保存当前CH配置"), buttons);
+    QPushButton *save = new QPushButton(QStringLiteral("保存当前输入配置"), buttons);
     for (QPushButton *button : {addLane, editLane, editDirection, undo,
                                 deleteLane, clear, save}) {
         button->setObjectName(QStringLiteral("violationCompactButton"));
         button->setMinimumHeight(40);
     }
-    grid->addWidget(addLane, 0, 0);
-    grid->addWidget(editLane, 0, 1);
-    grid->addWidget(editDirection, 0, 2);
-    grid->addWidget(undo, 1, 0);
-    grid->addWidget(deleteLane, 1, 1);
-    grid->addWidget(clear, 1, 2);
-    grid->addWidget(save, 2, 0, 1, 3);
+    m_wrongWayLaneCombo = new QComboBox(buttons);
+    m_wrongWayLaneCombo->setMinimumHeight(40);
+    m_wrongWayLaneCombo->addItem(QStringLiteral("暂无车道"), -1);
+    grid->addWidget(new QLabel(QStringLiteral("当前车道"), buttons), 0, 0);
+    grid->addWidget(m_wrongWayLaneCombo, 0, 1, 1, 3);
+    grid->addWidget(addLane, 1, 0);
+    grid->addWidget(editLane, 1, 1);
+    grid->addWidget(editDirection, 1, 2);
+    grid->addWidget(save, 1, 3);
+    grid->addWidget(undo, 2, 0);
+    grid->addWidget(deleteLane, 2, 1);
+    grid->addWidget(clear, 2, 2, 1, 2);
     previewLayout->addWidget(buttons);
 
     m_wrongWayEditStatusLabel = new QLabel(
-                QStringLiteral("请选择CH1～CH9单路画面，再配置各车道及正常方向。"),
+                QStringLiteral("可在总览或CH1～CH9输入上配置车道及正常方向。"),
                 previewGroup);
     m_wrongWayEditStatusLabel->setObjectName(QStringLiteral("violationEditStatus"));
     m_wrongWayEditStatusLabel->setWordWrap(true);
@@ -93,7 +109,7 @@ QWidget *ControlPanelWindow::createWrongWayPage()
     }
 
     QLabel *hint = new QLabel(
-                QStringLiteral("规则：车辆底边中心进入车道后，按轨迹与正常方向的余弦及连续时间判定；总览模式禁止启动。"),
+                QStringLiteral("规则：一次车辆模型推理后，由CPU按车道轨迹、方向余弦及连续时间判定；总览轨迹按九宫格隔离。"),
                 controlGroup);
     hint->setObjectName(QStringLiteral("navHint"));
     hint->setWordWrap(true);
@@ -135,11 +151,26 @@ QWidget *ControlPanelWindow::createWrongWayPage()
     connect(deleteLane, &QPushButton::clicked, m_wrongWayPreview, &WrongWayPreviewWidget::deleteSelectedLane);
     connect(clear, &QPushButton::clicked, m_wrongWayPreview, &WrongWayPreviewWidget::clearAllLanes);
     connect(save, &QPushButton::clicked, this, [this]() { (void)saveWrongWaySettings(); });
+    connect(m_wrongWayLaneCombo,
+            QOverload<int>::of(&QComboBox::currentIndexChanged),
+            this, [this](int index) {
+        if (!m_wrongWayPreview || !m_wrongWayLaneCombo || index < 0) return;
+        m_wrongWayPreview->setSelectedLane(
+                    m_wrongWayLaneCombo->itemData(index).toInt());
+    });
+    connect(m_wrongWayPreview, &WrongWayPreviewWidget::selectedLaneChanged,
+            this, [this](int laneIndex) {
+        if (!m_wrongWayLaneCombo) return;
+        const QSignalBlocker blocker(m_wrongWayLaneCombo);
+        const int index = m_wrongWayLaneCombo->findData(laneIndex);
+        if (index >= 0) m_wrongWayLaneCombo->setCurrentIndex(index);
+    });
     connect(m_wrongWayPreview, &WrongWayPreviewWidget::configEdited,
             this, [this](VehicleDirectionConfig config) {
         m_wrongWayConfig = sanitizeVehicleDirectionConfig(config);
         m_wrongWayConfigDirty = true;
         if (m_display) m_display->setWrongWayConfig(m_wrongWayConfig);
+        updateWrongWayLaneSelector();
         updateWrongWayButtons();
     });
     connect(m_wrongWayPreview, &WrongWayPreviewWidget::statusMessage,
@@ -178,27 +209,53 @@ QWidget *ControlPanelWindow::createWrongWayPage()
         if (m_wrongWayPreview) m_wrongWayPreview->setConfig(m_wrongWayConfig);
         if (m_display) m_display->setWrongWayConfig(m_wrongWayConfig);
         if (m_wrongWayEditStatusLabel)
-            m_wrongWayEditStatusLabel->setText(QStringLiteral("稳定策略已更新，启动前请保存当前CH配置。"));
+            m_wrongWayEditStatusLabel->setText(QStringLiteral("稳定策略已更新，启动前请保存当前输入配置。"));
     });
 
     updateWrongWayButtons();
     return page;
 }
 
-void ControlPanelWindow::loadWrongWaySettings(int sourceChannel)
+void ControlPanelWindow::updateWrongWayLaneSelector()
 {
-    if (sourceChannel < 1 || sourceChannel > 9) {
-        m_wrongWaySourceChannel = 0;
-        m_wrongWayConfig = VehicleDirectionConfig();
-        m_wrongWayConfigDirty = false;
-        if (m_wrongWayPreview) m_wrongWayPreview->setConfig(m_wrongWayConfig);
-        if (m_wrongWayEditStatusLabel)
-            m_wrongWayEditStatusLabel->setText(QStringLiteral("总览模式不支持逆行检测，请先选择CH1～CH9。"));
-        updateWrongWayButtons();
+    if (!m_wrongWayLaneCombo) return;
+    const int selected = m_wrongWayPreview
+            ? m_wrongWayPreview->selectedLane() : -1;
+    const QSignalBlocker blocker(m_wrongWayLaneCombo);
+    m_wrongWayLaneCombo->clear();
+    if (m_wrongWayConfig.lanes.empty()) {
+        m_wrongWayLaneCombo->addItem(QStringLiteral("暂无车道"), -1);
         return;
     }
+
+    for (std::size_t laneIndex = 0;
+         laneIndex < m_wrongWayConfig.lanes.size(); ++laneIndex) {
+        QString label = QStringLiteral("车道%1").arg(laneIndex + 1);
+        if (m_wrongWaySourceChannel == 0) {
+            float centerX = 0.0f;
+            float centerY = 0.0f;
+            for (const auto& point : m_wrongWayConfig.lanes[laneIndex].quad) {
+                centerX += point.x;
+                centerY += point.y;
+            }
+            const int column = qBound(0, static_cast<int>(centerX * 0.75f), 2);
+            const int row = qBound(0, static_cast<int>(centerY * 0.75f), 2);
+            label = QStringLiteral("CH%1 · 车道%2")
+                    .arg(row * 3 + column + 1)
+                    .arg(laneIndex + 1);
+        }
+        m_wrongWayLaneCombo->addItem(label, static_cast<int>(laneIndex));
+    }
+    const int selectedIndex = m_wrongWayLaneCombo->findData(selected);
+    m_wrongWayLaneCombo->setCurrentIndex(selectedIndex >= 0 ? selectedIndex : 0);
+}
+
+void ControlPanelWindow::loadWrongWaySettings(int sourceChannel)
+{
+    if (sourceChannel < 0 || sourceChannel > 9) sourceChannel = 0;
     if (sourceChannel == m_wrongWaySourceChannel) return;
-    if (m_wrongWayConfigDirty && m_wrongWaySourceChannel > 0 && m_wrongWayConfig.regionsValid())
+    if (m_wrongWayConfigDirty && m_wrongWaySourceChannel >= 0 &&
+        m_wrongWayConfig.regionsValid())
         (void)saveWrongWaySettings();
 
     m_wrongWaySourceChannel = sourceChannel;
@@ -212,19 +269,22 @@ void ControlPanelWindow::loadWrongWaySettings(int sourceChannel)
     m_wrongWayConfigDirty = false;
     if (m_wrongWayPreview) m_wrongWayPreview->setConfig(m_wrongWayConfig);
     if (m_display) m_display->setWrongWayConfig(m_wrongWayConfig);
+    updateWrongWayLaneSelector();
     if (m_wrongWayEditStatusLabel) {
         m_wrongWayEditStatusLabel->setText(m_wrongWayConfig.regionsValid()
-                ? QStringLiteral("CH%1已加载%2条车道配置。")
-                  .arg(sourceChannel).arg(static_cast<int>(m_wrongWayConfig.lanes.size()))
-                : QStringLiteral("CH%1尚未配置车道，请点击“新增车道”。").arg(sourceChannel));
+                ? QStringLiteral("%1已加载%2条车道配置。")
+                  .arg(wrongWaySourceDisplayName(sourceChannel))
+                  .arg(static_cast<int>(m_wrongWayConfig.lanes.size()))
+                : QStringLiteral("%1尚未配置车道，请点击“新增车道”。")
+                  .arg(wrongWaySourceDisplayName(sourceChannel)));
     }
     updateWrongWayButtons();
 }
 
 bool ControlPanelWindow::saveWrongWaySettings()
 {
-    if (m_wrongWaySourceChannel < 1 || m_wrongWaySourceChannel > 9) {
-        m_lastError = QStringLiteral("总览模式不能保存逆行配置");
+    if (m_wrongWaySourceChannel < 0 || m_wrongWaySourceChannel > 9) {
+        m_lastError = QStringLiteral("逆行配置输入源无效");
         return false;
     }
     ++m_wrongWayConfig.revision;
@@ -239,9 +299,10 @@ bool ControlPanelWindow::saveWrongWaySettings()
     m_wrongWayConfigDirty = false;
     if (m_display) m_display->setWrongWayConfig(m_wrongWayConfig);
     if (m_wrongWayEditStatusLabel)
-        m_wrongWayEditStatusLabel->setText(QStringLiteral("CH%1逆行配置已保存。")
-                                           .arg(m_wrongWaySourceChannel));
-    m_lastAction = QStringLiteral("保存CH%1车辆逆行配置").arg(m_wrongWaySourceChannel);
+        m_wrongWayEditStatusLabel->setText(QStringLiteral("%1逆行配置已保存。")
+                .arg(wrongWaySourceDisplayName(m_wrongWaySourceChannel)));
+    m_lastAction = QStringLiteral("保存%1车辆逆行配置")
+            .arg(wrongWaySourceDisplayName(m_wrongWaySourceChannel));
     m_lastError = QStringLiteral("none");
     updateWrongWayButtons();
     updateStatusText();
@@ -258,10 +319,8 @@ void ControlPanelWindow::startWrongWayDetection()
     }
     if (!m_display || !m_display->isRunning()) {
         m_lastError = QStringLiteral("请先启动PCIe视频");
-    } else if (!isSingleChannelRoute(m_display->videoRoute())) {
-        m_lastError = QStringLiteral("逆行检测不支持九宫格总览，请选择单路CH");
     } else if (!m_wrongWayConfig.regionsValid()) {
-        m_lastError = QStringLiteral("当前CH尚未配置有效车道和方向");
+        m_lastError = QStringLiteral("当前输入尚未配置有效车道和方向");
     } else {
         NpuTaskConfig previous = m_display->npuConfig();
         if (m_violationRunning && m_violationPreviousAiConfigValid)
@@ -282,7 +341,8 @@ void ControlPanelWindow::startWrongWayDetection()
         m_display->setNpuConfig(sanitizeNpuTaskConfig(config));
         m_wrongWayRunning = true;
         m_wrongWayLastEventId = 0;
-        m_lastAction = QStringLiteral("启动CH%1车辆逆行检测").arg(m_wrongWaySourceChannel);
+        m_lastAction = QStringLiteral("启动%1车辆逆行检测")
+                .arg(wrongWaySourceDisplayName(m_wrongWaySourceChannel));
         m_lastError = QStringLiteral("none");
         if (m_wrongWayRuntimeLabel)
             m_wrongWayRuntimeLabel->setText(QStringLiteral("正在加载车辆模型并等待轨迹结果……"));
@@ -321,9 +381,9 @@ void ControlPanelWindow::stopWrongWayDetection(bool restorePreviousConfig)
 
 void ControlPanelWindow::updateWrongWayButtons()
 {
-    const bool singleChannel = m_display && isSingleChannelRoute(m_display->videoRoute());
+    const bool routeReady = m_display != nullptr;
     if (m_btnWrongWayStart) {
-        m_btnWrongWayStart->setEnabled(!m_wrongWayRunning && singleChannel &&
+        m_btnWrongWayStart->setEnabled(!m_wrongWayRunning && routeReady &&
                                        m_wrongWayConfig.regionsValid());
         m_btnWrongWayStart->setProperty("violationActive", m_wrongWayRunning);
         m_btnWrongWayStart->style()->unpolish(m_btnWrongWayStart);
@@ -342,8 +402,9 @@ void ControlPanelWindow::updateWrongWayPanel(const NpuFrameResult& result)
             updateWrongWayButtons();
         }
         if (!m_wrongWayRunning && m_wrongWayRuntimeLabel)
-            m_wrongWayRuntimeLabel->setText(QStringLiteral("逆行检测未启动｜CH%1｜车道：%2")
-                                            .arg(m_wrongWaySourceChannel)
+            m_wrongWayRuntimeLabel->setText(QStringLiteral("逆行检测未启动｜%1｜车道：%2")
+                                            .arg(wrongWaySourceDisplayName(
+                                                     m_wrongWaySourceChannel))
                                             .arg(static_cast<int>(m_wrongWayConfig.lanes.size())));
         return;
     }
@@ -351,11 +412,11 @@ void ControlPanelWindow::updateWrongWayPanel(const NpuFrameResult& result)
     updateWrongWayButtons();
     if (m_wrongWayRuntimeLabel) {
         m_wrongWayRuntimeLabel->setText(
-                    QStringLiteral("状态：%1｜输入：CH%2｜车道：%3\n"
+                    QStringLiteral("状态：%1｜输入：%2｜车道：%3\n"
                                    "车辆：%4｜有效轨迹：%5｜逆行：%6\n"
                                    "推理FPS：%7｜单帧耗时：%8 ms")
                     .arg(result.ready ? QStringLiteral("运行中") : QStringLiteral("准备中"))
-                    .arg(result.sourceChannel)
+                    .arg(wrongWaySourceDisplayName(result.sourceChannel))
                     .arg(static_cast<int>(result.wrongWayConfig.lanes.size()))
                     .arg(static_cast<int>(result.vehicles.size()))
                     .arg(result.activeVehicleTrackCount)

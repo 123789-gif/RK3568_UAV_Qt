@@ -64,6 +64,7 @@ void WrongWayPreviewWidget::setConfig(const VehicleDirectionConfig& config)
     if (m_config.lanes.empty()) m_selectedLane = -1;
     else m_selectedLane = std::max(0, std::min(m_selectedLane,
                                                static_cast<int>(m_config.lanes.size()) - 1));
+    emit selectedLaneChanged(m_selectedLane);
     update();
 }
 
@@ -73,8 +74,8 @@ int WrongWayPreviewWidget::selectedLane() const { return m_selectedLane; }
 
 void WrongWayPreviewWidget::addLane()
 {
-    if (m_config.lanes.size() >= 8u) {
-        emit statusMessage(QStringLiteral("最多支持8条车道"));
+    if (m_config.lanes.size() >= 18u) {
+        emit statusMessage(QStringLiteral("最多支持18条车道"));
         return;
     }
     m_selectedLane = static_cast<int>(m_config.lanes.size());
@@ -96,6 +97,23 @@ void WrongWayPreviewWidget::deleteSelectedLane()
     m_editMode = EditMode::None;
     publishConfig(QStringLiteral("已删除车道，当前共%1条")
                   .arg(static_cast<int>(m_config.lanes.size())));
+}
+
+void WrongWayPreviewWidget::setSelectedLane(int laneIndex)
+{
+    if (laneIndex < 0 || laneIndex >= static_cast<int>(m_config.lanes.size())) {
+        if (m_config.lanes.empty()) laneIndex = -1;
+        else return;
+    }
+    if (m_selectedLane == laneIndex) return;
+    m_selectedLane = laneIndex;
+    m_editMode = EditMode::None;
+    m_pendingQuad.clear();
+    emit selectedLaneChanged(m_selectedLane);
+    if (m_selectedLane >= 0) {
+        emit statusMessage(QStringLiteral("已选择车道%1").arg(m_selectedLane + 1));
+    }
+    update();
 }
 
 void WrongWayPreviewWidget::beginLaneQuadEdit()
@@ -173,6 +191,7 @@ void WrongWayPreviewWidget::publishConfig(const QString& message)
 {
     m_config = sanitizeVehicleDirectionConfig(m_config);
     emit configEdited(m_config);
+    emit selectedLaneChanged(m_selectedLane);
     emit statusMessage(message);
     update();
 }
@@ -259,7 +278,20 @@ void WrongWayPreviewWidget::mousePressEvent(QMouseEvent* event)
 {
     QPointF normalized;
     if (!widgetToNormalized(event->localPos(), &normalized)) return;
-    if (m_editMode == EditMode::Quad) {
+    if (m_editMode == EditMode::None) {
+        for (int laneIndex = static_cast<int>(m_config.lanes.size()) - 1;
+             laneIndex >= 0; --laneIndex) {
+            QPolygonF polygon;
+            const auto& lane = m_config.lanes[static_cast<std::size_t>(laneIndex)];
+            for (const auto& point : lane.quad) {
+                polygon << QPointF(point.x, point.y);
+            }
+            if (polygon.containsPoint(normalized, Qt::OddEvenFill)) {
+                setSelectedLane(laneIndex);
+                return;
+            }
+        }
+    } else if (m_editMode == EditMode::Quad) {
         m_pendingQuad.push_back(normalized);
         if (m_pendingQuad.size() == 4u) {
             VehicleLaneDirectionConfig lane;

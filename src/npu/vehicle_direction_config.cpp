@@ -12,7 +12,7 @@
 
 namespace {
 
-constexpr int kMaxVehicleLanes = 8;
+constexpr int kMaxVehicleLanes = 18;
 
 float clamp01(float value)
 {
@@ -102,7 +102,7 @@ bool validateVehicleDirectionConfig(const VehicleDirectionConfig& requested,
 {
     const VehicleDirectionConfig config = sanitizeVehicleDirectionConfig(requested);
     if (config.lanes.empty() || config.lanes.size() > static_cast<std::size_t>(kMaxVehicleLanes)) {
-        if (errorMessage) *errorMessage = QStringLiteral("必须配置1到8条车道");
+        if (errorMessage) *errorMessage = QStringLiteral("必须配置1到18条车道");
         return false;
     }
     for (std::size_t i = 0; i < config.lanes.size(); ++i) {

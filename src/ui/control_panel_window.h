@@ -174,6 +174,7 @@ private:
     void stopWrongWayDetection(bool restorePreviousConfig = true);
     void updateWrongWayPanel(const NpuFrameResult &result);
     void updateWrongWayButtons();
+    void updateWrongWayLaneSelector();
     void loadPtzSettings();
     void savePtzSettings(PtzProfileSelection selection);
     bool applyPtzProfileSelection(bool restartActiveServices);
@@ -262,6 +263,7 @@ private:
     QPushButton *m_btnWrongWayStart = nullptr;
     QPushButton *m_btnWrongWayStop = nullptr;
     QLabel *m_wrongWayEditStatusLabel = nullptr;
+    QComboBox *m_wrongWayLaneCombo = nullptr;
     QLabel *m_wrongWayRuntimeLabel = nullptr;
     QLabel *m_wrongWayResultLabel = nullptr;
 
@@ -274,7 +276,7 @@ private:
     std::uint64_t m_violationLastEventId = 0;
     bool m_wrongWayRunning = false;
     bool m_wrongWayConfigDirty = false;
-    int m_wrongWaySourceChannel = 0;
+    int m_wrongWaySourceChannel = -1;
     VehicleDirectionConfig m_wrongWayConfig;
     NpuTaskConfig m_wrongWayPreviousAiConfig;
     bool m_wrongWayPreviousAiConfigValid = false;

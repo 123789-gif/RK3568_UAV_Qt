@@ -80,12 +80,39 @@ void testNormalDirectionDoesNotTrigger()
     assert(result.vehicles[0].vehicleDirectionState == NpuVehicleDirectionState::Normal);
 }
 
+void testOverviewTilesNeverShareTrack()
+{
+    VehicleWrongWayEngine engine;
+    VehicleDirectionConfig config = singleLaneConfig();
+
+    std::vector<NpuBox> boxes(1);
+    boxes[0].x = 205.0f;
+    boxes[0].y = 30.0f;
+    boxes[0].w = 10.0f;
+    boxes[0].h = 20.0f;
+    boxes[0].score = 0.9f;
+    boxes[0].classId = 0;
+    NpuFrameResult first;
+    engine.setConfig(config);
+    engine.process(1, 0, 1000000, 640, 360, 0, 1, &boxes, &first);
+    assert(boxes.size() == 1);
+    const int firstTrack = boxes[0].trackId;
+
+    // 两个框只相差6像素，但底边中心分别位于CH1和CH2 tile。
+    boxes[0].x = 211.0f;
+    NpuFrameResult second;
+    engine.process(2, 100, 1000100, 640, 360, 0, 1, &boxes, &second);
+    assert(boxes.size() == 1);
+    assert(boxes[0].trackId != firstTrack);
+}
+
 } // namespace
 
 int main()
 {
     testWrongWayAndReset();
     testNormalDirectionDoesNotTrigger();
+    testOverviewTilesNeverShareTrack();
     std::cout << "vehicle_wrong_way_engine_test: PASS\n";
     return 0;
 }

@@ -11,7 +11,7 @@
 #include <vector>
 
 // 捕获线程在submitFrame()调用期间有效的只读原始帧视图。
-// worker只在原图ROI实验模式下同步复制roi区域，不跨线程保存data裸指针。
+// worker只在任一车牌原图ROI模式下同步复制选路区域，不跨线程保存data裸指针。
 struct NpuOriginalFrameView
 {
     const uint8_t *data = nullptr;

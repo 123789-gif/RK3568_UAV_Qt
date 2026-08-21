@@ -27,13 +27,14 @@ RK3568双屏Qt应用，集成FPGA PCIe视频接收、RGA/DRM HDMI显示、FPGA�
 
 ### NPU任务
 
-当前实际代码包含三个任务：
+当前实际代码包含四个互斥任务：
 
 1. 行人检测：`ped_det.rknn`；
 2. 车牌级联：`plate_det.rknn → plate_reco.rknn`；
-3. 行人违法规则：复用`ped_det.rknn`，结合交通灯ROI、斑马线ROI和行人轨迹进行规则判断。
+3. 行人违法规则：复用`ped_det.rknn`，结合交通灯ROI、斑马线ROI和行人轨迹进行规则判断；
+4. 车辆逆行：`yolov8_car_640x320_mmse.rknn`完成一次车辆检测，CPU完成车道跟踪和方向判定，支持总览及单路输入。
 
-`yolov8_car.rknn`当前作为兼容/实验资产保留，但当前`NpuInferenceWorker`不会加载该模型，也不会产生车辆检测结果。不得将其描述为已启用功能。
+车牌页面提供Legacy/v2.9.1与检测图ROI/原图ROI的四种组合；逐帧/稳帧仍作为独立结果策略。
 
 ### PTZ与系统
 
@@ -92,7 +93,7 @@ cd /home/simba/Projects/RK3568_PTZ_Qt
   `control_panel_window_internal.h`；后续只应在板端回归后继续缩小该私有头；
 - `DrmRgaDisplay`和`NpuInferenceWorker`文件仍较大，后续应分阶段拆分；
 - 运行配置仍写在版本化发布目录中，版本切换时不能自动继承；
-- `yolov8_car.rknn`当前未接入运行链路；
+- 总览车辆检测受单次640x320模型输入限制，小目标召回率低于单路模式；
 - `QMAKE_LFLAGS`使用`--allow-shlib-undefined`，每次发布必须依赖板端`ldd`和运行检查兜底。
 
 本轮控制窗口拆分必须先完成Qt Creator全量重新构建和板端回归，再提交为新基线；

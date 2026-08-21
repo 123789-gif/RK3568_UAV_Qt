@@ -30,10 +30,12 @@ public slots:
     void beginDirectionEdit();
     void undoLastPoint();
     void clearAllLanes();
+    void setSelectedLane(int laneIndex);
 
 signals:
     void configEdited(VehicleDirectionConfig config);
     void statusMessage(QString message);
+    void selectedLaneChanged(int laneIndex);
 
 protected:
     void paintEvent(QPaintEvent* event) override;

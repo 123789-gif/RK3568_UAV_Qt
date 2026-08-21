@@ -518,6 +518,10 @@ QString wrongWaySettingsPath(int sourceChannel)
     QDir binDir(QCoreApplication::applicationDirPath());
     const QString configDir = QDir::cleanPath(binDir.filePath(QStringLiteral("../config")));
     QDir().mkpath(configDir);
+    if (sourceChannel == 0) {
+        return QDir(configDir).filePath(
+                    QStringLiteral("vehicle_wrong_way_overview.ini"));
+    }
     return QDir(configDir).filePath(
                 QStringLiteral("vehicle_wrong_way_ch%1.ini").arg(sourceChannel));
 }
