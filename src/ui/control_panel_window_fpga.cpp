@@ -16,16 +16,6 @@ QWidget *ControlPanelWindow::createFpgaPage()
     grid->setColumnStretch(0, 1);
     grid->setColumnStretch(1, 1);
 
-    QLabel *description = new QLabel(
-                QStringLiteral("点击按钮直接应用；FPGA在帧边界切换整帧处理模式，"
-                               "不停止PCIe视频流。"),
-                group);
-    description->setWordWrap(true);
-
-    QLabel *inputValue = new QLabel(
-                QStringLiteral("视频输入：SFP整帧｜1920×1080 RGB565@60"), group);
-    inputValue->setObjectName(QStringLiteral("fpgaInputSummary"));
-
     m_fpgaPreprocButtonGroup = new QButtonGroup(this);
     m_fpgaPreprocButtonGroup->setExclusive(false);
 
@@ -60,20 +50,12 @@ QWidget *ControlPanelWindow::createFpgaPage()
     m_fpgaCurrentModeLabel->setWordWrap(true);
     m_fpgaCurrentModeLabel->setObjectName(QStringLiteral("fpgaCurrentModeLabel"));
 
-    m_fpgaApplyStatusLabel = new QLabel(
-                QStringLiteral("配置状态：请先在“视频显示”页面启动HDMI显示"), group);
-    m_fpgaApplyStatusLabel->setWordWrap(true);
-    m_fpgaApplyStatusLabel->setObjectName(QStringLiteral("fpgaApplyStatusLabel"));
-
-    grid->addWidget(description, 0, 0, 1, 2);
-    grid->addWidget(inputValue, 1, 0, 1, 2);
-    grid->addWidget(bypassButton, 2, 0);
-    grid->addWidget(gammaButton, 2, 1);
-    grid->addWidget(sobelButton, 3, 0);
-    grid->addWidget(dehazeButton, 3, 1);
-    grid->addWidget(m_fpgaCurrentModeLabel, 4, 0, 1, 2);
-    grid->addWidget(m_fpgaApplyStatusLabel, 5, 0, 1, 2);
-    grid->addWidget(m_fpgaCapabilityLabel, 6, 0, 1, 2);
+    grid->addWidget(bypassButton, 0, 0);
+    grid->addWidget(gammaButton, 0, 1);
+    grid->addWidget(sobelButton, 1, 0);
+    grid->addWidget(dehazeButton, 1, 1);
+    grid->addWidget(m_fpgaCurrentModeLabel, 2, 0, 1, 2);
+    grid->addWidget(m_fpgaCapabilityLabel, 3, 0, 1, 2);
 
     QGroupBox *ethernetGroup = new QGroupBox(
                 QStringLiteral("网络视频输出"), page);
@@ -83,12 +65,6 @@ QWidget *ControlPanelWindow::createFpgaPage()
     ethernetGrid->setVerticalSpacing(8);
     ethernetGrid->setColumnStretch(0, 1);
     ethernetGrid->setColumnStretch(1, 1);
-
-    QLabel *ethernetDescription = new QLabel(
-                QStringLiteral("控制预处理后画面是否通过FPGA网口发送。"
-                               "关闭只停止H2/UDP视频帧，不复位PHY和网络协议栈。"),
-                ethernetGroup);
-    ethernetDescription->setWordWrap(true);
 
     m_ethernetOutputButtonGroup = new QButtonGroup(this);
     m_ethernetOutputButtonGroup->setExclusive(false);
@@ -116,23 +92,15 @@ QWidget *ControlPanelWindow::createFpgaPage()
     m_ethernetCurrentStateLabel->setObjectName(
                 QStringLiteral("ethernetCurrentStateLabel"));
 
-    m_ethernetApplyStatusLabel = new QLabel(
-                QStringLiteral("配置状态：等待读取网口控制状态"), ethernetGroup);
-    m_ethernetApplyStatusLabel->setWordWrap(true);
-    m_ethernetApplyStatusLabel->setObjectName(
-                QStringLiteral("ethernetApplyStatusLabel"));
-
     m_ethernetInfoLabel = new QLabel(
                 QStringLiteral("输出信息：等待读取FPGA……"), ethernetGroup);
     m_ethernetInfoLabel->setWordWrap(true);
     m_ethernetInfoLabel->setObjectName(QStringLiteral("ethernetInfoLabel"));
 
-    ethernetGrid->addWidget(ethernetDescription, 0, 0, 1, 2);
-    ethernetGrid->addWidget(ethernetOffButton, 1, 0);
-    ethernetGrid->addWidget(ethernetOnButton, 1, 1);
-    ethernetGrid->addWidget(m_ethernetCurrentStateLabel, 2, 0, 1, 2);
-    ethernetGrid->addWidget(m_ethernetApplyStatusLabel, 3, 0, 1, 2);
-    ethernetGrid->addWidget(m_ethernetInfoLabel, 4, 0, 1, 2);
+    ethernetGrid->addWidget(ethernetOffButton, 0, 0);
+    ethernetGrid->addWidget(ethernetOnButton, 0, 1);
+    ethernetGrid->addWidget(m_ethernetCurrentStateLabel, 1, 0, 1, 2);
+    ethernetGrid->addWidget(m_ethernetInfoLabel, 2, 0, 1, 2);
 
     layout->addWidget(group);
     layout->addWidget(ethernetGroup);
@@ -150,9 +118,6 @@ void ControlPanelWindow::requestFpgaMode(quint32 mode)
 
     if (!m_display->isRunning()) {
         m_lastError = QStringLiteral("请先启动HDMI/PCIe显示，再切换FPGA预处理");
-        if (m_fpgaApplyStatusLabel) {
-            m_fpgaApplyStatusLabel->setText(QStringLiteral("配置状态：%1").arg(m_lastError));
-        }
         updateFpgaUiAvailability();
         updateStatusText();
         return;
@@ -160,9 +125,6 @@ void ControlPanelWindow::requestFpgaMode(quint32 mode)
 
     if (!m_fpgaControlAvailable) {
         m_lastError = QStringLiteral("FPGA预处理控制尚未就绪，请稍候");
-        if (m_fpgaApplyStatusLabel) {
-            m_fpgaApplyStatusLabel->setText(QStringLiteral("配置状态：%1").arg(m_lastError));
-        }
         updateFpgaUiAvailability();
         updateStatusText();
         return;
@@ -170,9 +132,6 @@ void ControlPanelWindow::requestFpgaMode(quint32 mode)
 
     if (mode >= 32U || !(m_fpgaAlgorithmBitmap & (1U << mode))) {
         m_lastError = QStringLiteral("当前FPGA比特流不支持%1").arg(fpgaModeName(mode));
-        if (m_fpgaApplyStatusLabel) {
-            m_fpgaApplyStatusLabel->setText(QStringLiteral("配置状态：%1").arg(m_lastError));
-        }
         updateFpgaUiAvailability();
         updateStatusText();
         return;
@@ -186,11 +145,6 @@ void ControlPanelWindow::requestFpgaMode(quint32 mode)
         m_lastAction = QStringLiteral("FPGA预处理保持当前模式：%1")
                 .arg(fpgaModeName(mode));
         m_lastError = QStringLiteral("none");
-        if (m_fpgaApplyStatusLabel) {
-            m_fpgaApplyStatusLabel->setText(
-                        QStringLiteral("配置状态：%1已经是当前模式")
-                        .arg(fpgaModeName(mode)));
-        }
         updateFpgaUiAvailability();
         updateStatusText();
         return;
@@ -200,11 +154,6 @@ void ControlPanelWindow::requestFpgaMode(quint32 mode)
     m_fpgaApplyPending = true;
     m_lastAction = QStringLiteral("请求FPGA预处理：%1").arg(fpgaModeName(mode));
     m_lastError = QStringLiteral("none");
-    if (m_fpgaApplyStatusLabel) {
-        m_fpgaApplyStatusLabel->setText(
-                    QStringLiteral("配置状态：正在切换到%1，请稍候……")
-                    .arg(fpgaModeName(mode)));
-    }
     updateFpgaUiAvailability();
     updateStatusText();
 
@@ -257,11 +206,6 @@ void ControlPanelWindow::onFpgaControlInfoUpdated(bool available,
                 : QStringLiteral("当前模式：未知"));
     }
 
-    if (m_fpgaApplyStatusLabel && !m_fpgaApplyPending) {
-        m_fpgaApplyStatusLabel->setText(
-                    QStringLiteral("配置状态：%1").arg(message));
-    }
-
     updateFpgaUiAvailability();
     updateStatusText();
 }
@@ -286,11 +230,6 @@ void ControlPanelWindow::onFpgaApplyFinished(bool success,
     m_fpgaApplyPending = false;
     m_fpgaActiveMode = activeMode;
     m_fpgaRequestedMode = activeMode;
-
-    if (m_fpgaApplyStatusLabel) {
-        m_fpgaApplyStatusLabel->setText(
-                    QStringLiteral("配置状态：%1").arg(message));
-    }
 
     if (success) {
         m_lastAction = QStringLiteral("FPGA预处理已切换：%1")
@@ -363,11 +302,6 @@ void ControlPanelWindow::onEthernetControlInfoUpdated(bool available,
                 : QStringLiteral("输出信息：不可用｜%1").arg(message));
     }
 
-    if (m_ethernetApplyStatusLabel && !m_ethernetApplyPending) {
-        m_ethernetApplyStatusLabel->setText(
-                    QStringLiteral("配置状态：%1").arg(message));
-    }
-
     updateFpgaUiAvailability();
     updateStatusText();
 }
@@ -393,11 +327,6 @@ void ControlPanelWindow::onEthernetApplyFinished(bool success,
     m_ethernetActiveEnable = activeEnable;
     m_ethernetRequestedEnable = activeEnable;
 
-    if (m_ethernetApplyStatusLabel) {
-        m_ethernetApplyStatusLabel->setText(
-                    QStringLiteral("配置状态：%1").arg(message));
-    }
-
     if (success) {
         m_lastAction = activeEnable
                 ? QStringLiteral("网络视频输出已开启")
@@ -417,10 +346,6 @@ void ControlPanelWindow::requestEthernetOutput(bool enable)
 {
     if (!m_display || !m_display->isRunning()) {
         m_lastError = QStringLiteral("请先启动HDMI/PCIe显示，再切换网络视频输出");
-        if (m_ethernetApplyStatusLabel) {
-            m_ethernetApplyStatusLabel->setText(
-                        QStringLiteral("配置状态：%1").arg(m_lastError));
-        }
         updateFpgaUiAvailability();
         updateStatusText();
         return;
@@ -428,10 +353,6 @@ void ControlPanelWindow::requestEthernetOutput(bool enable)
 
     if (!m_ethernetControlAvailable) {
         m_lastError = QStringLiteral("网络视频输出控制尚未就绪，请稍候");
-        if (m_ethernetApplyStatusLabel) {
-            m_ethernetApplyStatusLabel->setText(
-                        QStringLiteral("配置状态：%1").arg(m_lastError));
-        }
         updateFpgaUiAvailability();
         updateStatusText();
         return;
@@ -445,10 +366,6 @@ void ControlPanelWindow::requestEthernetOutput(bool enable)
         m_lastAction = enable
                 ? QStringLiteral("网络视频输出已经开启")
                 : QStringLiteral("网络视频输出已经关闭");
-        if (m_ethernetApplyStatusLabel) {
-            m_ethernetApplyStatusLabel->setText(
-                        QStringLiteral("配置状态：%1").arg(m_lastAction));
-        }
         updateFpgaUiAvailability();
         updateStatusText();
         return;
@@ -460,12 +377,6 @@ void ControlPanelWindow::requestEthernetOutput(bool enable)
             ? QStringLiteral("请求开启网络视频输出")
             : QStringLiteral("请求关闭网络视频输出");
     m_lastError = QStringLiteral("none");
-
-    if (m_ethernetApplyStatusLabel) {
-        m_ethernetApplyStatusLabel->setText(enable
-                ? QStringLiteral("配置状态：正在开启网络视频输出……")
-                : QStringLiteral("配置状态：正在关闭网络视频输出……"));
-    }
 
     updateFpgaUiAvailability();
     updateStatusText();

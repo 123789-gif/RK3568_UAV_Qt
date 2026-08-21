@@ -387,7 +387,8 @@ void ControlPanelWindow::startWrongWayDetection()
         config.enabled = true;
         config.task = NpuTaskType::VehicleWrongWay;
         config.wrongWayRuleEnabled = false;
-        config.targetFps = m_npuFpsSpin ? m_npuFpsSpin->value() : NPU_TARGET_FPS_DEFAULT;
+        // 车辆检测使用独立的稳定默认值，不继承车牌页的压力测试帧率。
+        config.targetFps = NPU_TARGET_FPS_DEFAULT;
         config.confidence = 0.25f;
         config.nmsThreshold = 0.45f;
         m_display->setNpuConfig(sanitizeNpuTaskConfig(config));

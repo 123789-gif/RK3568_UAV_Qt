@@ -123,29 +123,12 @@ QWidget *ControlPanelWindow::createAiPage()
     };
 
     QGroupBox *modeGroup = new QGroupBox(QStringLiteral("车牌识别模式"), page);
-    // 34 + 60 + 34 + spacing(14) + layout margins(28) +
-    // QGroupBox stylesheet top margin(16) = 186 px，保留4 px字体余量。
-    modeGroup->setFixedHeight(190);
+    // 模式按钮是该区域唯一有效交互。输入源由视频页统一管理，运行/应用
+    // 状态由右侧状态框和按钮颜色表达，避免冗余文字挤压两行按钮。
+    modeGroup->setFixedHeight(108);
     QVBoxLayout *modeLayout = new QVBoxLayout(modeGroup);
     modeLayout->setContentsMargins(12, 18, 12, 10);
-    modeLayout->setSpacing(7);
-
-    QWidget *sourceWidget = new QWidget(modeGroup);
-    sourceWidget->setFixedHeight(34);
-    QHBoxLayout *sourceLayout = new QHBoxLayout(sourceWidget);
-    sourceLayout->setContentsMargins(0, 0, 0, 0);
-    sourceLayout->setSpacing(10);
-    QLabel *sourceTitle = new QLabel(QStringLiteral("当前输入源"), sourceWidget);
-    sourceTitle->setMinimumWidth(100);
-    QLabel *sourceValue = new QLabel(
-                QStringLiteral("视频显示页选定输入：总览全图或 CH1~CH9"),
-                sourceWidget);
-    sourceValue->setObjectName(QStringLiteral("ptzState"));
-    sourceValue->setMinimumHeight(34);
-    sourceValue->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
-    sourceLayout->addWidget(sourceTitle);
-    sourceLayout->addWidget(sourceValue, 1);
-    modeLayout->addWidget(sourceWidget);
+    modeLayout->setSpacing(0);
 
     QWidget *modeWidget = createChoiceRow(
                 modeGroup,
@@ -164,25 +147,9 @@ QWidget *ControlPanelWindow::createAiPage()
         m_aiRequestedTask = NpuTaskType::PlateCascade;
         m_aiPlateOptionsDirty = true;
         clearAiCurrentResult();
-        if (m_aiConfigSummaryLabel) {
-            m_aiConfigSummaryLabel->setText(
-                        QStringLiteral("待应用：%1｜%2｜%3")
-                        .arg(plateUiModeDisplayName(static_cast<PlateUiMode>(value)))
-                        .arg(plateCropSourceDisplayName(m_aiRequestedPlateCropSource))
-                        .arg(platePostprocessDisplayName(
-                                 m_aiRequestedPlatePostprocess)));
-        }
         updateAiTaskButtons();
     });
     modeLayout->addWidget(modeWidget);
-
-    m_aiConfigSummaryLabel = new QLabel(modeGroup);
-    m_aiConfigSummaryLabel->setWordWrap(false);
-    m_aiConfigSummaryLabel->setObjectName(QStringLiteral("ptzState"));
-    m_aiConfigSummaryLabel->setFixedHeight(34);
-    m_aiConfigSummaryLabel->setSizePolicy(QSizePolicy::Expanding,
-                                          QSizePolicy::Fixed);
-    modeLayout->addWidget(m_aiConfigSummaryLabel);
     pageLayout->addWidget(modeGroup, 0);
 
     QHBoxLayout *contentLayout = new QHBoxLayout;
@@ -214,16 +181,6 @@ QWidget *ControlPanelWindow::createAiPage()
         m_aiRequestedPlatePostprocess = static_cast<NpuPlatePostprocess>(value);
         m_aiPlateOptionsDirty = true;
         clearAiCurrentResult();
-        if (m_aiConfigSummaryLabel) {
-            m_aiConfigSummaryLabel->setText(
-                        QStringLiteral("待应用：%1｜%2｜%3")
-                        .arg(plateUiModeDisplayName(plateUiModeFromConfig(
-                                 m_aiRequestedPlateProfile,
-                                 m_aiRequestedPlateCropSource)))
-                        .arg(plateCropSourceDisplayName(m_aiRequestedPlateCropSource))
-                        .arg(platePostprocessDisplayName(
-                                 m_aiRequestedPlatePostprocess)));
-        }
         updateAiTaskButtons();
     });
 
@@ -250,13 +207,13 @@ QWidget *ControlPanelWindow::createAiPage()
     m_npuFpsSpin = new QSpinBox(configGroup);
     m_npuFpsSpin->setRange(NPU_TARGET_FPS_MIN, NPU_TARGET_FPS_MAX);
     m_npuFpsSpin->setSingleStep(1);
-    m_npuFpsSpin->setValue(NPU_TARGET_FPS_DEFAULT);
+    m_npuFpsSpin->setValue(NPU_PLATE_TARGET_FPS_DEFAULT);
     m_npuFpsSpin->setSuffix(QStringLiteral(" fps"));
     m_npuFpsSpin->setToolTip(
                 QStringLiteral("可设置范围：%1～%2 fps；默认：%3 fps")
                 .arg(NPU_TARGET_FPS_MIN)
                 .arg(NPU_TARGET_FPS_MAX)
-                .arg(NPU_TARGET_FPS_DEFAULT));
+                .arg(NPU_PLATE_TARGET_FPS_DEFAULT));
     configureTouchSpin(m_npuFpsSpin);
 
     m_confSpin = new QDoubleSpinBox(configGroup);
@@ -435,18 +392,6 @@ void ControlPanelWindow::onApplyAiConfigClicked()
     clearAiCurrentResult();
     updateAiTaskButtons();
 
-    if (m_aiConfigSummaryLabel) {
-        m_aiConfigSummaryLabel->setText(
-                    QStringLiteral("正在应用：%1｜%2｜%3｜%4 fps｜conf=%5｜NMS=%6")
-                    .arg(plateUiModeDisplayName(plateUiModeFromConfig(
-                             config.plateModelProfile, config.plateCropSource)))
-                    .arg(plateProfileDisplayName(config.plateModelProfile))
-                    .arg(platePostprocessDisplayName(config.platePostprocess))
-                    .arg(config.targetFps)
-                    .arg(config.confidence, 0, 'f', 2)
-                    .arg(config.nmsThreshold, 0, 'f', 2));
-    }
-
     m_lastAction = QStringLiteral("启动车牌识别：mode=%1，fps=%2，conf=%3，nms=%4")
             .arg(plateUiModeDisplayName(plateUiModeFromConfig(
                      config.plateModelProfile, config.plateCropSource)))
@@ -503,18 +448,6 @@ void ControlPanelWindow::onStopAiInferenceClicked()
     updateAiTaskButtons();
     updatePedestrianButtons();
     updateWrongWayButtons();
-
-    if (m_aiConfigSummaryLabel) {
-        m_aiConfigSummaryLabel->setText(
-                    QStringLiteral("推理已关闭｜待执行：%1｜%2｜%3｜%4 fps｜conf=%5｜NMS=%6")
-                    .arg(plateUiModeDisplayName(plateUiModeFromConfig(
-                             config.plateModelProfile, config.plateCropSource)))
-                    .arg(plateProfileDisplayName(config.plateModelProfile))
-                    .arg(platePostprocessDisplayName(config.platePostprocess))
-                    .arg(config.targetFps)
-                    .arg(config.confidence, 0, 'f', 2)
-                    .arg(config.nmsThreshold, 0, 'f', 2));
-    }
 
     m_lastAction = QStringLiteral("关闭NPU推理");
     m_lastError = QStringLiteral("none");
@@ -789,19 +722,6 @@ void ControlPanelWindow::requestAiTask(NpuTaskType task)
     clearAiCurrentResult();
     updateAiTaskButtons();
 
-    if (m_aiConfigSummaryLabel) {
-        m_aiConfigSummaryLabel->setText(
-                    QStringLiteral("待应用：%1｜%2｜%3｜%4 fps｜conf=%5｜NMS=%6")
-                    .arg(plateUiModeDisplayName(plateUiModeFromConfig(
-                             m_aiRequestedPlateProfile,
-                             m_aiRequestedPlateCropSource)))
-                    .arg(plateCropSourceDisplayName(m_aiRequestedPlateCropSource))
-                    .arg(platePostprocessDisplayName(m_aiRequestedPlatePostprocess))
-                    .arg(m_npuFpsSpin ? m_npuFpsSpin->value()
-                                     : NPU_TARGET_FPS_DEFAULT)
-                    .arg(m_confSpin ? m_confSpin->value() : 0.50, 0, 'f', 2)
-                    .arg(m_nmsSpin ? m_nmsSpin->value() : 0.45, 0, 'f', 2));
-    }
     updateStatusText();
 }
 void ControlPanelWindow::updateAiTaskButtons()
@@ -859,8 +779,17 @@ void ControlPanelWindow::loadAiSettings()
     }
 
     QSettings settings(aiSettingsPath(), QSettings::IniFormat);
-    const int fps = settings.value(QStringLiteral("ai/target_fps"),
-                                   NPU_TARGET_FPS_DEFAULT).toInt();
+    constexpr int kPlateSettingsVersion = 2;
+    const int settingsVersion = settings.value(
+                QStringLiteral("ai/settings_version"), 1).toInt();
+    int fps = settings.value(QStringLiteral("ai/target_fps"),
+                             NPU_PLATE_TARGET_FPS_DEFAULT).toInt();
+    // v1程序会把15 fps默认值写入配置。首次升级时只迁移这个旧默认值；
+    // 用户明确保存的其他帧率保持不变。
+    if (settingsVersion < kPlateSettingsVersion &&
+        fps == NPU_TARGET_FPS_DEFAULT) {
+        fps = NPU_PLATE_TARGET_FPS_DEFAULT;
+    }
     const double confidence = settings.value(
                 QStringLiteral("ai/confidence"), 0.50).toDouble();
     const double nms = settings.value(
@@ -890,16 +819,11 @@ void ControlPanelWindow::loadAiSettings()
     m_confSpin->setValue(qBound(0.10, confidence, 0.95));
     m_nmsSpin->setValue(qBound(0.10, nms, 0.90));
 
-    if (m_aiConfigSummaryLabel) {
-        m_aiConfigSummaryLabel->setText(
-                    QStringLiteral("推理未启动｜待执行：%1｜%2｜%3｜%4 fps｜conf=%5｜NMS=%6")
-                    .arg(plateUiModeDisplayName(PlateUiStandard))
-                    .arg(plateCropSourceDisplayName(m_aiRequestedPlateCropSource))
-                    .arg(platePostprocessDisplayName(m_aiRequestedPlatePostprocess))
-                    .arg(m_npuFpsSpin->value())
-                    .arg(m_confSpin->value(), 0, 'f', 2)
-                    .arg(m_nmsSpin->value(), 0, 'f', 2));
-    }
+    settings.setValue(QStringLiteral("ai/settings_version"),
+                      kPlateSettingsVersion);
+    settings.setValue(QStringLiteral("ai/target_fps"),
+                      m_npuFpsSpin->value());
+    settings.sync();
     updateAiTaskButtons();
 }
 void ControlPanelWindow::saveAiSettings(const NpuTaskConfig &config)
@@ -909,6 +833,7 @@ void ControlPanelWindow::saveAiSettings(const NpuTaskConfig &config)
     settings.setValue(QStringLiteral("ai/enabled"), false);
     settings.setValue(QStringLiteral("ai/task"),
                       static_cast<int>(NpuTaskType::PlateCascade));
+    settings.setValue(QStringLiteral("ai/settings_version"), 2);
     settings.setValue(QStringLiteral("ai/target_fps"), config.targetFps);
     settings.setValue(QStringLiteral("ai/confidence"), config.confidence);
     settings.setValue(QStringLiteral("ai/nms"), config.nmsThreshold);

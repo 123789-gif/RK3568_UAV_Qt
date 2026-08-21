@@ -30,6 +30,11 @@ void verifyMode(NpuPlateModelProfile profile,
 
 int main()
 {
+    require(NPU_PLATE_TARGET_FPS_DEFAULT == 30,
+            "plate UI default fps must remain 30");
+    require(NPU_TARGET_FPS_DEFAULT == 15,
+            "pedestrian/vehicle default fps must remain 15");
+
     NpuTaskConfig pedestrianConfig;
     pedestrianConfig.task = NpuTaskType::Pedestrian;
     pedestrianConfig.pedestrianViolationRuleEnabled = true;

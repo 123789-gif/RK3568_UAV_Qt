@@ -248,11 +248,9 @@ private:
     QButtonGroup *m_fpgaPreprocButtonGroup = nullptr;
     QLabel *m_fpgaCapabilityLabel = nullptr;
     QLabel *m_fpgaCurrentModeLabel = nullptr;
-    QLabel *m_fpgaApplyStatusLabel = nullptr;
     QButtonGroup *m_ethernetOutputButtonGroup = nullptr;
     QLabel *m_ethernetInfoLabel = nullptr;
     QLabel *m_ethernetCurrentStateLabel = nullptr;
-    QLabel *m_ethernetApplyStatusLabel = nullptr;
     QButtonGroup *m_npuTaskButtonGroup = nullptr;
     QButtonGroup *m_plateModeButtonGroup = nullptr;
     QButtonGroup *m_platePostprocessButtonGroup = nullptr;
@@ -261,7 +259,6 @@ private:
     QSpinBox *m_npuFpsSpin = nullptr;
     QDoubleSpinBox *m_confSpin = nullptr;
     QDoubleSpinBox *m_nmsSpin = nullptr;
-    QLabel *m_aiConfigSummaryLabel = nullptr;
     QLabel *m_aiRuntimeLabel = nullptr;
     QLabel *m_aiCurrentResultLabel = nullptr;
 

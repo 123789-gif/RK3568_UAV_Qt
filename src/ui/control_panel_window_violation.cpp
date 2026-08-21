@@ -297,8 +297,9 @@ void ControlPanelWindow::startPedestrianDetection()
         config.task = NpuTaskType::Pedestrian;
         config.pedestrianViolationRuleEnabled = false;
         config.wrongWayRuleEnabled = false;
-        config.targetFps = m_npuFpsSpin
-                ? m_npuFpsSpin->value() : NPU_TARGET_FPS_DEFAULT;
+        // 行人任务不继承车牌页的可调帧率，避免车牌45/60 fps压力测试
+        // 意外传递到行人模型并放大显示链路负载。
+        config.targetFps = NPU_TARGET_FPS_DEFAULT;
         config.confidence = m_pedestrianConfSpin
                 ? static_cast<float>(m_pedestrianConfSpin->value()) : 0.50f;
         config.nmsThreshold = m_pedestrianNmsSpin
