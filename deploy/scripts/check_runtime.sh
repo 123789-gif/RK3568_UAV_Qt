@@ -130,6 +130,18 @@ else
     err "missing legacy pedestrian model: $APP_ROOT/models/ped_det.rknn"
 fi
 
+if [[ -s "$APP_ROOT/models/yolov8_car_640x320_mmse.rknn" ]]; then
+    ok "vehicle model: yolov8_car_640x320_mmse.rknn"
+else
+    err "missing vehicle model: $APP_ROOT/models/yolov8_car_640x320_mmse.rknn"
+fi
+if [[ -f "$APP_ROOT/models/car_classes.txt" ]] &&
+   [[ "$(grep -Ec '^[0-3][[:space:]]+(car|bus|van|truck)$' "$APP_ROOT/models/car_classes.txt")" -eq 4 ]]; then
+    ok "vehicle classes: car/bus/van/truck"
+else
+    err "invalid vehicle class mapping: $APP_ROOT/models/car_classes.txt"
+fi
+
 if [[ -f "$DRIVER_KO" ]]; then
     ok "PCIe driver file: $DRIVER_KO"
 
