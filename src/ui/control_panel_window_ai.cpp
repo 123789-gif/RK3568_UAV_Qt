@@ -18,27 +18,31 @@ QString platePostprocessDisplayName(NpuPlatePostprocess mode)
 enum PlateUiMode
 {
     PlateUiStandard = 0,
-    PlateUiRule = 1,
-    PlateUiOriginalRoi = 2
+    PlateUiStandardEnhanced = 1,
+    PlateUiRule = 2,
+    PlateUiRuleEnhanced = 3
 };
 
 PlateUiMode plateUiModeFromConfig(NpuPlateModelProfile profile,
                                   NpuPlateCropSource cropSource)
 {
     if (profile == NpuPlateModelProfile::Legacy) {
-        return PlateUiStandard;
+        return cropSource == NpuPlateCropSource::OriginalSource
+                ? PlateUiStandardEnhanced : PlateUiStandard;
     }
     return cropSource == NpuPlateCropSource::OriginalSource
-            ? PlateUiOriginalRoi : PlateUiRule;
+            ? PlateUiRuleEnhanced : PlateUiRule;
 }
 
 QString plateUiModeDisplayName(PlateUiMode mode)
 {
     switch (mode) {
+    case PlateUiStandardEnhanced:
+        return QStringLiteral("标准加强");
     case PlateUiRule:
         return QStringLiteral("规则模式");
-    case PlateUiOriginalRoi:
-        return QStringLiteral("原图ROI实验");
+    case PlateUiRuleEnhanced:
+        return QStringLiteral("规则加强");
     case PlateUiStandard:
     default:
         return QStringLiteral("标准模式");
@@ -57,11 +61,15 @@ void applyPlateUiMode(PlateUiMode mode,
 {
     if (!profile || !cropSource) return;
     switch (mode) {
+    case PlateUiStandardEnhanced:
+        *profile = NpuPlateModelProfile::Legacy;
+        *cropSource = NpuPlateCropSource::OriginalSource;
+        break;
     case PlateUiRule:
         *profile = NpuPlateModelProfile::V291Candidate;
         *cropSource = NpuPlateCropSource::DetectorInput;
         break;
-    case PlateUiOriginalRoi:
+    case PlateUiRuleEnhanced:
         *profile = NpuPlateModelProfile::V291Candidate;
         *cropSource = NpuPlateCropSource::OriginalSource;
         break;
@@ -135,11 +143,12 @@ QWidget *ControlPanelWindow::createAiPage()
     QWidget *modeWidget = createChoiceRow(
                 modeGroup,
                 &m_plateModeButtonGroup,
-                {{QStringLiteral("标准模式\nLegacy+配套后处理"), PlateUiStandard},
-                 {QStringLiteral("规则模式\nv2.9.1+规则分类"), PlateUiRule},
-                 {QStringLiteral("原图ROI实验\nv2.9.1+原图裁剪"), PlateUiOriginalRoi}},
+                {{QStringLiteral("标准模式\nLegacy·检测图ROI"), PlateUiStandard},
+                 {QStringLiteral("标准加强\nLegacy·原图ROI"), PlateUiStandardEnhanced},
+                 {QStringLiteral("规则模式\nv2.9.1·检测图ROI"), PlateUiRule},
+                 {QStringLiteral("规则加强\nv2.9.1·原图ROI"), PlateUiRuleEnhanced}},
                 QStringLiteral("aiModeButton"),
-                68,
+                58,
                 [this](int value) {
         if (m_aiTaskSwitchPending) return;
         applyPlateUiMode(static_cast<PlateUiMode>(value),

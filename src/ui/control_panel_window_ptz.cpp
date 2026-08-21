@@ -44,7 +44,7 @@ QWidget *ControlPanelWindow::createPtzPage()
     m_ptzPreviewLabel = new QLabel("等待自动识别PTZ视频设备...", previewGroup);
     m_ptzPreviewLabel->setObjectName("ptzPreview");
     m_ptzPreviewLabel->setAlignment(Qt::AlignCenter);
-    m_ptzPreviewLabel->setMinimumSize(600, 285);
+    m_ptzPreviewLabel->setMinimumSize(500, 210);
     m_ptzPreviewLabel->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
     previewLayout->addWidget(m_ptzPreviewLabel, 1);
 

@@ -167,12 +167,29 @@ ControlPanelWindow::~ControlPanelWindow()
 
 void ControlPanelWindow::showWindows()
 {
-    setGeometry(0, 0, 1280, 720);
+    // DSI与HDMI组成扩展桌面时，不能让窗口管理器的标题栏继续占用
+    // 1280x720控制屏的有效高度。显式选择包含原点的DSI屏幕，并使用
+    // 无边框窗口贴合availableGeometry，避免页面底部被裁出屏幕。
+    QScreen *controlScreen = nullptr;
+    const QList<QScreen *> screens = QApplication::screens();
+    for (QScreen *screen : screens) {
+        if (screen && screen->geometry().contains(QPoint(0, 0))) {
+            controlScreen = screen;
+            break;
+        }
+    }
+    if (!controlScreen) {
+        controlScreen = QApplication::primaryScreen();
+    }
+
+    setWindowFlag(Qt::FramelessWindowHint, true);
+    const QRect target = controlScreen
+            ? controlScreen->availableGeometry() : QRect(0, 0, 1280, 720);
+    setGeometry(target);
     show();
 
     qDebug() << "ControlPanelWindow geometry:" << geometry();
 
-    const QList<QScreen *> screens = QApplication::screens();
     for (int i = 0; i < screens.size(); ++i) {
         qDebug() << "Screen" << i
                  << "name =" << screens[i]->name()
@@ -186,16 +203,17 @@ void ControlPanelWindow::setupControlUi()
     setCentralWidget(central);
 
     QVBoxLayout *root = new QVBoxLayout(central);
-    root->setContentsMargins(14, 12, 14, 10);
-    root->setSpacing(8);
+    root->setContentsMargins(10, 6, 10, 6);
+    root->setSpacing(5);
 
     QLabel *title = new QLabel(QStringLiteral("智能交通感知控制台｜BUILD-CHECK-01"), central);
     title->setObjectName("titleLabel");
     title->setAlignment(Qt::AlignCenter);
+    title->setFixedHeight(38);
     root->addWidget(title);
 
     QHBoxLayout *body = new QHBoxLayout();
-    body->setSpacing(10);
+    body->setSpacing(7);
 
     body->addWidget(createNavPanel(), 0);
 
@@ -214,7 +232,7 @@ void ControlPanelWindow::setupControlUi()
 
     m_bottomStatus = new QLabel(central);
     m_bottomStatus->setObjectName("bottomStatus");
-    m_bottomStatus->setMinimumHeight(42);
+    m_bottomStatus->setFixedHeight(36);
     m_bottomStatus->setAlignment(Qt::AlignVCenter | Qt::AlignLeft);
     root->addWidget(m_bottomStatus);
 }
@@ -222,11 +240,11 @@ QWidget *ControlPanelWindow::createNavPanel()
 {
     QFrame *nav = new QFrame(this);
     nav->setObjectName("navPanel");
-    nav->setFixedWidth(178);
+    nav->setFixedWidth(172);
 
     QVBoxLayout *layout = new QVBoxLayout(nav);
-    layout->setContentsMargins(10, 12, 10, 12);
-    layout->setSpacing(7);
+    layout->setContentsMargins(8, 8, 8, 8);
+    layout->setSpacing(4);
 
     QStringList names;
     names << "视频显示" << "PTZ控制" << "FPGA配置" << "CPU配置"
@@ -238,7 +256,8 @@ QWidget *ControlPanelWindow::createNavPanel()
     for (int i = 0; i < names.size(); ++i) {
         QPushButton *btn = new QPushButton(names[i], nav);
         btn->setCheckable(true);
-        btn->setMinimumHeight(50);
+        btn->setMinimumHeight(44);
+        btn->setMaximumHeight(46);
         btn->setObjectName("navButton");
         group->addButton(btn, i);
         layout->addWidget(btn);

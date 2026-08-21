@@ -46,7 +46,7 @@ WrongWayPreviewWidget::WrongWayPreviewWidget(QWidget* parent)
     : QWidget(parent)
 {
     setObjectName(QStringLiteral("wrongWayPreview"));
-    setMinimumSize(520, 292);
+    setMinimumSize(460, 220);
     setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
     setMouseTracking(true);
     setFocusPolicy(Qt::StrongFocus);
