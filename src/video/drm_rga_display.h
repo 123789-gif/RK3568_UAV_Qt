@@ -65,6 +65,8 @@ public:
     void setNpuTask(NpuTaskType task);
     void setViolationConfig(const ViolationRuleConfig &config);
     ViolationRuleConfig violationConfig() const;
+    void setWrongWayConfig(const VehicleDirectionConfig &config);
+    VehicleDirectionConfig wrongWayConfig() const;
     NpuFrameResult latestNpuResult() const;
     std::vector<NpuFrameResult> npuResultsAfter(uint64_t frameId, std::size_t maxResults = 64) const;
 

@@ -4,6 +4,7 @@
 #include "npu/plate_v291.h"
 #include "npu/vision.h"
 #include "npu/pedestrian_violation_engine.h"
+#include "npu/vehicle_wrong_way_engine.h"
 
 #include <algorithm>
 #include <atomic>
@@ -30,6 +31,7 @@ namespace {
 constexpr const char* kPlateDetModel = "plate_det.rknn";
 constexpr const char* kPlateRecoModel = "plate_reco.rknn";
 constexpr const char* kPedModel = "ped_det.rknn";
+constexpr const char* kVehicleModel = "yolov8_car_640x320_mmse.rknn";
 
 enum class PlateBackend
 {
@@ -351,6 +353,26 @@ static bool tensorMatches(const rknn_tensor_attr& attr,
         }
     }
     return true;
+}
+
+static bool validateVehicleContract(const demo::RknnModel& model,
+                                    std::string* error)
+{
+    if (model.num_in != 1 || model.num_out != 1 ||
+        !model.in_attrs || !model.out_attrs) {
+        if (error) *error = "vehicle model requires exactly one input and one output";
+        return false;
+    }
+    const rknn_tensor_attr& input = model.in_attrs[0];
+    const rknn_tensor_attr& output = model.out_attrs[0];
+    const bool valid = tensorMatches(input, {3, 320, 640}, 3u * 320u * 640u) &&
+            tensorMatches(output, {68, 4200}, 68u * 4200u);
+    if (!valid && error) {
+        *error = "unsupported vehicle model contract: input=" + tensorShape(input) +
+                " output=" + tensorShape(output) +
+                " expected input=[1,3,320,640] output=[1,68,4200]";
+    }
+    return valid;
 }
 
 static PlateBackend validatePlateContract(const demo::RknnModel& det,
@@ -1345,6 +1367,7 @@ struct NpuInferenceWorker::Impl
     demo::RknnModel plateDet;
     demo::RknnModel plateReco;
     demo::RknnModel ped;
+    demo::RknnModel vehicle;
     PlateBackend plateBackend = PlateBackend::Unknown;
     std::atomic<int> loadedPlateProfileValue {-1};
     std::atomic<bool> modelSwitching {false};
@@ -1352,6 +1375,9 @@ struct NpuInferenceWorker::Impl
     mutable std::mutex violationConfigMutex;
     ViolationRuleConfig violationConfig;
     PedestrianViolationEngine violationEngine;
+    mutable std::mutex wrongWayConfigMutex;
+    VehicleDirectionConfig wrongWayConfig;
+    VehicleWrongWayEngine wrongWayEngine;
     PlateTemporalPostprocessor platePostprocessor;
     std::atomic<int> loadedTaskValue {-1};
     std::string modelError;
@@ -1369,6 +1395,8 @@ struct NpuInferenceWorker::Impl
         requestedConfig.plateCropSource = plateCropSourceFromEnvironment();
         requestedConfig = sanitizeNpuTaskConfig(requestedConfig);
         violationConfig = sanitizeViolationRuleConfig(violationConfig);
+        wrongWayConfig = sanitizeVehicleDirectionConfig(wrongWayConfig);
+        wrongWayEngine.setConfig(wrongWayConfig);
         v291ForceCpu = v291ForceCpuFromEnvironment();
     }
 
@@ -1383,9 +1411,11 @@ struct NpuInferenceWorker::Impl
         releaseModel(plateDet);
         releaseModel(plateReco);
         releaseModel(ped);
+        releaseModel(vehicle);
         plateBackend = PlateBackend::Unknown;
         loadedPlateProfileValue.store(-1);
         platePostprocessor.reset();
+        wrongWayEngine.reset();
         loadedTaskValue.store(-1);
         modelsLoaded.store(false);
         activePlateConfigRevision = 0;
@@ -1443,6 +1473,22 @@ struct NpuInferenceWorker::Impl
         return violationConfig;
     }
 
+    void updateWrongWayConfig(const VehicleDirectionConfig& requested)
+    {
+        VehicleDirectionConfig next = sanitizeVehicleDirectionConfig(requested);
+        std::lock_guard<std::mutex> lk(wrongWayConfigMutex);
+        if (next.revision <= wrongWayConfig.revision) {
+            next.revision = wrongWayConfig.revision + 1;
+        }
+        wrongWayConfig = next;
+    }
+
+    VehicleDirectionConfig wrongWayConfigSnapshot() const
+    {
+        std::lock_guard<std::mutex> lk(wrongWayConfigMutex);
+        return wrongWayConfig;
+    }
+
     void updateConfig(const NpuTaskConfig& requested)
     {
         NpuTaskConfig next = sanitizeNpuTaskConfig(requested);
@@ -1476,6 +1522,9 @@ struct NpuInferenceWorker::Impl
         if (next.task == NpuTaskType::TrafficViolation) {
             state.violationConfig = violationConfigSnapshot();
             state.violationRegionsConfigured = state.violationConfig.regionsValid();
+        } else if (next.task == NpuTaskType::VehicleWrongWay) {
+            state.wrongWayConfig = wrongWayConfigSnapshot();
+            state.wrongWayRegionsConfigured = state.wrongWayConfig.regionsValid();
         }
         state.status = next.enabled ? "pending" : "off";
         state.processed = processed.load();
@@ -1536,6 +1585,9 @@ struct NpuInferenceWorker::Impl
         if (cfg.task == NpuTaskType::TrafficViolation) {
             state.violationConfig = violationConfigSnapshot();
             state.violationRegionsConfigured = state.violationConfig.regionsValid();
+        } else if (cfg.task == NpuTaskType::VehicleWrongWay) {
+            state.wrongWayConfig = wrongWayConfigSnapshot();
+            state.wrongWayRegionsConfigured = state.wrongWayConfig.regionsValid();
         }
         state.status = cfg.enabled ? "pending" : "off";
         state.processed = processed.load();
@@ -1660,6 +1712,10 @@ struct NpuInferenceWorker::Impl
             ok = loadPlateProfile(cfg.plateModelProfile,
                                   cfg.platePostprocess,
                                   &error);
+        } else if (cfg.task == NpuTaskType::VehicleWrongWay) {
+            const std::string vehiclePath = findModelPath(kVehicleModel);
+            ok = loadModel(vehiclePath, &vehicle, &error) &&
+                    validateVehicleContract(vehicle, &error);
         } else if (cfg.task == NpuTaskType::TrafficViolation) {
             // 违法检测第一轮只复用行人模型。交通灯状态由人工ROI内HSV判断，
             // 不再额外运行车辆模型，降低NPU占用并提高规则刷新率。
@@ -1953,8 +2009,9 @@ struct NpuInferenceWorker::Impl
         const auto preBegin = std::chrono::steady_clock::now();
         bool usedRga = false;
         demo::Mat input;
-        if (cfg.task == NpuTaskType::PlateCascade &&
-            plateBackend == PlateBackend::V291) {
+        if (cfg.task == NpuTaskType::VehicleWrongWay ||
+            (cfg.task == NpuTaskType::PlateCascade &&
+             plateBackend == PlateBackend::V291)) {
             input = demo::plate_v291::pre_img_rgb565_to_rgb(frame.data.data(),
                                                             frame.width,
                                                             frame.height,
@@ -2236,6 +2293,52 @@ struct NpuInferenceWorker::Impl
                                                 label));
             }
             }
+        } else if (cfg.task == NpuTaskType::VehicleWrongWay) {
+            std::vector<demo::plate_v291::YoloObjectDetection> detections;
+            demo::plate_v291::RknnStageTiming vehicleTiming;
+            demo::plate_v291::detect_yolov8_objects(input,
+                                                     vehicle,
+                                                     4,
+                                                     cfg.confidence,
+                                                     cfg.nmsThreshold,
+                                                     detections,
+                                                     true,
+                                                     300,
+                                                     128,
+                                                     &result.vehicleMs,
+                                                     &vehicleTiming);
+            accumulateStageTiming(result, vehicleTiming);
+            for (const auto& detection : detections) {
+                demo::Rect2f orig;
+                demo::plate_v291::convert_input_box_to_orig(detection.input_box,
+                                                             orig,
+                                                             frame.width,
+                                                             frame.height);
+                static const char* labels[] = {"car", "bus", "van", "truck"};
+                const char* label = detection.class_id >= 0 && detection.class_id < 4
+                        ? labels[detection.class_id] : "vehicle";
+                result.vehicles.push_back(makeBox(orig,
+                                                  detection.score,
+                                                  detection.class_id,
+                                                  std::string(),
+                                                  label));
+            }
+
+            VehicleDirectionConfig directionSnapshot;
+            {
+                std::lock_guard<std::mutex> lk(wrongWayConfigMutex);
+                directionSnapshot = wrongWayConfig;
+            }
+            wrongWayEngine.setConfig(directionSnapshot);
+            wrongWayEngine.process(frame.id,
+                                   static_cast<std::uint64_t>(steadyMs()),
+                                   static_cast<std::uint64_t>(systemMs()),
+                                   frame.width,
+                                   frame.height,
+                                   frame.sourceChannel,
+                                   frame.sourceRevision,
+                                   &result.vehicles,
+                                   &result);
         } else {
             std::vector<demo::Rect2f> pedBoxesIn;
             std::vector<float> pedScores;
@@ -2422,6 +2525,16 @@ void NpuInferenceWorker::setViolationConfig(const ViolationRuleConfig& config)
 ViolationRuleConfig NpuInferenceWorker::violationConfig() const
 {
     return m_impl->violationConfigSnapshot();
+}
+
+void NpuInferenceWorker::setWrongWayConfig(const VehicleDirectionConfig& config)
+{
+    m_impl->updateWrongWayConfig(config);
+}
+
+VehicleDirectionConfig NpuInferenceWorker::wrongWayConfig() const
+{
+    return m_impl->wrongWayConfigSnapshot();
 }
 
 void NpuInferenceWorker::setInputSource(int sourceChannel, uint64_t sourceRevision)

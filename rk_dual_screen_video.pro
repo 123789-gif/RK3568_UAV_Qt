@@ -13,15 +13,19 @@ SOURCES += \
     src/ui/control_panel_window_fpga.cpp \
     src/ui/control_panel_window_ai.cpp \
     src/ui/control_panel_window_violation.cpp \
+    src/ui/control_panel_window_wrong_way.cpp \
     src/ui/control_panel_window_ptz.cpp \
     src/ui/control_panel_window_system.cpp \
     src/ui/control_panel_window_style.cpp \
     src/ui/violation_preview_widget.cpp \
+    src/ui/wrong_way_preview_widget.cpp \
     src/video/drm_rga_display.cpp \
     src/pcie/pcie_frame_receiver.cpp \
     src/npu/npu_inference_worker.cpp \
     src/npu/pedestrian_violation_engine.cpp \
     src/npu/violation_rule_config.cpp \
+    src/npu/vehicle_direction_config.cpp \
+    src/npu/vehicle_wrong_way_engine.cpp \
     src/npu/plate_v291.cpp \
     src/npu/vision.cpp \
     src/ptz/ptz_camera_profile.cpp \
@@ -38,6 +42,7 @@ HEADERS += \
     src/ui/control_panel_window.h \
     src/ui/control_panel_window_internal.h \
     src/ui/violation_preview_widget.h \
+    src/ui/wrong_way_preview_widget.h \
     src/video/drm_rga_display.h \
     src/video/video_route_config.h \
     src/pcie/pcie_frame_receiver.h \
@@ -45,6 +50,8 @@ HEADERS += \
     src/npu/npu_inference_worker.h \
     src/npu/pedestrian_violation_engine.h \
     src/npu/violation_rule_config.h \
+    src/npu/vehicle_direction_config.h \
+    src/npu/vehicle_wrong_way_engine.h \
     src/npu/npu_task_config.h \
     src/npu/npu_result_types.h \
     src/npu/demo_types.h \
@@ -113,7 +120,8 @@ DISTFILES += \
     assets/models/ped_det.rknn \
     assets/models/plate_det.rknn \
     assets/models/plate_reco.rknn \
-    assets/models/yolov8_car.rknn \
+    assets/models/yolov8_car_640x320_mmse.rknn \
+    assets/models/car_classes.txt \
     assets/models/SHA256SUMS \
     assets/models/v291_candidate/plate_det.rknn \
     assets/models/v291_candidate/plate_reco.rknn \
@@ -135,4 +143,9 @@ DISTFILES += \
     docs/ARCHITECTURE.md \
     docs/UI_REFACTOR.md \
     docs/PLATE_ORIGINAL_ROI_EXPERIMENT.md \
+    docs/VEHICLE_WRONG_WAY_INTEGRATION.md \
     docs/SOURCE_VALIDATION_20260725.txt
+
+OTHER_FILES += \
+    tests/vehicle_wrong_way_engine_test.cpp \
+    tools/test_vehicle_wrong_way_host.sh

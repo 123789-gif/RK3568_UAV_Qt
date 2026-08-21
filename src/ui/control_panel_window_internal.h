@@ -5,6 +5,7 @@
 #include "ptz/ptz_control_worker.h"
 #include "system/fan_controller.h"
 #include "ui/violation_preview_widget.h"
+#include "ui/wrong_way_preview_widget.h"
 #include "npu/violation_rule_config.h"
 
 #include <QApplication>
@@ -474,7 +475,9 @@ QString aiTaskDisplayName(NpuTaskType task)
     case NpuTaskType::PlateCascade:
         return QStringLiteral("车牌识别");
     case NpuTaskType::TrafficViolation:
-        return QStringLiteral("违法检测");
+        return QStringLiteral("闯红灯检测");
+    case NpuTaskType::VehicleWrongWay:
+        return QStringLiteral("逆行检测");
     case NpuTaskType::Pedestrian:
     default:
         return QStringLiteral("行人检测");
@@ -508,6 +511,15 @@ QString violationSettingsPath()
     const QString configDir = QDir::cleanPath(binDir.filePath(QStringLiteral("../config")));
     QDir().mkpath(configDir);
     return QDir(configDir).filePath(QStringLiteral("pedestrian_violation.ini"));
+}
+
+QString wrongWaySettingsPath(int sourceChannel)
+{
+    QDir binDir(QCoreApplication::applicationDirPath());
+    const QString configDir = QDir::cleanPath(binDir.filePath(QStringLiteral("../config")));
+    QDir().mkpath(configDir);
+    return QDir(configDir).filePath(
+                QStringLiteral("vehicle_wrong_way_ch%1.ini").arg(sourceChannel));
 }
 
 QString violationLightText(NpuTrafficLightState state)
@@ -643,4 +655,3 @@ QString ipv4Text(quint32 ipv4)
 }
 
 } // namespace
-

@@ -2,6 +2,7 @@
 
 #include "npu/npu_task_config.h"
 #include "npu/violation_rule_config.h"
+#include "npu/vehicle_direction_config.h"
 
 #include <cstdint>
 #include <string>
@@ -19,6 +20,26 @@ enum class NpuPedestrianState : std::uint8_t
     Normal = 0,
     RedAccumulating = 1,
     RedViolation = 2
+};
+
+enum class NpuVehicleDirectionState : std::uint8_t
+{
+    Unknown = 0,
+    Stopped = 1,
+    Normal = 2,
+    WrongWay = 3
+};
+
+struct NpuWrongWayEvent
+{
+    std::uint64_t eventId = 0;
+    std::uint64_t frameId = 0;
+    std::uint64_t wallClockMs = 0;
+    int trackId = -1;
+    int classId = -1;
+    int laneId = -1;
+    float normalizedMotion = 0.0f;
+    float directionCosine = 0.0f;
 };
 
 struct NpuViolationEvent
@@ -42,6 +63,10 @@ struct NpuBox
     std::string label;
     int trackId = -1;
     NpuPedestrianState pedestrianState = NpuPedestrianState::Normal;
+    NpuVehicleDirectionState vehicleDirectionState = NpuVehicleDirectionState::Unknown;
+    int laneId = -1;
+    float normalizedMotion = 0.0f;
+    float directionCosine = 0.0f;
     double stateDurationMs = 0.0;
 };
 
@@ -93,6 +118,14 @@ struct NpuFrameResult
     std::vector<NpuBox> plates;
     std::vector<NpuBox> pedestrians;
     std::vector<NpuBox> vehicles;
+
+    bool wrongWayRegionsConfigured = false;
+    VehicleDirectionConfig wrongWayConfig;
+    int activeVehicleTrackCount = 0;
+    int activeWrongWayCount = 0;
+    std::uint64_t wrongWayEventCount = 0;
+    bool hasRecentWrongWay = false;
+    NpuWrongWayEvent recentWrongWay;
 
     bool violationRegionsConfigured = false;
     ViolationRuleConfig violationConfig;

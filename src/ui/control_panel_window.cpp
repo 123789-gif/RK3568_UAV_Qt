@@ -67,6 +67,7 @@ ControlPanelWindow::ControlPanelWindow(QWidget *parent)
     applyStyle();
     loadAiSettings();
     loadViolationSettings();
+    loadWrongWaySettings(videoRouteChannel(m_display->videoRoute()));
     loadPtzSettings();
 
     connect(m_display, &DrmRgaDisplay::previewFrameReady,
@@ -76,10 +77,15 @@ ControlPanelWindow::ControlPanelWindow(QWidget *parent)
                    int sourceChannel,
                    quint64 sourceRevision) {
         Q_UNUSED(frameId)
-        Q_UNUSED(sourceChannel)
         Q_UNUSED(sourceRevision)
         if (m_violationPreview) {
             m_violationPreview->setFrame(image);
+        }
+        if (m_wrongWayPreview) {
+            m_wrongWayPreview->setFrame(image);
+        }
+        if (sourceChannel != m_wrongWaySourceChannel) {
+            loadWrongWaySettings(sourceChannel);
         }
     },
     Qt::QueuedConnection);
@@ -200,6 +206,7 @@ void ControlPanelWindow::setupControlUi()
     m_stack->addWidget(createCpuPage());
     m_stack->addWidget(createAiPage());
     m_stack->addWidget(createViolationPage());
+    m_stack->addWidget(createWrongWayPage());
     m_stack->addWidget(createStatusPage());
     body->addWidget(m_stack, 1);
 
@@ -223,7 +230,7 @@ QWidget *ControlPanelWindow::createNavPanel()
 
     QStringList names;
     names << "视频显示" << "PTZ控制" << "FPGA配置" << "CPU配置"
-          << "车牌识别" << "违法检测" << "系统状态";
+          << "车牌识别" << "闯红灯检测" << "逆行检测" << "系统状态";
 
     QButtonGroup *group = new QButtonGroup(nav);
     group->setExclusive(true);

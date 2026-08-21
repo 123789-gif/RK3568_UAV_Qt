@@ -109,7 +109,7 @@ QWidget *ControlPanelWindow::createViolationPage()
     QGroupBox *runtimeGroup = new QGroupBox(QStringLiteral("运行状态"), rightPanel);
     QVBoxLayout *runtimeLayout = new QVBoxLayout(runtimeGroup);
     runtimeLayout->setContentsMargins(9, 18, 9, 8);
-    m_violationRuntimeLabel = new QLabel(QStringLiteral("违法检测未启动"), runtimeGroup);
+    m_violationRuntimeLabel = new QLabel(QStringLiteral("闯红灯检测未启动"), runtimeGroup);
     m_violationRuntimeLabel->setObjectName(QStringLiteral("violationRuntime"));
     m_violationRuntimeLabel->setWordWrap(true);
     m_violationRuntimeLabel->setAlignment(Qt::AlignLeft | Qt::AlignTop);
@@ -231,7 +231,7 @@ bool ControlPanelWindow::saveViolationSettings()
         m_display->setViolationConfig(m_violationConfig);
     }
     m_violationConfigDirty = false;
-    m_lastAction = QStringLiteral("已保存行人违法检测区域与规则配置");
+    m_lastAction = QStringLiteral("已保存行人闯红灯区域与规则配置");
     m_lastError = QStringLiteral("none");
     updateStatusText();
     return true;
@@ -256,8 +256,15 @@ void ControlPanelWindow::startViolationDetection()
         return;
     }
 
+    NpuTaskConfig previous = m_display->npuConfig();
+    if (m_wrongWayRunning && m_wrongWayPreviousAiConfigValid) {
+        previous = m_wrongWayPreviousAiConfig;
+    }
+    if (m_wrongWayRunning) {
+        stopWrongWayDetection(false);
+    }
     if (!m_violationRunning) {
-        m_violationPreviousAiConfig = m_display->npuConfig();
+        m_violationPreviousAiConfig = previous;
         m_violationPreviousAiConfigValid = true;
     }
 
@@ -305,9 +312,9 @@ void ControlPanelWindow::stopViolationDetection(bool restorePreviousConfig)
 
     m_violationRunning = false;
     m_violationPreviousAiConfigValid = false;
-    m_lastAction = QStringLiteral("停止行人违法检测");
+    m_lastAction = QStringLiteral("停止行人闯红灯检测");
     if (m_violationRuntimeLabel) {
-        m_violationRuntimeLabel->setText(QStringLiteral("违法检测已停止，区域配置仍保留。"));
+        m_violationRuntimeLabel->setText(QStringLiteral("闯红灯检测已停止，区域配置仍保留。"));
     }
     updateViolationButtons();
     updateAiTaskButtons();
@@ -346,7 +353,7 @@ void ControlPanelWindow::updateViolationPanel(const NpuFrameResult &result)
             updateViolationButtons();
         }
         if (!m_violationRunning && m_violationRuntimeLabel) {
-            m_violationRuntimeLabel->setText(QStringLiteral("违法检测未启动｜区域：%1")
+            m_violationRuntimeLabel->setText(QStringLiteral("闯红灯检测未启动｜区域：%1")
                     .arg(m_violationConfig.regionsValid()
                          ? QStringLiteral("已配置")
                          : QStringLiteral("未完成")));
@@ -378,7 +385,7 @@ void ControlPanelWindow::updateViolationPanel(const NpuFrameResult &result)
     }
     if (!result.error.empty()) {
         m_violationResultLabel->setText(
-                    QStringLiteral("违法检测异常：%1")
+                    QStringLiteral("闯红灯检测异常：%1")
                     .arg(QString::fromStdString(result.error)));
         return;
     }

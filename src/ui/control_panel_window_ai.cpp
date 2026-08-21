@@ -604,6 +604,7 @@ void ControlPanelWindow::updateAiPanel(const NpuFrameResult &result)
 
     updateAiCurrentResult(result);
     updateViolationPanel(result);
+    updateWrongWayPanel(result);
     updateAiTaskButtons();
 }
 void ControlPanelWindow::updateAiCurrentResult(const NpuFrameResult &result)
@@ -685,6 +686,13 @@ void ControlPanelWindow::updateAiCurrentResult(const NpuFrameResult &result)
             }
             lines << QStringLiteral("最高置信度：%1").arg(maxScore, 0, 'f', 2);
         }
+    } else if (result.task == NpuTaskType::VehicleWrongWay) {
+        lines << QStringLiteral("检测到车辆：%1个｜有效轨迹：%2")
+                 .arg(static_cast<int>(result.vehicles.size()))
+                 .arg(result.activeVehicleTrackCount);
+        lines << QStringLiteral("当前逆行：%1｜累计事件：%2")
+                 .arg(result.activeWrongWayCount)
+                 .arg(static_cast<qulonglong>(result.wrongWayEventCount));
     } else {
         lines << QStringLiteral("检测到行人：%1个｜有效轨迹：%2")
                  .arg(static_cast<int>(result.pedestrians.size()))

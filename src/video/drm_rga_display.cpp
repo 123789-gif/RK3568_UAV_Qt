@@ -1218,6 +1218,55 @@ static void draw_violation_regions(void *fb,
     }
 }
 
+static void draw_wrong_way_regions(void *fb,
+                                   int pitchBytes,
+                                   int fbW,
+                                   int fbH,
+                                   const NpuFrameResult& result)
+{
+    if (result.task != NpuTaskType::VehicleWrongWay) return;
+    static const uint16_t colors[] = {
+        rgb565(0, 220, 255), rgb565(255, 70, 220),
+        rgb565(255, 190, 0), rgb565(80, 220, 100)
+    };
+    for (std::size_t laneIndex = 0;
+         laneIndex < result.wrongWayConfig.lanes.size(); ++laneIndex) {
+        const VehicleLaneDirectionConfig& lane = result.wrongWayConfig.lanes[laneIndex];
+        const uint16_t color = colors[laneIndex % 4];
+        int px[4] = {};
+        int py[4] = {};
+        float centerX = 0.0f;
+        float centerY = 0.0f;
+        for (int i = 0; i < 4; ++i) {
+            px[i] = static_cast<int>(lane.quad[static_cast<std::size_t>(i)].x * fbW + 0.5f);
+            py[i] = static_cast<int>(lane.quad[static_cast<std::size_t>(i)].y * fbH + 0.5f);
+            centerX += px[i];
+            centerY += py[i];
+        }
+        for (int i = 0; i < 4; ++i) {
+            const int next = (i + 1) % 4;
+            draw_line_rgb565(fb, pitchBytes, fbW, fbH,
+                             px[i], py[i], px[next], py[next], 3, color);
+        }
+        centerX *= 0.25f;
+        centerY *= 0.25f;
+        const float arrowLength = std::max(35.0f, std::min(fbW, fbH) * 0.10f);
+        const int endX = static_cast<int>(centerX + lane.direction.x * arrowLength);
+        const int endY = static_cast<int>(centerY + lane.direction.y * arrowLength);
+        draw_line_rgb565(fb, pitchBytes, fbW, fbH,
+                         static_cast<int>(centerX), static_cast<int>(centerY),
+                         endX, endY, 4, color);
+        const float angle = std::atan2(lane.direction.y, lane.direction.x);
+        const float head = 14.0f;
+        draw_line_rgb565(fb, pitchBytes, fbW, fbH, endX, endY,
+                         static_cast<int>(endX - head * std::cos(angle - 0.55f)),
+                         static_cast<int>(endY - head * std::sin(angle - 0.55f)), 4, color);
+        draw_line_rgb565(fb, pitchBytes, fbW, fbH, endX, endY,
+                         static_cast<int>(endX - head * std::cos(angle + 0.55f)),
+                         static_cast<int>(endY - head * std::sin(angle + 0.55f)), 4, color);
+    }
+}
+
 static const char* npu_status_text(const NpuFrameResult& result)
 {
     if (!result.enabled) return "AI OFF";
@@ -1294,6 +1343,7 @@ static void draw_npu_boxes(void *fb, int pitchBytes, int fbW, int fbH,
     }
 
     draw_violation_regions(fb, pitchBytes, fbW, fbH, result);
+    draw_wrong_way_regions(fb, pitchBytes, fbW, fbH, result);
 
     for (const NpuBox& box : result.pedestrians) {
         const int x = scale_capture_x(box.x, fbW, sourceW);
@@ -1328,13 +1378,41 @@ static void draw_npu_boxes(void *fb, int pitchBytes, int fbW, int fbH,
         const int y = scale_capture_y(box.y, fbH, sourceH);
         const int w = std::max(2, scale_capture_x(box.w, fbW, sourceW));
         const int h = std::max(2, scale_capture_y(box.h, fbH, sourceH));
-        const uint16_t color = vehicle_osd_color(box.classId);
+        uint16_t color = vehicle_osd_color(box.classId);
+        const char *stateLabel = vehicle_osd_label(box.classId);
+        if (result.task == NpuTaskType::VehicleWrongWay) {
+            switch (box.vehicleDirectionState) {
+            case NpuVehicleDirectionState::WrongWay:
+                color = red;
+                stateLabel = "WRONG";
+                break;
+            case NpuVehicleDirectionState::Normal:
+                color = rgb565(40, 230, 100);
+                stateLabel = "OK";
+                break;
+            case NpuVehicleDirectionState::Stopped:
+                color = rgb565(255, 190, 0);
+                stateLabel = "STOP";
+                break;
+            case NpuVehicleDirectionState::Unknown:
+            default:
+                // 时序模式不显示UNKNOWN文字，只保留普通车辆框。
+                stateLabel = "";
+                break;
+            }
+        }
         draw_rect_outline_rgb565(fb, pitchBytes, fbW, fbH, x, y, w, h, 3, color);
 
         char label[64];
-        snprintf(label, sizeof(label), "%s %.2F", vehicle_osd_label(box.classId), box.score);
+        if (result.task == NpuTaskType::VehicleWrongWay) {
+            snprintf(label, sizeof(label), "%s", stateLabel);
+        } else {
+            snprintf(label, sizeof(label), "%s %.2F", vehicle_osd_label(box.classId), box.score);
+        }
         const int ty = std::min(fbH - lineH - 2, std::max(2, y + h + 2));
-        draw_text_shadow_rgb565(fb, pitchBytes, fbW, fbH, x, ty, label, scale, white, shadow);
+        if (label[0] != '\0') {
+            draw_text_shadow_rgb565(fb, pitchBytes, fbW, fbH, x, ty, label, scale, white, shadow);
+        }
     }
 }
 
@@ -1810,6 +1888,18 @@ void DrmRgaDisplay::setViolationConfig(const ViolationRuleConfig &config)
 ViolationRuleConfig DrmRgaDisplay::violationConfig() const
 {
     return m_npuWorker ? m_npuWorker->violationConfig() : ViolationRuleConfig();
+}
+
+void DrmRgaDisplay::setWrongWayConfig(const VehicleDirectionConfig &config)
+{
+    if (m_npuWorker) {
+        m_npuWorker->setWrongWayConfig(config);
+    }
+}
+
+VehicleDirectionConfig DrmRgaDisplay::wrongWayConfig() const
+{
+    return m_npuWorker ? m_npuWorker->wrongWayConfig() : VehicleDirectionConfig();
 }
 
 NpuFrameResult DrmRgaDisplay::latestNpuResult() const

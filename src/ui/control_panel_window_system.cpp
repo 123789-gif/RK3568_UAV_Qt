@@ -242,7 +242,9 @@ void ControlPanelWindow::updateStatusText()
             : "OFF";
     const QString aiTaskShort = m_aiTask == NpuTaskType::PlateCascade
             ? "PLATE"
-            : (m_aiTask == NpuTaskType::TrafficViolation ? "VIOL" : "PED");
+            : (m_aiTask == NpuTaskType::TrafficViolation
+               ? "RED"
+               : (m_aiTask == NpuTaskType::VehicleWrongWay ? "WRONG" : "PED"));
 
     const QString ethernetShort = m_ethernetControlAvailable
             ? (m_ethernetActiveEnable ? QStringLiteral("ON") : QStringLiteral("OFF"))

@@ -5,6 +5,7 @@
 #include "npu/npu_task_config.h"
 #include "ptz/v4l2_device_detector.h"
 #include "npu/violation_rule_config.h"
+#include "npu/vehicle_direction_config.h"
 
 #include <QImage>
 #include <QMainWindow>
@@ -23,6 +24,7 @@ class FanController;
 class PtzCaptureWorker;
 class PtzControlWorker;
 class ViolationPreviewWidget;
+class WrongWayPreviewWidget;
 
 class ControlPanelWindow : public QMainWindow
 {
@@ -143,6 +145,7 @@ private:
     QWidget *createCpuPage();
     QWidget *createAiPage();
     QWidget *createViolationPage();
+    QWidget *createWrongWayPage();
     QWidget *createStatusPage();
     void setCurrentPage(int index);
     void updateFanUi();
@@ -165,6 +168,12 @@ private:
     void stopViolationDetection(bool restorePreviousConfig = true);
     void updateViolationPanel(const NpuFrameResult &result);
     void updateViolationButtons();
+    void loadWrongWaySettings(int sourceChannel);
+    bool saveWrongWaySettings();
+    void startWrongWayDetection();
+    void stopWrongWayDetection(bool restorePreviousConfig = true);
+    void updateWrongWayPanel(const NpuFrameResult &result);
+    void updateWrongWayButtons();
     void loadPtzSettings();
     void savePtzSettings(PtzProfileSelection selection);
     bool applyPtzProfileSelection(bool restartActiveServices);
@@ -248,6 +257,14 @@ private:
     QLabel *m_violationRuntimeLabel = nullptr;
     QLabel *m_violationResultLabel = nullptr;
 
+    WrongWayPreviewWidget *m_wrongWayPreview = nullptr;
+    QButtonGroup *m_wrongWayPresetGroup = nullptr;
+    QPushButton *m_btnWrongWayStart = nullptr;
+    QPushButton *m_btnWrongWayStop = nullptr;
+    QLabel *m_wrongWayEditStatusLabel = nullptr;
+    QLabel *m_wrongWayRuntimeLabel = nullptr;
+    QLabel *m_wrongWayResultLabel = nullptr;
+
     bool m_displayRunning = false;
     bool m_violationRunning = false;
     bool m_violationConfigDirty = false;
@@ -255,6 +272,13 @@ private:
     NpuTaskConfig m_violationPreviousAiConfig;
     bool m_violationPreviousAiConfigValid = false;
     std::uint64_t m_violationLastEventId = 0;
+    bool m_wrongWayRunning = false;
+    bool m_wrongWayConfigDirty = false;
+    int m_wrongWaySourceChannel = 0;
+    VehicleDirectionConfig m_wrongWayConfig;
+    NpuTaskConfig m_wrongWayPreviousAiConfig;
+    bool m_wrongWayPreviousAiConfigValid = false;
+    std::uint64_t m_wrongWayLastEventId = 0;
     bool m_osdEnabled = true;
 
     bool m_fpgaControlAvailable = false;

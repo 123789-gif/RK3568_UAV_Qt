@@ -7,7 +7,8 @@ enum class NpuTaskType : std::uint8_t
 {
     Pedestrian = 0,
     PlateCascade = 1,
-    TrafficViolation = 2
+    TrafficViolation = 2,
+    VehicleWrongWay = 3
 };
 
 enum class NpuPlateModelProfile : std::uint8_t
@@ -94,6 +95,8 @@ inline const char* npuPlateCropSourceKey(NpuPlateCropSource source)
 inline const char* npuTaskKey(NpuTaskType task)
 {
     switch (task) {
+    case NpuTaskType::VehicleWrongWay:
+        return "vehicle_wrong_way";
     case NpuTaskType::TrafficViolation:
         return "traffic_violation";
     case NpuTaskType::PlateCascade:
@@ -107,6 +110,8 @@ inline const char* npuTaskKey(NpuTaskType task)
 inline const char* npuTaskShortName(NpuTaskType task)
 {
     switch (task) {
+    case NpuTaskType::VehicleWrongWay:
+        return "WRONG";
     case NpuTaskType::TrafficViolation:
         return "VIOL";
     case NpuTaskType::PlateCascade:
