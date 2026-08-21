@@ -48,6 +48,9 @@ struct NpuTaskConfig
     // VehicleWrongWay 任务始终只加载一次车辆模型；该开关只控制CPU侧
     // 车道跟踪和逆行规则，关闭时保留原始车辆检测框。
     bool wrongWayRuleEnabled = false;
+    // Pedestrian任务始终只加载一次行人模型；该开关只控制CPU侧
+    // 交通灯、斑马线、轨迹与违法判定，切换时不重新加载RKNN模型。
+    bool pedestrianViolationRuleEnabled = false;
     int resultHistoryDepth = 50;
     std::uint64_t revision = 0;
 };
@@ -71,6 +74,17 @@ inline NpuTaskConfig sanitizeNpuTaskConfig(NpuTaskConfig config)
     config.confidence = std::max(0.10f, std::min(0.95f, config.confidence));
     config.nmsThreshold = std::max(0.10f, std::min(0.90f, config.nmsThreshold));
     config.resultHistoryDepth = std::max(10, std::min(200, config.resultHistoryDepth));
+    // 兼容旧TrafficViolation调用；新UI统一使用Pedestrian加规则开关。
+    if (config.task == NpuTaskType::TrafficViolation) {
+        config.pedestrianViolationRuleEnabled = true;
+    }
+    if (config.task != NpuTaskType::Pedestrian &&
+        config.task != NpuTaskType::TrafficViolation) {
+        config.pedestrianViolationRuleEnabled = false;
+    }
+    if (config.task != NpuTaskType::VehicleWrongWay) {
+        config.wrongWayRuleEnabled = false;
+    }
     return config;
 }
 

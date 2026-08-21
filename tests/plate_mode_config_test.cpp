@@ -30,11 +30,28 @@ void verifyMode(NpuPlateModelProfile profile,
 
 int main()
 {
+    NpuTaskConfig pedestrianConfig;
+    pedestrianConfig.task = NpuTaskType::Pedestrian;
+    pedestrianConfig.pedestrianViolationRuleEnabled = true;
+    require(sanitizeNpuTaskConfig(pedestrianConfig)
+            .pedestrianViolationRuleEnabled,
+            "pedestrian violation rule flag was not preserved");
+
     NpuTaskConfig vehicleConfig;
     vehicleConfig.task = NpuTaskType::VehicleWrongWay;
     vehicleConfig.wrongWayRuleEnabled = true;
     require(sanitizeNpuTaskConfig(vehicleConfig).wrongWayRuleEnabled,
             "vehicle rule enable flag was not preserved");
+
+    NpuTaskConfig plateConfig;
+    plateConfig.task = NpuTaskType::PlateCascade;
+    plateConfig.pedestrianViolationRuleEnabled = true;
+    plateConfig.wrongWayRuleEnabled = true;
+    const NpuTaskConfig sanitizedPlate = sanitizeNpuTaskConfig(plateConfig);
+    require(!sanitizedPlate.pedestrianViolationRuleEnabled,
+            "pedestrian rule leaked into plate task");
+    require(!sanitizedPlate.wrongWayRuleEnabled,
+            "vehicle rule leaked into plate task");
     verifyMode(NpuPlateModelProfile::Legacy,
                NpuPlateCropSource::DetectorInput,
                "legacy detector ROI was not preserved");

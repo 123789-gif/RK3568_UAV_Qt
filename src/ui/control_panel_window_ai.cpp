@@ -108,7 +108,7 @@ QWidget *ControlPanelWindow::createAiPage()
             QPushButton *button = new QPushButton(choice.first, widget);
             button->setObjectName(objectName);
             button->setCheckable(true);
-            button->setMinimumHeight(minimumHeight);
+            button->setFixedHeight(minimumHeight);
             button->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
             group->addButton(button, choice.second);
             layout->addWidget(button, 1);
@@ -120,11 +120,13 @@ QWidget *ControlPanelWindow::createAiPage()
     };
 
     QGroupBox *modeGroup = new QGroupBox(QStringLiteral("车牌识别模式"), page);
+    modeGroup->setFixedHeight(170);
     QVBoxLayout *modeLayout = new QVBoxLayout(modeGroup);
     modeLayout->setContentsMargins(12, 18, 12, 10);
     modeLayout->setSpacing(7);
 
     QWidget *sourceWidget = new QWidget(modeGroup);
+    sourceWidget->setFixedHeight(34);
     QHBoxLayout *sourceLayout = new QHBoxLayout(sourceWidget);
     sourceLayout->setContentsMargins(0, 0, 0, 0);
     sourceLayout->setSpacing(10);
@@ -172,7 +174,7 @@ QWidget *ControlPanelWindow::createAiPage()
     m_aiConfigSummaryLabel = new QLabel(modeGroup);
     m_aiConfigSummaryLabel->setWordWrap(false);
     m_aiConfigSummaryLabel->setObjectName(QStringLiteral("ptzState"));
-    m_aiConfigSummaryLabel->setMinimumHeight(34);
+    m_aiConfigSummaryLabel->setFixedHeight(34);
     m_aiConfigSummaryLabel->setSizePolicy(QSizePolicy::Expanding,
                                           QSizePolicy::Fixed);
     modeLayout->addWidget(m_aiConfigSummaryLabel);
@@ -292,11 +294,11 @@ QWidget *ControlPanelWindow::createAiPage()
 
     m_btnAiApply = new QPushButton(
                 QStringLiteral("应用参数并推理"), configGroup);
-    m_btnAiApply->setMinimumHeight(50);
+    m_btnAiApply->setFixedHeight(50);
 
     m_btnAiStop = new QPushButton(QStringLiteral("关闭推理"), configGroup);
     m_btnAiStop->setObjectName(QStringLiteral("aiStopButton"));
-    m_btnAiStop->setMinimumHeight(50);
+    m_btnAiStop->setFixedHeight(50);
 
     grid->addWidget(new QLabel(QStringLiteral("结果策略"), configGroup), 0, 0);
     grid->addWidget(postprocessWidget, 0, 1);
@@ -341,7 +343,7 @@ QWidget *ControlPanelWindow::createAiPage()
     rightLayout->setSpacing(8);
 
     QGroupBox *runtimeGroup = new QGroupBox(QStringLiteral("运行状态"), rightPanel);
-    runtimeGroup->setMinimumHeight(190);
+    runtimeGroup->setFixedHeight(210);
     QVBoxLayout *runtimeLayout = new QVBoxLayout(runtimeGroup);
     runtimeLayout->setContentsMargins(10, 18, 10, 8);
     m_aiRuntimeLabel = new QLabel(QStringLiteral("AI未启用"), runtimeGroup);
@@ -350,7 +352,7 @@ QWidget *ControlPanelWindow::createAiPage()
     m_aiRuntimeLabel->setAlignment(Qt::AlignLeft | Qt::AlignTop);
     m_aiRuntimeLabel->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
     runtimeLayout->addWidget(m_aiRuntimeLabel);
-    rightLayout->addWidget(runtimeGroup, 1);
+    rightLayout->addWidget(runtimeGroup, 0);
 
     QGroupBox *resultGroup = new QGroupBox(QStringLiteral("当前结果"), rightPanel);
     QVBoxLayout *resultLayout = new QVBoxLayout(resultGroup);
@@ -387,6 +389,7 @@ void ControlPanelWindow::onApplyAiConfigClicked()
     }
 
     m_pedestrianRunning = false;
+    m_pedestrianViolationRuleEnabled = false;
     m_wrongWayRunning = false;
     m_wrongWayRuleEnabled = false;
 
@@ -395,6 +398,7 @@ void ControlPanelWindow::onApplyAiConfigClicked()
     m_aiRequestedTask = NpuTaskType::PlateCascade;
     config.enabled = true;
     config.task = NpuTaskType::PlateCascade;
+    config.pedestrianViolationRuleEnabled = false;
     config.wrongWayRuleEnabled = false;
     config.plateModelProfile = m_aiRequestedPlateProfile;
     config.platePostprocess = m_aiRequestedPlatePostprocess;
@@ -456,12 +460,14 @@ void ControlPanelWindow::onStopAiInferenceClicked()
     }
 
     m_pedestrianRunning = false;
+    m_pedestrianViolationRuleEnabled = false;
     m_wrongWayRunning = false;
     m_wrongWayRuleEnabled = false;
 
     NpuTaskConfig config = m_display->npuConfig();
     config.enabled = false;
     config.task = NpuTaskType::PlateCascade;
+    config.pedestrianViolationRuleEnabled = false;
     config.wrongWayRuleEnabled = false;
     config.plateModelProfile = m_aiRequestedPlateProfile;
     config.platePostprocess = m_aiRequestedPlatePostprocess;
@@ -707,6 +713,15 @@ void ControlPanelWindow::updateAiCurrentResult(const NpuFrameResult &result)
                 maxScore = qMax(maxScore, box.score);
             }
             lines << QStringLiteral("最高置信度：%1").arg(maxScore, 0, 'f', 2);
+        }
+        lines << QStringLiteral("违法规则：%1")
+                 .arg(result.pedestrianViolationRuleEnabled
+                      ? QStringLiteral("开启") : QStringLiteral("关闭"));
+        if (result.pedestrianViolationRuleEnabled) {
+            lines << QStringLiteral("有效轨迹：%1｜当前违法：%2｜累计事件：%3")
+                     .arg(result.activeTrackCount)
+                     .arg(result.activeViolationCount)
+                     .arg(static_cast<qulonglong>(result.violationEventCount));
         }
     } else if (result.task == NpuTaskType::VehicleWrongWay) {
         lines << QStringLiteral("检测到车辆：%1个｜有效轨迹：%2")

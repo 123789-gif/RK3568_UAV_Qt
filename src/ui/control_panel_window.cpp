@@ -66,6 +66,7 @@ ControlPanelWindow::ControlPanelWindow(QWidget *parent)
     setupControlUi();
     applyStyle();
     loadAiSettings();
+    loadPedestrianViolationSettings();
     loadWrongWaySettings(videoRouteChannel(m_display->videoRoute()));
     loadPtzSettings();
 
@@ -208,7 +209,7 @@ void ControlPanelWindow::setupControlUi()
     QLabel *title = new QLabel(QStringLiteral("智能交通感知控制台"), central);
     title->setObjectName("titleLabel");
     title->setAlignment(Qt::AlignCenter);
-    title->setFixedHeight(30);
+    title->setFixedHeight(38);
     root->addWidget(title);
 
     QHBoxLayout *body = new QHBoxLayout();
@@ -217,7 +218,7 @@ void ControlPanelWindow::setupControlUi()
     body->addWidget(createNavPanel(), 0);
 
     m_stack = new QStackedWidget(central);
-    const auto addPage = [this](QWidget *page) {
+    const auto addScrollablePage = [this](QWidget *page) {
         QScrollArea *scroll = new QScrollArea(m_stack);
         scroll->setObjectName(QStringLiteral("pageScrollArea"));
         scroll->setWidgetResizable(true);
@@ -227,14 +228,15 @@ void ControlPanelWindow::setupControlUi()
         scroll->setWidget(page);
         m_stack->addWidget(scroll);
     };
-    addPage(createVideoPage());
-    addPage(createPtzPage());
-    addPage(createFpgaPage());
-    addPage(createCpuPage());
-    addPage(createAiPage());
-    addPage(createPedestrianPage());
-    addPage(createWrongWayPage());
-    addPage(createStatusPage());
+    addScrollablePage(createVideoPage());
+    addScrollablePage(createPtzPage());
+    addScrollablePage(createFpgaPage());
+    addScrollablePage(createCpuPage());
+    // 车牌页按1280x720有效高度固定排布，禁止内容尺寸变化触发整页滚动。
+    m_stack->addWidget(createAiPage());
+    addScrollablePage(createPedestrianPage());
+    addScrollablePage(createWrongWayPage());
+    addScrollablePage(createStatusPage());
     body->addWidget(m_stack, 1);
 
     root->addLayout(body, 1);

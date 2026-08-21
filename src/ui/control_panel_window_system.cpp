@@ -245,7 +245,8 @@ void ControlPanelWindow::updateStatusText()
             : (m_aiTask == NpuTaskType::TrafficViolation
                ? "RULE"
                : (m_aiTask == NpuTaskType::VehicleWrongWay
-                  ? (m_wrongWayRuleEnabled ? "WRONG" : "VEH") : "PED"));
+                  ? (m_wrongWayRuleEnabled ? "WRONG" : "VEH")
+                  : (m_pedestrianViolationRuleEnabled ? "PED-RULE" : "PED")));
 
     const QString ethernetShort = m_ethernetControlAvailable
             ? (m_ethernetActiveEnable ? QStringLiteral("ON") : QStringLiteral("OFF"))

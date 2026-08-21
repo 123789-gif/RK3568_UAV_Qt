@@ -164,6 +164,8 @@ private:
     void saveAiSettings(const NpuTaskConfig &config);
     void startPedestrianDetection();
     void stopPedestrianDetection();
+    void loadPedestrianViolationSettings();
+    bool savePedestrianViolationSettings();
     void updatePedestrianPanel(const NpuFrameResult &result);
     void updatePedestrianButtons();
     void loadWrongWaySettings(int sourceChannel);
@@ -251,8 +253,11 @@ private:
     ViolationPreviewWidget *m_pedestrianPreview = nullptr;
     QPushButton *m_btnPedestrianStart = nullptr;
     QPushButton *m_btnPedestrianStop = nullptr;
+    QPushButton *m_btnPedestrianViolationRule = nullptr;
+    QButtonGroup *m_pedestrianLightModeGroup = nullptr;
     QDoubleSpinBox *m_pedestrianConfSpin = nullptr;
     QDoubleSpinBox *m_pedestrianNmsSpin = nullptr;
+    QLabel *m_pedestrianEditStatusLabel = nullptr;
     QLabel *m_pedestrianRuntimeLabel = nullptr;
     QLabel *m_pedestrianResultLabel = nullptr;
 
@@ -268,6 +273,10 @@ private:
 
     bool m_displayRunning = false;
     bool m_pedestrianRunning = false;
+    bool m_pedestrianViolationRuleEnabled = false;
+    bool m_pedestrianViolationConfigDirty = false;
+    ViolationRuleConfig m_pedestrianViolationConfig;
+    std::uint64_t m_pedestrianViolationLastEventId = 0;
     bool m_wrongWayRunning = false;
     bool m_wrongWayRuleEnabled = false;
     bool m_wrongWayConfigDirty = false;

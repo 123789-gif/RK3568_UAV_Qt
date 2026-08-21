@@ -49,7 +49,7 @@ QWidget *ControlPanelWindow::createVideoPage()
     QVBoxLayout *noteLayout = new QVBoxLayout(noteGroup);
     noteLayout->setContentsMargins(10, 18, 10, 8);
     QLabel *note = new QLabel(
-                "总览：HDMI显示完整九宫格，并将完整九宫格画面送入NPU。\n"
+                "总览：HDMI显示前端输出的完整1080P画面，并将该画面送入NPU。\n"
                 "CH1~CH9：裁出对应640×360单路，放大到HDMI全屏，并仅将该路送入NPU。",
                 noteGroup);
     note->setWordWrap(true);
@@ -67,7 +67,7 @@ QWidget *ControlPanelWindow::createVideoPage()
     m_videoRouteGroup = new QButtonGroup(routeGroup);
     m_videoRouteGroup->setExclusive(true);
 
-    QPushButton *overviewButton = new QPushButton(QStringLiteral("九宫格总览（NPU全图）"), routeGroup);
+    QPushButton *overviewButton = new QPushButton(QStringLiteral("总览1080P（NPU全图）"), routeGroup);
     overviewButton->setObjectName("videoRouteButton");
     overviewButton->setCheckable(true);
     overviewButton->setChecked(true);
@@ -89,7 +89,7 @@ QWidget *ControlPanelWindow::createVideoPage()
     }
     routeLayout->addLayout(channelGrid, 1);
 
-    m_videoRouteSummaryLabel = new QLabel(QStringLiteral("当前应用：九宫格总览；NPU全图"), routeGroup);
+    m_videoRouteSummaryLabel = new QLabel(QStringLiteral("当前应用：总览1080P；NPU全图"), routeGroup);
     m_videoRouteSummaryLabel->setObjectName("ptzState");
     m_videoRouteSummaryLabel->setAlignment(Qt::AlignCenter);
     m_videoRouteSummaryLabel->setMinimumHeight(40);
@@ -153,6 +153,9 @@ void ControlPanelWindow::onApplyVideoConfigClicked()
     m_display->setOsdEnabled(m_osdEnabled);
 
     const VideoRoute oldRoute = m_display->videoRoute();
+    if (route != VideoRoute::Overview && m_pedestrianRunning) {
+        stopPedestrianDetection();
+    }
     m_display->setVideoRoute(route);
     if (oldRoute != route) {
         clearAiCurrentResult();
@@ -162,13 +165,14 @@ void ControlPanelWindow::onApplyVideoConfigClicked()
         m_videoRouteSummaryLabel->setText(isSingleChannelRoute(route)
                 ? QString("当前应用：CH%1；HDMI全屏 + NPU单路")
                   .arg(videoRouteChannel(route))
-                : QStringLiteral("当前应用：九宫格总览；NPU全图"));
+                : QStringLiteral("当前应用：总览1080P；NPU全图"));
     }
 
     m_lastAction = QString("应用显示配置: %1x%2 mode=%3 route=%4")
             .arg(size.width()).arg(size.height()).arg(mode)
             .arg(QString::fromLatin1(videoRouteKey(route)));
     updateStatusText();
+    updatePedestrianButtons();
 }
 void ControlPanelWindow::onDisplayStateChanged(QString state)
 {

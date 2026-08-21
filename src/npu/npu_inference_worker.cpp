@@ -1406,6 +1406,7 @@ struct NpuInferenceWorker::Impl
     std::atomic<int> loadedTaskValue {-1};
     std::string modelError;
     uint64_t activePlateConfigRevision = 0;
+    uint64_t activePedestrianRuleRevision = 0;
     uint64_t activeWrongWayRuleRevision = 0;
 
     int64_t fpsWindowMs = 0;
@@ -1440,10 +1441,12 @@ struct NpuInferenceWorker::Impl
         plateBackend = PlateBackend::Unknown;
         loadedPlateProfileValue.store(-1);
         platePostprocessor.reset();
+        violationEngine.reset();
         wrongWayEngine.reset();
         loadedTaskValue.store(-1);
         modelsLoaded.store(false);
         activePlateConfigRevision = 0;
+        activePedestrianRuleRevision = 0;
         activeWrongWayRuleRevision = 0;
     }
 
@@ -1561,9 +1564,12 @@ struct NpuInferenceWorker::Impl
         state.confidence = next.confidence;
         state.nmsThreshold = next.nmsThreshold;
         state.configRevision = next.revision;
-        if (next.task == NpuTaskType::TrafficViolation) {
+        if (next.task == NpuTaskType::Pedestrian ||
+            next.task == NpuTaskType::TrafficViolation) {
             state.violationConfig = violationConfigSnapshot();
             state.violationRegionsConfigured = state.violationConfig.regionsValid();
+            state.pedestrianViolationRuleEnabled =
+                    next.pedestrianViolationRuleEnabled;
         } else if (next.task == NpuTaskType::VehicleWrongWay) {
             state.wrongWayConfig = wrongWayConfigSnapshot();
             state.wrongWayRegionsConfigured = state.wrongWayConfig.regionsValid();
@@ -1626,9 +1632,12 @@ struct NpuInferenceWorker::Impl
         state.configRevision = cfg.revision;
         state.sourceChannel = sourceChannel;
         state.sourceRevision = sourceRevision;
-        if (cfg.task == NpuTaskType::TrafficViolation) {
+        if (cfg.task == NpuTaskType::Pedestrian ||
+            cfg.task == NpuTaskType::TrafficViolation) {
             state.violationConfig = violationConfigSnapshot();
             state.violationRegionsConfigured = state.violationConfig.regionsValid();
+            state.pedestrianViolationRuleEnabled =
+                    cfg.pedestrianViolationRuleEnabled;
         } else if (cfg.task == NpuTaskType::VehicleWrongWay) {
             state.wrongWayConfig = wrongWayConfigSnapshot();
             state.wrongWayRegionsConfigured = state.wrongWayConfig.regionsValid();
@@ -2021,6 +2030,8 @@ struct NpuInferenceWorker::Impl
         result.nmsThreshold = cfg.nmsThreshold;
         result.configRevision = cfg.revision;
         result.wrongWayRuleEnabled = cfg.wrongWayRuleEnabled;
+        result.pedestrianViolationRuleEnabled =
+                cfg.pedestrianViolationRuleEnabled;
         fillModelState(&result, current);
         result.processed = processed.load();
         result.dropped = droppedFrames.load();
@@ -2032,6 +2043,7 @@ struct NpuInferenceWorker::Impl
             result.error.clear();
             result.plates.clear();
             result.pedestrians.clear();
+            result.violationPedestrians.clear();
             result.vehicles.clear();
         }
 
@@ -2448,6 +2460,7 @@ struct NpuInferenceWorker::Impl
         } else {
             std::vector<demo::Rect2f> pedBoxesIn;
             std::vector<float> pedScores;
+            std::vector<std::size_t> violationCandidateIndices;
             demo::vision::RknnStageTiming pedTiming;
             demo::vision::detect_pedestrian(input,
                                             ped,
@@ -2467,21 +2480,30 @@ struct NpuInferenceWorker::Impl
                 demo::vision::convert_input_box_to_orig(pedBoxesIn[i], orig,
                                                         frame.width, frame.height);
                 const float score = (i < pedScores.size()) ? pedScores[i] : 0.0f;
-                // 原始行人模型页用于验证模型本身，只保留置信度和NMS结果。
-                // 站立姿态几何过滤仅属于旧违法规则任务，不能污染模型评估。
-                if (cfg.task == NpuTaskType::TrafficViolation &&
-                    !isStandingPedestrianBox(orig)) {
-                    continue;
-                }
                 result.pedestrians.push_back(
                             makeBox(orig, score, 0, std::string(), "person"));
+                if (cfg.pedestrianViolationRuleEnabled &&
+                    isStandingPedestrianBox(orig)) {
+                    violationCandidateIndices.push_back(
+                                result.pedestrians.size() - 1);
+                    result.violationPedestrians.push_back(
+                                result.pedestrians.back());
+                }
             }
 
-            if (cfg.task == NpuTaskType::TrafficViolation) {
+            if (cfg.pedestrianViolationRuleEnabled) {
                 ViolationRuleConfig violationSnapshot;
                 {
                     std::lock_guard<std::mutex> lk(violationConfigMutex);
                     violationSnapshot = violationConfig;
+                }
+                if (activePedestrianRuleRevision != cfg.revision) {
+                    violationEngine.reset();
+                    activePedestrianRuleRevision = cfg.revision;
+                    std::cerr << "[NPU] pedestrian violation rule=on"
+                              << " task_revision=" << cfg.revision
+                              << " (reuse loaded pedestrian model)"
+                              << std::endl;
                 }
                 violationEngine.setConfig(violationSnapshot);
                 violationEngine.process(frame.data.data(),
@@ -2491,8 +2513,23 @@ struct NpuInferenceWorker::Impl
                                         frame.id,
                                         static_cast<std::uint64_t>(steadyMs()),
                                         static_cast<std::uint64_t>(systemMs()),
-                                        &result.pedestrians,
+                                        &result.violationPedestrians,
                                         &result);
+                // 规则候选来自原始框的稳定子集。按保存的原始索引回填轨迹
+                // 状态，同时保留未进入规则的检测框，模型数量不会因开关变化。
+                const std::size_t mapped = std::min(
+                            violationCandidateIndices.size(),
+                            result.violationPedestrians.size());
+                for (std::size_t i = 0; i < mapped; ++i) {
+                    result.pedestrians[violationCandidateIndices[i]] =
+                            result.violationPedestrians[i];
+                }
+            } else if (activePedestrianRuleRevision != 0) {
+                violationEngine.reset();
+                activePedestrianRuleRevision = 0;
+                std::cerr << "[NPU] pedestrian violation rule=off"
+                          << " (pedestrian model remains loaded)"
+                          << std::endl;
             }
         }
 

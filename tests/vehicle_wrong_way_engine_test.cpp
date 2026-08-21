@@ -80,7 +80,7 @@ void testNormalDirectionDoesNotTrigger()
     assert(result.vehicles[0].vehicleDirectionState == NpuVehicleDirectionState::Normal);
 }
 
-void testOverviewTilesNeverShareTrack()
+void testOverviewFullFrameKeepsTrackAcrossFormerTileBoundary()
 {
     VehicleWrongWayEngine engine;
     VehicleDirectionConfig config = singleLaneConfig();
@@ -98,12 +98,13 @@ void testOverviewTilesNeverShareTrack()
     assert(boxes.size() == 1);
     const int firstTrack = boxes[0].trackId;
 
-    // 两个框只相差6像素，但底边中心分别位于CH1和CH2 tile。
+    // Overview现在是一幅完整1080P场景。跨过旧3x3虚拟边界时必须保持
+    // 同一轨迹，否则车辆运动累计会在画面内部被错误打断。
     boxes[0].x = 211.0f;
     NpuFrameResult second;
     engine.process(2, 100, 1000100, 640, 360, 0, 1, &boxes, &second);
     assert(boxes.size() == 1);
-    assert(boxes[0].trackId != firstTrack);
+    assert(boxes[0].trackId == firstTrack);
 }
 
 void testMissingLaneKeepsDetectorOutput()
@@ -131,7 +132,7 @@ int main()
 {
     testWrongWayAndReset();
     testNormalDirectionDoesNotTrigger();
-    testOverviewTilesNeverShareTrack();
+    testOverviewFullFrameKeepsTrackAcrossFormerTileBoundary();
     testMissingLaneKeepsDetectorOutput();
     std::cout << "vehicle_wrong_way_engine_test: PASS\n";
     return 0;

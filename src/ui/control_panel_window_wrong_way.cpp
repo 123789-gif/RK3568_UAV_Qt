@@ -114,7 +114,7 @@ QWidget *ControlPanelWindow::createWrongWayPage()
     }
 
     QLabel *hint = new QLabel(
-                QStringLiteral("规则：一次车辆模型推理后，由CPU按车道轨迹、方向余弦及连续时间判定；总览轨迹按九宫格隔离。"),
+                QStringLiteral("规则：一次车辆模型推理后，由CPU按车道轨迹、方向余弦及连续时间判定；总览按完整一路1080P连续跟踪。"),
                 controlGroup);
     hint->setObjectName(QStringLiteral("navHint"));
     hint->setWordWrap(true);
@@ -395,6 +395,7 @@ void ControlPanelWindow::startWrongWayDetection()
         m_wrongWayRunning = true;
         m_wrongWayRuleEnabled = false;
         m_pedestrianRunning = false;
+        m_pedestrianViolationRuleEnabled = false;
         m_aiRequestedTask = NpuTaskType::VehicleWrongWay;
         m_aiTaskSwitchPending = true;
         m_wrongWayLastEventId = 0;

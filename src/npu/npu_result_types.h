@@ -117,6 +117,9 @@ struct NpuFrameResult
     std::string error;
     std::vector<NpuBox> plates;
     std::vector<NpuBox> pedestrians;
+    // 行人模型原始框的规则候选子集。pedestrians始终保留完整模型输出；
+    // 此列表仅在违法规则开启时包含轨迹和违法状态。
+    std::vector<NpuBox> violationPedestrians;
     std::vector<NpuBox> vehicles;
 
     bool wrongWayRegionsConfigured = false;
@@ -129,6 +132,7 @@ struct NpuFrameResult
     NpuWrongWayEvent recentWrongWay;
 
     bool violationRegionsConfigured = false;
+    bool pedestrianViolationRuleEnabled = false;
     ViolationRuleConfig violationConfig;
     NpuTrafficLightState rawTrafficLight = NpuTrafficLightState::Unknown;
     NpuTrafficLightState trafficLight = NpuTrafficLightState::Unknown;

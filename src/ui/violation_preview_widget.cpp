@@ -236,15 +236,17 @@ void ViolationPreviewWidget::paintEvent(QPaintEvent* event)
                                     target.top() + box.y / 360.0 * target.height(),
                                     box.w / 640.0 * target.width(),
                                     box.h / 360.0 * target.height());
-            const bool rawModel = m_result.task == NpuTaskType::Pedestrian;
-            painter.setPen(QPen(rawModel ? QColor(45, 230, 115)
-                                        : pedestrianColor(box.pedestrianState), 3.0));
+            const bool ruleCandidate =
+                    m_result.pedestrianViolationRuleEnabled && box.trackId >= 0;
+            painter.setPen(QPen(ruleCandidate
+                                ? pedestrianColor(box.pedestrianState)
+                                : QColor(45, 230, 115), 3.0));
             painter.setBrush(Qt::NoBrush);
             painter.drawRect(pedestrian);
             painter.drawText(pedestrian.topLeft() + QPointF(2.0, 18.0),
-                             rawModel
-                             ? QStringLiteral("PED %1").arg(box.score, 0, 'f', 2)
-                             : QStringLiteral("ID %1").arg(box.trackId));
+                             ruleCandidate
+                             ? QStringLiteral("ID %1").arg(box.trackId)
+                             : QStringLiteral("PED %1").arg(box.score, 0, 'f', 2));
         }
     }
 

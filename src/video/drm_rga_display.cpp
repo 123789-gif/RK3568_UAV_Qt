@@ -1187,7 +1187,9 @@ static void draw_violation_regions(void *fb,
                                    int fbH,
                                    const NpuFrameResult& result)
 {
-    if (result.task != NpuTaskType::TrafficViolation) {
+    if ((result.task != NpuTaskType::Pedestrian &&
+         result.task != NpuTaskType::TrafficViolation) ||
+        !result.pedestrianViolationRuleEnabled) {
         return;
     }
 
@@ -1364,7 +1366,7 @@ static void draw_npu_boxes(void *fb, int pitchBytes, int fbW, int fbH,
         draw_rect_outline_rgb565(fb, pitchBytes, fbW, fbH, x, y, w, h, 3, pedestrianColor);
 
         char label[64];
-        if (result.task == NpuTaskType::TrafficViolation && box.trackId >= 0) {
+        if (result.pedestrianViolationRuleEnabled && box.trackId >= 0) {
             snprintf(label, sizeof(label), "%s ID%d %.2F", stateLabel, box.trackId, box.score);
         } else {
             snprintf(label, sizeof(label), "PED %.2F", box.score);
