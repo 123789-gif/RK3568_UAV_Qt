@@ -57,6 +57,21 @@ std::string current_preproc_mode_name(bool force_cpu = false);
 // Map a detector-input box back to original image coordinates.
 void convert_input_box_to_orig(const Rect2f& in_box, Rect2f& out_box, int ow, int oh);
 
+// Legacy检测器不输出稳定四点。将其检测输入矩形严格回映射到原始选路图，
+// 从RGB565局部转换并缩放为94x24 OCR输入；不会伪造透视角点。
+bool crop_plate_box_from_original_rgb565(const uint8_t* source_rgb565,
+                                         std::size_t source_bytes,
+                                         int source_width,
+                                         int source_height,
+                                         int detector_frame_width,
+                                         int detector_frame_height,
+                                         const Rect2f& input_box,
+                                         Mat& crop_bgr,
+                                         std::string* reason = nullptr,
+                                         double* convert_ms = nullptr,
+                                         double* resize_ms = nullptr,
+                                         Size shape = Size(94, 24));
+
 // Generic YOLOv8 object detector for DFL raw heads and noDFL decoded heads.
 bool detect_yolov8_objects(const Mat& mid_img,
                            RknnModel& model,

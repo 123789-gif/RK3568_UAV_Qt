@@ -63,11 +63,6 @@ inline NpuTaskConfig sanitizeNpuTaskConfig(NpuTaskConfig config)
         config.plateCropSource != NpuPlateCropSource::OriginalSource) {
         config.plateCropSource = NpuPlateCropSource::DetectorInput;
     }
-    // 第一轮原图ROI实验仅接入具备四点诊断输出的v2.9.1后端。
-    // legacy仍保持已验证链路，避免“标准模式”被实验代码影响。
-    if (config.plateModelProfile == NpuPlateModelProfile::Legacy) {
-        config.plateCropSource = NpuPlateCropSource::DetectorInput;
-    }
     config.targetFps = std::max(NPU_TARGET_FPS_MIN,
                                 std::min(NPU_TARGET_FPS_MAX, config.targetFps));
     config.confidence = std::max(0.10f, std::min(0.95f, config.confidence));

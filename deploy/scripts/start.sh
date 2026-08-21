@@ -49,11 +49,6 @@ if [[ "$PLATE_CROP_SOURCE" != "detector" && "$PLATE_CROP_SOURCE" != "original" ]
     echo "ERROR: PLATE_CROP_SOURCE must be detector or original." >&2
     exit 2
 fi
-if [[ "$PLATE_CROP_SOURCE" == "original" && "$MODEL_PROFILE" != "v291_candidate" ]]; then
-    echo "ERROR: PLATE_CROP_SOURCE=original requires NPU_MODEL_PROFILE=v291_candidate." >&2
-    exit 2
-fi
-
 if [[ "$MODEL_PROFILE" == "legacy" ]]; then
     MODEL_DIR="$APP_ROOT/models"
 else

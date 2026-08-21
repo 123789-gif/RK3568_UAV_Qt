@@ -147,5 +147,7 @@ DISTFILES += \
     docs/SOURCE_VALIDATION_20260725.txt
 
 OTHER_FILES += \
+    tests/plate_mode_config_test.cpp \
     tests/vehicle_wrong_way_engine_test.cpp \
+    tools/test_plate_modes_host.sh \
     tools/test_vehicle_wrong_way_host.sh

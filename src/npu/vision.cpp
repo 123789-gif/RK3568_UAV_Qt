@@ -1073,6 +1073,105 @@ void convert_input_box_to_orig(const Rect2f& in_box, Rect2f& out_box, int ow, in
     out_box = Rect2f(x, y, w, h);
 }
 
+bool crop_plate_box_from_original_rgb565(const uint8_t* source_rgb565,
+                                         std::size_t source_bytes,
+                                         int source_width,
+                                         int source_height,
+                                         int detector_frame_width,
+                                         int detector_frame_height,
+                                         const Rect2f& input_box,
+                                         Mat& crop_bgr,
+                                         std::string* reason,
+                                         double* convert_ms,
+                                         double* resize_ms,
+                                         Size shape) {
+    crop_bgr.release();
+    if (reason) reason->clear();
+    if (convert_ms) *convert_ms = 0.0;
+    if (resize_ms) *resize_ms = 0.0;
+
+    const std::size_t required = source_width > 0 && source_height > 0
+            ? static_cast<std::size_t>(source_width) *
+              static_cast<std::size_t>(source_height) * 2u
+            : 0u;
+    if (!source_rgb565 || required == 0u || source_bytes < required ||
+        detector_frame_width <= 0 || detector_frame_height <= 0 ||
+        shape.width <= 0 || shape.height <= 0) {
+        if (reason) *reason = "legacy_original_source_invalid";
+        return false;
+    }
+
+    Rect2f detector_box;
+    convert_input_box_to_orig(input_box, detector_box,
+                              detector_frame_width, detector_frame_height);
+    if (!std::isfinite(detector_box.x) || !std::isfinite(detector_box.y) ||
+        !std::isfinite(detector_box.width) || !std::isfinite(detector_box.height) ||
+        detector_box.width < 2.0f || detector_box.height < 2.0f) {
+        if (reason) *reason = "legacy_original_box_invalid";
+        return false;
+    }
+
+    // 给检测框保留少量边缘，避免低分辨率量化后裁掉首尾字符。
+    const float pad_x = detector_box.width * 0.04f;
+    const float pad_y = detector_box.height * 0.08f;
+    const float scale_x = static_cast<float>(source_width) /
+            static_cast<float>(detector_frame_width);
+    const float scale_y = static_cast<float>(source_height) /
+            static_cast<float>(detector_frame_height);
+    const int x0 = std::max(0, static_cast<int>(std::floor(
+            (detector_box.x - pad_x) * scale_x)));
+    const int y0 = std::max(0, static_cast<int>(std::floor(
+            (detector_box.y - pad_y) * scale_y)));
+    const int x1 = std::min(source_width, static_cast<int>(std::ceil(
+            (detector_box.x + detector_box.width + pad_x) * scale_x)));
+    const int y1 = std::min(source_height, static_cast<int>(std::ceil(
+            (detector_box.y + detector_box.height + pad_y) * scale_y)));
+    const int crop_width = x1 - x0;
+    const int crop_height = y1 - y0;
+    if (crop_width < 2 || crop_height < 2) {
+        if (reason) *reason = "legacy_original_roi_invalid";
+        return false;
+    }
+
+    const auto convert_begin = std::chrono::high_resolution_clock::now();
+    Mat local_bgr(crop_height, crop_width, CV_8UC3);
+    for (int row = 0; row < crop_height; ++row) {
+        const uint8_t* src = source_rgb565 +
+                (static_cast<std::size_t>(y0 + row) *
+                 static_cast<std::size_t>(source_width) +
+                 static_cast<std::size_t>(x0)) * 2u;
+        uint8_t* dst = local_bgr.ptr<uint8_t>(row);
+        for (int col = 0; col < crop_width; ++col) {
+            const uint16_t px = static_cast<uint16_t>(src[col * 2]) |
+                    static_cast<uint16_t>(src[col * 2 + 1] << 8);
+            dst[col * 3 + 0] = static_cast<uint8_t>((px & 0x1fu) << 3);
+            dst[col * 3 + 1] = static_cast<uint8_t>(((px >> 5) & 0x3fu) << 2);
+            dst[col * 3 + 2] = static_cast<uint8_t>(((px >> 11) & 0x1fu) << 3);
+        }
+    }
+    if (convert_ms) {
+        *convert_ms = std::chrono::duration<double, std::milli>(
+                    std::chrono::high_resolution_clock::now() -
+                    convert_begin).count();
+    }
+
+    const auto resize_begin = std::chrono::high_resolution_clock::now();
+    cv::resize(local_bgr, crop_bgr, shape, 0.0, 0.0, cv::INTER_LINEAR);
+    if (resize_ms) {
+        *resize_ms = std::chrono::duration<double, std::milli>(
+                    std::chrono::high_resolution_clock::now() -
+                    resize_begin).count();
+    }
+    if (crop_bgr.empty() || crop_bgr.cols != shape.width ||
+        crop_bgr.rows != shape.height || crop_bgr.type() != CV_8UC3) {
+        crop_bgr.release();
+        if (reason) *reason = "legacy_original_resize_failed";
+        return false;
+    }
+    if (reason) *reason = "ok";
+    return true;
+}
+
 bool detect_yolov8_objects(const Mat& mid_img,
                            RknnModel& model,
                            int class_count,

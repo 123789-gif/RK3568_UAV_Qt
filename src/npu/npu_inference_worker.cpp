@@ -1852,7 +1852,6 @@ struct NpuInferenceWorker::Impl
         copy.copyMs = elapsedMs(copyBegin);
 
         const bool wantsOriginal = cfg.task == NpuTaskType::PlateCascade &&
-                cfg.plateModelProfile == NpuPlateModelProfile::V291Candidate &&
                 cfg.plateCropSource == NpuPlateCropSource::OriginalSource;
         if (wantsOriginal) {
             const auto originalCopyBegin = std::chrono::steady_clock::now();
@@ -2042,7 +2041,7 @@ struct NpuInferenceWorker::Impl
             std::vector<demo::Mat> crops;
             std::vector<demo::Rect2f> plateBoxesIn;
             std::vector<int> plateColorIds;
-            const bool wantsOriginalRoi = plateBackend == PlateBackend::V291 &&
+            const bool wantsOriginalRoi =
                     cfg.plateCropSource == NpuPlateCropSource::OriginalSource;
             std::vector<demo::plate_v291::PlateCropDebug> cropDebugs;
             if (plateBackend == PlateBackend::V291) {
@@ -2087,23 +2086,18 @@ struct NpuInferenceWorker::Impl
                             ? "original_frame_missing" : frame.originalCopyError;
                 } else {
                     result.actualPlateCropSource = NpuPlateCropSource::OriginalSource;
-                    const std::size_t count = std::min(crops.size(), cropDebugs.size());
                     for (std::size_t i = 0; i < crops.size(); ++i) {
-                        if (i >= count || cropDebugs[i].warp_quad.size() != 4u) {
-                            ++result.originalRoiFallbackCount;
-                            if (result.originalRoiFallbackReason.empty()) {
-                                result.originalRoiFallbackReason =
-                                        "final_warp_quad_missing";
-                            }
-                            continue;
-                        }
-
                         demo::Mat originalCrop;
                         std::string cropReason;
                         double convertMs = 0.0;
                         double warpMs = 0.0;
-                        const bool cropped =
-                                demo::plate_v291::crop_plate_from_original_rgb565(
+                        bool cropped = false;
+                        if (plateBackend == PlateBackend::V291) {
+                            if (i >= cropDebugs.size() ||
+                                cropDebugs[i].warp_quad.size() != 4u) {
+                                cropReason = "final_warp_quad_missing";
+                            } else {
+                                cropped = demo::plate_v291::crop_plate_from_original_rgb565(
                                     frame.originalData.data(),
                                     frame.originalData.size(),
                                     frame.originalWidth,
@@ -2115,6 +2109,23 @@ struct NpuInferenceWorker::Impl
                                     &cropReason,
                                     &convertMs,
                                     &warpMs);
+                            }
+                        } else if (i < plateBoxesIn.size()) {
+                            cropped = demo::vision::crop_plate_box_from_original_rgb565(
+                                        frame.originalData.data(),
+                                        frame.originalData.size(),
+                                        frame.originalWidth,
+                                        frame.originalHeight,
+                                        frame.width,
+                                        frame.height,
+                                        plateBoxesIn[i],
+                                        originalCrop,
+                                        &cropReason,
+                                        &convertMs,
+                                        &warpMs);
+                        } else {
+                            cropReason = "legacy_original_box_missing";
+                        }
                         result.originalRoiConvertMs += convertMs;
                         result.originalRoiWarpMs += warpMs;
                         if (cropped) {
