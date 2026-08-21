@@ -584,12 +584,6 @@ constexpr int kPlateConsulateVoteMin = 3;
 constexpr int kPlateConsulateToBlueVoteMin = 5;
 constexpr int kPlateConsulateToBlueConsecutive = 3;
 
-// 当前应用场景中的行人均为站立姿态。使用原图框高宽比过滤明显扁平的
-// 非行人误检；保持上限较宽，避免远处细长目标或局部遮挡被过度过滤。
-constexpr float kStandingPedestrianMinHeightPx = 24.0f;
-constexpr float kStandingPedestrianMinHeightWidthRatio = 2.50f;
-constexpr float kStandingPedestrianMaxHeightWidthRatio = 6.00f;
-
 static bool isUnknownPlateText(const std::string& text)
 {
     static const std::string kUnknown = "UNKNOWN";
@@ -664,20 +658,6 @@ static void convertPlateInputBoxToOrig(PlateBackend backend,
                                                 frameWidth,
                                                 frameHeight);
     }
-}
-
-static bool isStandingPedestrianBox(const demo::Rect2f& box)
-{
-    if (!std::isfinite(box.width) || !std::isfinite(box.height) ||
-        box.width <= 1.0f || box.height <= 1.0f) {
-        return false;
-    }
-    if (box.height < kStandingPedestrianMinHeightPx) {
-        return false;
-    }
-    const float ratio = box.height / box.width;
-    return ratio >= kStandingPedestrianMinHeightWidthRatio &&
-            ratio <= kStandingPedestrianMaxHeightWidthRatio;
 }
 
 static float plateRectIou(const demo::Rect2f& a, const demo::Rect2f& b)
@@ -2460,7 +2440,6 @@ struct NpuInferenceWorker::Impl
         } else {
             std::vector<demo::Rect2f> pedBoxesIn;
             std::vector<float> pedScores;
-            std::vector<std::size_t> violationCandidateIndices;
             demo::vision::RknnStageTiming pedTiming;
             demo::vision::detect_pedestrian(input,
                                             ped,
@@ -2482,14 +2461,9 @@ struct NpuInferenceWorker::Impl
                 const float score = (i < pedScores.size()) ? pedScores[i] : 0.0f;
                 result.pedestrians.push_back(
                             makeBox(orig, score, 0, std::string(), "person"));
-                if (cfg.pedestrianViolationRuleEnabled &&
-                    isStandingPedestrianBox(orig)) {
-                    violationCandidateIndices.push_back(
-                                result.pedestrians.size() - 1);
-                    result.violationPedestrians.push_back(
-                                result.pedestrians.back());
-                }
             }
+            result.rawPedestrianCount = static_cast<int>(
+                        result.pedestrians.size());
 
             if (cfg.pedestrianViolationRuleEnabled) {
                 ViolationRuleConfig violationSnapshot;
@@ -2513,22 +2487,34 @@ struct NpuInferenceWorker::Impl
                                         frame.id,
                                         static_cast<std::uint64_t>(steadyMs()),
                                         static_cast<std::uint64_t>(systemMs()),
-                                        &result.violationPedestrians,
+                                        &result.pedestrians,
                                         &result);
-                // 规则候选来自原始框的稳定子集。按保存的原始索引回填轨迹
-                // 状态，同时保留未进入规则的检测框，模型数量不会因开关变化。
-                const std::size_t mapped = std::min(
-                            violationCandidateIndices.size(),
-                            result.violationPedestrians.size());
-                for (std::size_t i = 0; i < mapped; ++i) {
-                    result.pedestrians[violationCandidateIndices[i]] =
-                            result.violationPedestrians[i];
-                }
+                // 正式OSD与违法规则共享同一份可信行人集合，不再绘制被
+                // 几何、置信度或时序确认拒绝的模型原始框。
+                result.violationPedestrians = result.pedestrians;
             } else if (activePedestrianRuleRevision != 0) {
                 violationEngine.reset();
                 activePedestrianRuleRevision = 0;
                 std::cerr << "[NPU] pedestrian violation rule=off"
                           << " (pedestrian model remains loaded)"
+                          << std::endl;
+            }
+
+            const int pedestrianLogInterval = std::max(1, cfg.targetFps * 5);
+            if (cfg.pedestrianViolationRuleEnabled &&
+                processed.load() % pedestrianLogInterval == 0) {
+                std::cerr << "[NPU] pedestrian filter raw="
+                          << result.rawPedestrianCount
+                          << " confirmed=" << result.pedestrians.size()
+                          << " reject_geometry="
+                          << result.pedestrianGeometryRejectedCount
+                          << " reject_confidence="
+                          << result.pedestrianConfidenceRejectedCount
+                          << " pending=" << result.pedestrianUnconfirmedCount
+                          << " tracks=" << result.activeTrackCount
+                          << " light=" << static_cast<int>(result.trafficLight)
+                          << " active_violation="
+                          << result.activeViolationCount
                           << std::endl;
             }
         }

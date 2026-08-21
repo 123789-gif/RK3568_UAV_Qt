@@ -17,9 +17,18 @@ enum class NpuTrafficLightState : std::uint8_t
 
 enum class NpuPedestrianState : std::uint8_t
 {
-    Normal = 0,
-    RedAccumulating = 1,
-    RedViolation = 2
+    Uncertain = 0,
+    Legal = 1,
+    IllegalAccumulating = 2,
+    Illegal = 3
+};
+
+enum class NpuPedestrianViolationReason : std::uint8_t
+{
+    None = 0,
+    RedLight = 1,
+    OutsideCrosswalk = 2,
+    RedAndOutside = 3
 };
 
 enum class NpuVehicleDirectionState : std::uint8_t
@@ -49,6 +58,8 @@ struct NpuViolationEvent
     std::uint64_t wallClockMs = 0;
     int trackId = -1;
     double accumulatedMs = 0.0;
+    NpuPedestrianViolationReason reason =
+            NpuPedestrianViolationReason::None;
 };
 
 struct NpuBox
@@ -62,7 +73,9 @@ struct NpuBox
     std::string text;
     std::string label;
     int trackId = -1;
-    NpuPedestrianState pedestrianState = NpuPedestrianState::Normal;
+    NpuPedestrianState pedestrianState = NpuPedestrianState::Uncertain;
+    NpuPedestrianViolationReason pedestrianViolationReason =
+            NpuPedestrianViolationReason::None;
     NpuVehicleDirectionState vehicleDirectionState = NpuVehicleDirectionState::Unknown;
     int laneId = -1;
     float normalizedMotion = 0.0f;
@@ -117,9 +130,14 @@ struct NpuFrameResult
     std::string error;
     std::vector<NpuBox> plates;
     std::vector<NpuBox> pedestrians;
-    // 行人模型原始框的规则候选子集。pedestrians始终保留完整模型输出；
-    // 此列表仅在违法规则开启时包含轨迹和违法状态。
+    // 行人违法规则开启时，pedestrians和violationPedestrians都只包含
+    // 经过全画面几何、置信度和时序确认的可信框。关闭规则时pedestrians
+    // 保留模型原始输出，便于独立验证模型效果。
     std::vector<NpuBox> violationPedestrians;
+    int rawPedestrianCount = 0;
+    int pedestrianGeometryRejectedCount = 0;
+    int pedestrianConfidenceRejectedCount = 0;
+    int pedestrianUnconfirmedCount = 0;
     std::vector<NpuBox> vehicles;
 
     bool wrongWayRegionsConfigured = false;

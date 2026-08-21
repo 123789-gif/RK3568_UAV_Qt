@@ -25,13 +25,30 @@ QColor lightColor(NpuTrafficLightState state)
 QColor pedestrianColor(NpuPedestrianState state)
 {
     switch (state) {
-    case NpuPedestrianState::RedAccumulating:
+    case NpuPedestrianState::IllegalAccumulating:
         return QColor(255, 210, 40);
-    case NpuPedestrianState::RedViolation:
+    case NpuPedestrianState::Illegal:
         return QColor(255, 60, 60);
-    case NpuPedestrianState::Normal:
-    default:
+    case NpuPedestrianState::Legal:
         return QColor(45, 230, 115);
+    case NpuPedestrianState::Uncertain:
+    default:
+        return QColor(130, 165, 190);
+    }
+}
+
+QString pedestrianStateLabel(NpuPedestrianState state)
+{
+    switch (state) {
+    case NpuPedestrianState::Legal:
+        return QStringLiteral("LEGAL");
+    case NpuPedestrianState::IllegalAccumulating:
+        return QStringLiteral("WAIT");
+    case NpuPedestrianState::Illegal:
+        return QStringLiteral("VIOL");
+    case NpuPedestrianState::Uncertain:
+    default:
+        return QStringLiteral("UNKNOWN");
     }
 }
 
@@ -245,7 +262,9 @@ void ViolationPreviewWidget::paintEvent(QPaintEvent* event)
             painter.drawRect(pedestrian);
             painter.drawText(pedestrian.topLeft() + QPointF(2.0, 18.0),
                              ruleCandidate
-                             ? QStringLiteral("ID %1").arg(box.trackId)
+                             ? QStringLiteral("%1 ID%2")
+                               .arg(pedestrianStateLabel(box.pedestrianState))
+                               .arg(box.trackId)
                              : QStringLiteral("PED %1").arg(box.score, 0, 'f', 2));
         }
     }

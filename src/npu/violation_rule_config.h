@@ -34,7 +34,14 @@ struct ViolationRuleConfig
     int lightVoteMin = 3;
     int unknownHoldMs = 300;
     int violationHoldMs = 600;
-    bool requireRedEntry = true;
+    float pedestrianMinHeightPx = 24.0f;
+    float pedestrianMinHeightWidthRatio = 1.80f;
+    float pedestrianMaxHeightWidthRatio = 5.00f;
+    float pedestrianNewTrackConfidence = 0.60f;
+    float pedestrianTrackedConfidence = 0.45f;
+    int pedestrianConfirmHits = 3;
+    int pedestrianConfirmMaxGapMs = 350;
+    float crosswalkHysteresisPx = 5.0f;
     int trackTtlMs = 1000;
     float trackIouThreshold = 0.20f;
     float boxEma = 0.50f;

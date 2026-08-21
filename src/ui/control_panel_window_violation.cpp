@@ -114,10 +114,10 @@ QWidget *ControlPanelWindow::createPedestrianPage()
     addLightMode(QStringLiteral("强制绿灯"), ViolationLightMode::ForceGreen);
 
     QLabel *ruleHint = new QLabel(
-                QStringLiteral("红灯下脚点进入斑马线持续600 ms判定违法。"),
+                QStringLiteral("仅稳定绿灯且脚点在斑马线内合法；其他已知灯态组合累计600 ms判违法。"),
                 ruleGroup);
     ruleHint->setObjectName(QStringLiteral("navHint"));
-    ruleHint->setWordWrap(false);
+    ruleHint->setWordWrap(true);
     ruleGrid->addWidget(m_btnPedestrianViolationRule, 0, 0, 1, 2);
     ruleGrid->addWidget(lightModeWidget, 1, 0, 1, 2);
     ruleGrid->addWidget(ruleHint, 2, 0, 1, 2);
@@ -433,7 +433,7 @@ void ControlPanelWindow::updatePedestrianPanel(const NpuFrameResult &result)
 
     QStringList lines;
     lines << QStringLiteral("原始行人：%1个")
-             .arg(static_cast<int>(result.pedestrians.size()));
+             .arg(result.rawPedestrianCount);
     if (!result.pedestrianViolationRuleEnabled) {
         float maxScore = 0.0f;
         for (const NpuBox& box : result.pedestrians)
@@ -445,9 +445,13 @@ void ControlPanelWindow::updatePedestrianPanel(const NpuFrameResult &result)
         return;
     }
 
-    lines << QStringLiteral("规则候选：%1｜有效轨迹：%2")
+    lines << QStringLiteral("可信行人：%1｜有效轨迹：%2")
              .arg(static_cast<int>(result.violationPedestrians.size()))
              .arg(result.activeTrackCount);
+    lines << QStringLiteral("过滤：几何%1｜置信度%2｜待确认%3")
+             .arg(result.pedestrianGeometryRejectedCount)
+             .arg(result.pedestrianConfidenceRejectedCount)
+             .arg(result.pedestrianUnconfirmedCount);
     lines << QStringLiteral("信号灯：%1｜当前违法：%2｜累计事件：%3")
              .arg(violationLightText(result.trafficLight))
              .arg(result.activeViolationCount)
@@ -456,8 +460,9 @@ void ControlPanelWindow::updatePedestrianPanel(const NpuFrameResult &result)
         const NpuViolationEvent& event = result.recentViolation;
         const QDateTime time = QDateTime::fromMSecsSinceEpoch(
                     static_cast<qint64>(event.wallClockMs));
-        lines << QStringLiteral("最近：行人#%1｜%2 ms｜%3")
+        lines << QStringLiteral("最近：行人#%1｜%2｜%3 ms｜%4")
                  .arg(event.trackId)
+                 .arg(violationReasonText(event.reason))
                  .arg(event.accumulatedMs, 0, 'f', 0)
                  .arg(time.toString(QStringLiteral("HH:mm:ss")));
         if (event.eventId != m_pedestrianViolationLastEventId) {

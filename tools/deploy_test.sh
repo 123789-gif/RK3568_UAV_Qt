@@ -39,7 +39,7 @@ usage() {
   -h, --help          显示帮助
 
 可选环境变量：
-  EXPECTED_MARKER     要求 ELF 中必须存在的 UTF-16 字符串，例如 BUILD-CHECK-05
+  EXPECTED_MARKER     要求 ELF 中必须存在的 UTF-16 字符串，例如 BUILD-CHECK-06
   BUILD_ROOT          Qt 构建目录
   OUTPUT_DIR          本地发布目录
   REMOTE_APPS_ROOT    板端应用根目录
@@ -51,7 +51,7 @@ usage() {
     ./tools/deploy_test.sh
 
 首次标题验证：
-    EXPECTED_MARKER=BUILD-CHECK-05 ./tools/deploy_test.sh
+    EXPECTED_MARKER=BUILD-CHECK-06 ./tools/deploy_test.sh
 EOF
 }
 

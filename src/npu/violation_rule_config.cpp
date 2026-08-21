@@ -71,6 +71,24 @@ ViolationRuleConfig sanitizeViolationRuleConfig(ViolationRuleConfig config)
     config.lightVoteMin = std::max(1, std::min(config.lightVoteWindow, config.lightVoteMin));
     config.unknownHoldMs = std::max(0, std::min(3000, config.unknownHoldMs));
     config.violationHoldMs = std::max(100, std::min(5000, config.violationHoldMs));
+    config.pedestrianMinHeightPx = std::max(
+                4.0f, std::min(180.0f, config.pedestrianMinHeightPx));
+    config.pedestrianMinHeightWidthRatio = std::max(
+                0.50f, std::min(8.0f, config.pedestrianMinHeightWidthRatio));
+    config.pedestrianMaxHeightWidthRatio = std::max(
+                config.pedestrianMinHeightWidthRatio,
+                std::min(12.0f, config.pedestrianMaxHeightWidthRatio));
+    config.pedestrianNewTrackConfidence = std::max(
+                0.10f, std::min(0.99f, config.pedestrianNewTrackConfidence));
+    config.pedestrianTrackedConfidence = std::max(
+                0.05f, std::min(config.pedestrianNewTrackConfidence,
+                                config.pedestrianTrackedConfidence));
+    config.pedestrianConfirmHits = std::max(
+                1, std::min(10, config.pedestrianConfirmHits));
+    config.pedestrianConfirmMaxGapMs = std::max(
+                50, std::min(2000, config.pedestrianConfirmMaxGapMs));
+    config.crosswalkHysteresisPx = std::max(
+                0.0f, std::min(30.0f, config.crosswalkHysteresisPx));
     config.trackTtlMs = std::max(200, std::min(5000, config.trackTtlMs));
     config.trackIouThreshold = std::max(0.05f, std::min(0.80f, config.trackIouThreshold));
     config.boxEma = std::max(0.0f, std::min(0.95f, config.boxEma));
@@ -150,7 +168,22 @@ bool loadViolationRuleConfig(const QString& path,
     loaded.lightVoteMin = settings.value(QStringLiteral("rules/light_vote_min"), 3).toInt();
     loaded.unknownHoldMs = settings.value(QStringLiteral("rules/unknown_hold_ms"), 300).toInt();
     loaded.violationHoldMs = settings.value(QStringLiteral("rules/violation_hold_ms"), 600).toInt();
-    loaded.requireRedEntry = settings.value(QStringLiteral("rules/require_red_entry"), true).toBool();
+    loaded.pedestrianMinHeightPx = settings.value(
+                QStringLiteral("filter/min_height_px"), 24.0).toFloat();
+    loaded.pedestrianMinHeightWidthRatio = settings.value(
+                QStringLiteral("filter/min_height_width_ratio"), 1.80).toFloat();
+    loaded.pedestrianMaxHeightWidthRatio = settings.value(
+                QStringLiteral("filter/max_height_width_ratio"), 5.00).toFloat();
+    loaded.pedestrianNewTrackConfidence = settings.value(
+                QStringLiteral("filter/new_track_confidence"), 0.60).toFloat();
+    loaded.pedestrianTrackedConfidence = settings.value(
+                QStringLiteral("filter/tracked_confidence"), 0.45).toFloat();
+    loaded.pedestrianConfirmHits = settings.value(
+                QStringLiteral("filter/confirm_hits"), 3).toInt();
+    loaded.pedestrianConfirmMaxGapMs = settings.value(
+                QStringLiteral("filter/confirm_max_gap_ms"), 350).toInt();
+    loaded.crosswalkHysteresisPx = settings.value(
+                QStringLiteral("rules/crosswalk_hysteresis_px"), 5.0).toFloat();
     loaded.trackTtlMs = settings.value(QStringLiteral("rules/track_ttl_ms"), 1000).toInt();
     loaded.trackIouThreshold = settings.value(QStringLiteral("rules/track_iou_threshold"), 0.20).toFloat();
     loaded.boxEma = settings.value(QStringLiteral("rules/box_ema"), 0.50).toFloat();
@@ -203,7 +236,22 @@ bool saveViolationRuleConfig(const QString& path,
     settings.setValue(QStringLiteral("rules/light_vote_min"), clean.lightVoteMin);
     settings.setValue(QStringLiteral("rules/unknown_hold_ms"), clean.unknownHoldMs);
     settings.setValue(QStringLiteral("rules/violation_hold_ms"), clean.violationHoldMs);
-    settings.setValue(QStringLiteral("rules/require_red_entry"), clean.requireRedEntry);
+    settings.setValue(QStringLiteral("rules/crosswalk_hysteresis_px"),
+                      clean.crosswalkHysteresisPx);
+    settings.setValue(QStringLiteral("filter/min_height_px"),
+                      clean.pedestrianMinHeightPx);
+    settings.setValue(QStringLiteral("filter/min_height_width_ratio"),
+                      clean.pedestrianMinHeightWidthRatio);
+    settings.setValue(QStringLiteral("filter/max_height_width_ratio"),
+                      clean.pedestrianMaxHeightWidthRatio);
+    settings.setValue(QStringLiteral("filter/new_track_confidence"),
+                      clean.pedestrianNewTrackConfidence);
+    settings.setValue(QStringLiteral("filter/tracked_confidence"),
+                      clean.pedestrianTrackedConfidence);
+    settings.setValue(QStringLiteral("filter/confirm_hits"),
+                      clean.pedestrianConfirmHits);
+    settings.setValue(QStringLiteral("filter/confirm_max_gap_ms"),
+                      clean.pedestrianConfirmMaxGapMs);
     settings.setValue(QStringLiteral("rules/track_ttl_ms"), clean.trackTtlMs);
     settings.setValue(QStringLiteral("rules/track_iou_threshold"), clean.trackIouThreshold);
     settings.setValue(QStringLiteral("rules/box_ema"), clean.boxEma);

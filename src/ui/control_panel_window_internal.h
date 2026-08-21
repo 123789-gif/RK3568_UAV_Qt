@@ -476,7 +476,7 @@ QString aiTaskDisplayName(NpuTaskType task)
     case NpuTaskType::PlateCascade:
         return QStringLiteral("车牌识别");
     case NpuTaskType::TrafficViolation:
-        return QStringLiteral("闯红灯检测");
+        return QStringLiteral("行人违法检测");
     case NpuTaskType::VehicleWrongWay:
         return QStringLiteral("逆行检测");
     case NpuTaskType::Pedestrian:
@@ -543,13 +543,30 @@ QString violationLightText(NpuTrafficLightState state)
 QString violationPedestrianStateText(NpuPedestrianState state)
 {
     switch (state) {
-    case NpuPedestrianState::RedAccumulating:
-        return QStringLiteral("红灯区域累计中");
-    case NpuPedestrianState::RedViolation:
-        return QStringLiteral("闯红灯");
-    case NpuPedestrianState::Normal:
+    case NpuPedestrianState::Legal:
+        return QStringLiteral("合法");
+    case NpuPedestrianState::IllegalAccumulating:
+        return QStringLiteral("违法累计中");
+    case NpuPedestrianState::Illegal:
+        return QStringLiteral("违法");
+    case NpuPedestrianState::Uncertain:
     default:
-        return QStringLiteral("正常");
+        return QStringLiteral("状态未知");
+    }
+}
+
+QString violationReasonText(NpuPedestrianViolationReason reason)
+{
+    switch (reason) {
+    case NpuPedestrianViolationReason::RedLight:
+        return QStringLiteral("红灯通行");
+    case NpuPedestrianViolationReason::OutsideCrosswalk:
+        return QStringLiteral("未走斑马线");
+    case NpuPedestrianViolationReason::RedAndOutside:
+        return QStringLiteral("红灯且未走斑马线");
+    case NpuPedestrianViolationReason::None:
+    default:
+        return QStringLiteral("无");
     }
 }
 

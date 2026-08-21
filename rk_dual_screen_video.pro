@@ -49,6 +49,7 @@ HEADERS += \
     src/pcie/pango_pci_uapi.h \
     src/npu/npu_inference_worker.h \
     src/npu/pedestrian_violation_engine.h \
+    src/npu/pedestrian_rule_logic.h \
     src/npu/violation_rule_config.h \
     src/npu/vehicle_direction_config.h \
     src/npu/vehicle_wrong_way_engine.h \
@@ -148,6 +149,8 @@ DISTFILES += \
 
 OTHER_FILES += \
     tests/plate_mode_config_test.cpp \
+    tests/pedestrian_rule_logic_test.cpp \
     tests/vehicle_wrong_way_engine_test.cpp \
     tools/test_plate_modes_host.sh \
+    tools/test_pedestrian_rule_host.sh \
     tools/test_vehicle_wrong_way_host.sh

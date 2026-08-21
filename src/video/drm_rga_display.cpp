@@ -1356,12 +1356,29 @@ static void draw_npu_boxes(void *fb, int pitchBytes, int fbW, int fbH,
 
         uint16_t pedestrianColor = rgb565(40, 230, 100);
         const char *stateLabel = "PED";
-        if (box.pedestrianState == NpuPedestrianState::RedAccumulating) {
+        if (box.pedestrianState == NpuPedestrianState::Uncertain) {
+            pedestrianColor = rgb565(130, 165, 190);
+            stateLabel = "UNKNOWN";
+        } else if (box.pedestrianState == NpuPedestrianState::Legal) {
+            pedestrianColor = rgb565(40, 230, 100);
+            stateLabel = "LEGAL";
+        } else if (box.pedestrianState == NpuPedestrianState::IllegalAccumulating) {
             pedestrianColor = rgb565(255, 215, 30);
             stateLabel = "WAIT";
-        } else if (box.pedestrianState == NpuPedestrianState::RedViolation) {
+        } else if (box.pedestrianState == NpuPedestrianState::Illegal) {
             pedestrianColor = red;
-            stateLabel = "VIOL";
+            if (box.pedestrianViolationReason ==
+                    NpuPedestrianViolationReason::RedLight) {
+                stateLabel = "RED";
+            } else if (box.pedestrianViolationReason ==
+                       NpuPedestrianViolationReason::OutsideCrosswalk) {
+                stateLabel = "OUTSIDE";
+            } else if (box.pedestrianViolationReason ==
+                       NpuPedestrianViolationReason::RedAndOutside) {
+                stateLabel = "RED+OUT";
+            } else {
+                stateLabel = "VIOL";
+            }
         }
         draw_rect_outline_rgb565(fb, pitchBytes, fbW, fbH, x, y, w, h, 3, pedestrianColor);
 

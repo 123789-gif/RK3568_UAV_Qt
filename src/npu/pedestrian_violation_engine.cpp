@@ -1,4 +1,5 @@
 #include "npu/pedestrian_violation_engine.h"
+#include "npu/pedestrian_rule_logic.h"
 
 #include <opencv2/imgproc.hpp>
 
@@ -29,8 +30,6 @@ void PedestrianViolationEngine::reset()
     m_lightVotes.clear();
     m_stableLight = NpuTrafficLightState::Unknown;
     m_lastKnownLightMs = 0;
-    m_redEpoch = 0;
-    m_redRuleWasActive = false;
     m_tracks.clear();
     m_nextTrackId = 1;
     m_nextEventId = 1;
@@ -47,8 +46,6 @@ void PedestrianViolationEngine::setConfig(const ViolationRuleConfig& config)
         m_lightVotes.clear();
         m_stableLight = NpuTrafficLightState::Unknown;
         m_lastKnownLightMs = 0;
-        m_redEpoch = 0;
-        m_redRuleWasActive = false;
         m_tracks.clear();
         m_nextTrackId = 1;
         m_appliedRevision = clean.revision;
@@ -163,16 +160,6 @@ NpuTrafficLightState PedestrianViolationEngine::stabilizeLight(
         return m_stableLight;
     }
 
-    // 对违法判定采用绿灯安全优先：当前帧明确识别为绿灯时，立即刷新
-    // 稳定灯色并清空旧红灯投票，避免下一帧Unknown又回落到陈旧红灯。
-    if (raw == NpuTrafficLightState::Green) {
-        m_lightVotes.clear();
-        m_lightVotes.push_back(NpuTrafficLightState::Green);
-        m_stableLight = NpuTrafficLightState::Green;
-        m_lastKnownLightMs = nowMs;
-        return m_stableLight;
-    }
-
     m_lightVotes.push_back(raw);
     while (static_cast<int>(m_lightVotes.size()) > m_config.lightVoteWindow) {
         m_lightVotes.pop_front();
@@ -195,6 +182,12 @@ NpuTrafficLightState PedestrianViolationEngine::stabilizeLight(
     if (voted != NpuTrafficLightState::Unknown) {
         m_stableLight = voted;
         m_lastKnownLightMs = nowMs;
+    } else if (pedestrianLightKnown(raw) &&
+               pedestrianLightKnown(m_stableLight) &&
+               raw != m_stableLight) {
+        // 灯态切换尚未达到投票门限时进入未知态，不能沿用旧灯态继续
+        // 产生违法或把一次绿色误识别当成立即合法。
+        return NpuTrafficLightState::Unknown;
     } else if (m_stableLight != NpuTrafficLightState::Unknown &&
                nowMs > m_lastKnownLightMs +
                        static_cast<std::uint64_t>(m_config.unknownHoldMs)) {
@@ -203,12 +196,13 @@ NpuTrafficLightState PedestrianViolationEngine::stabilizeLight(
     return m_stableLight;
 }
 
-bool PedestrianViolationEngine::footInsideCrosswalk(const NpuBox& box,
-                                                     int width,
-                                                     int height) const
+float PedestrianViolationEngine::footCrosswalkSignedDistance(
+        const NpuBox& box,
+        int width,
+        int height) const
 {
     if (!m_config.crosswalkValid || width <= 0 || height <= 0) {
-        return false;
+        return -1000000.0f;
     }
 
     std::vector<cv::Point2f> polygon;
@@ -218,7 +212,7 @@ bool PedestrianViolationEngine::footInsideCrosswalk(const NpuBox& box,
     }
 
     const cv::Point2f foot(box.x + box.w * 0.5f, box.y + box.h);
-    return cv::pointPolygonTest(polygon, foot, false) >= 0.0;
+    return static_cast<float>(cv::pointPolygonTest(polygon, foot, true));
 }
 
 float PedestrianViolationEngine::trackIou(const NpuBox& a, const NpuBox& b) const
@@ -268,23 +262,18 @@ void PedestrianViolationEngine::expireTracks(std::uint64_t nowMs)
     }), m_tracks.end());
 }
 
-void PedestrianViolationEngine::clearRedRuntime(Track* track, bool clearActive)
+void PedestrianViolationEngine::clearIllegalRuntime(Track* track,
+                                                    bool clearEventLatch)
 {
     if (!track) {
         return;
     }
-    track->redInsideStartMs = 0;
-    track->entryRedEpoch = 0;
-    track->enteredDuringRed = false;
-    if (clearActive) {
-        track->activeViolation = false;
-    }
-}
-
-void PedestrianViolationEngine::clearAllCurrentViolations()
-{
-    for (Track& track : m_tracks) {
-        clearRedRuntime(&track, true);
+    track->illegalStartMs = 0;
+    track->illegalTiming = false;
+    track->activeViolation = false;
+    track->violationReason = NpuPedestrianViolationReason::None;
+    if (clearEventLatch) {
+        track->eventLatched = false;
     }
 }
 
@@ -310,42 +299,32 @@ void PedestrianViolationEngine::process(const std::uint8_t* rgb565,
     result->trafficLightRedScore = observation.redScore;
     result->trafficLightGreenScore = observation.greenScore;
 
-    const NpuTrafficLightState stableLight =
-            stabilizeLight(observation.state, steadyTimeMs);
-    const bool greenOverride =
-            m_config.lightMode == ViolationLightMode::ForceGreen ||
-            observation.state == NpuTrafficLightState::Green ||
-            stableLight == NpuTrafficLightState::Green;
-    result->trafficLight = greenOverride
-            ? NpuTrafficLightState::Green : stableLight;
-
-    const bool redRuleActive =
-            result->trafficLight == NpuTrafficLightState::Red &&
-            !greenOverride && result->violationRegionsConfigured;
-
-    // 每次从非红灯周期进入有效红灯周期时生成新的epoch。轨迹只有在当前
-    // epoch内发生outside -> inside，才允许累计和产生违法事件。
-    if (redRuleActive && !m_redRuleWasActive) {
-        ++m_redEpoch;
-        if (m_redEpoch == 0) {
-            ++m_redEpoch;
-        }
-    }
-
-    // 绿灯、Unknown或区域未配置时，当前违法状态必须全局清零。历史事件
-    // 计数和最近事件仍保留，但任何当前行人都不得继续绘制红色VIOL框。
-    if (!redRuleActive) {
-        clearAllCurrentViolations();
-    }
-    m_redRuleWasActive = redRuleActive;
+    result->trafficLight = stabilizeLight(observation.state, steadyTimeMs);
+    result->rawPedestrianCount = static_cast<int>(pedestrians->size());
+    result->pedestrianGeometryRejectedCount = 0;
+    result->pedestrianConfidenceRejectedCount = 0;
+    result->pedestrianUnconfirmedCount = 0;
 
     expireTracks(steadyTimeMs);
     std::vector<bool> usedTracks(m_tracks.size(), false);
+    std::vector<NpuBox> confirmedPedestrians;
+    confirmedPedestrians.reserve(pedestrians->size());
 
     constexpr float kCenterDistanceMax = 0.50f;
     constexpr float kFootDistanceMax = 0.35f;
 
     for (NpuBox& detection : *pedestrians) {
+        if (!pedestrianBoxPassesGeometry(
+                    detection,
+                    width,
+                    height,
+                    m_config.pedestrianMinHeightPx,
+                    m_config.pedestrianMinHeightWidthRatio,
+                    m_config.pedestrianMaxHeightWidthRatio)) {
+            ++result->pedestrianGeometryRejectedCount;
+            continue;
+        }
+
         int bestIndex = -1;
         float bestScore = -1000000.0f;
         for (std::size_t i = 0; i < m_tracks.size(); ++i) {
@@ -374,19 +353,47 @@ void PedestrianViolationEngine::process(const std::uint8_t* rgb565,
             }
         }
 
+        const float requiredConfidence = bestIndex >= 0
+                ? m_config.pedestrianTrackedConfidence
+                : m_config.pedestrianNewTrackConfidence;
+        if (!std::isfinite(detection.score) ||
+            detection.score < requiredConfidence) {
+            ++result->pedestrianConfidenceRejectedCount;
+            continue;
+        }
+
+        bool newTrack = false;
         if (bestIndex < 0) {
             Track track;
             track.id = m_nextTrackId++;
             track.box = detection;
             track.lastSeenMs = steadyTimeMs;
+            track.hitStreak = 1;
+            track.confirmed = m_config.pedestrianConfirmHits <= 1;
             m_tracks.push_back(track);
             usedTracks.push_back(true);
             bestIndex = static_cast<int>(m_tracks.size()) - 1;
+            newTrack = true;
         } else {
             usedTracks[static_cast<std::size_t>(bestIndex)] = true;
         }
 
         Track& track = m_tracks[static_cast<std::size_t>(bestIndex)];
+        const std::uint64_t previousSeenMs = track.lastSeenMs;
+        if (!newTrack && previousSeenMs != 0 &&
+            steadyTimeMs <= previousSeenMs +
+                    static_cast<std::uint64_t>(
+                        m_config.pedestrianConfirmMaxGapMs)) {
+            ++track.hitStreak;
+        } else if (!newTrack && previousSeenMs != steadyTimeMs) {
+            track.hitStreak = 1;
+        }
+        if (!track.confirmed &&
+            track.hitStreak >= m_config.pedestrianConfirmHits) {
+            track.confirmed = true;
+            clearIllegalRuntime(&track, true);
+        }
+
         if (track.lastSeenMs != 0 && track.box.w > 0.0f && track.box.h > 0.0f) {
             const float alpha = m_config.boxEma;
             detection.x = smoothValue(track.box.x, detection.x, alpha);
@@ -397,93 +404,91 @@ void PedestrianViolationEngine::process(const std::uint8_t* rgb565,
         track.box = detection;
         track.lastSeenMs = steadyTimeMs;
 
-        const bool inside = footInsideCrosswalk(detection, width, height);
+        if (!track.confirmed) {
+            ++result->pedestrianUnconfirmedCount;
+            continue;
+        }
+
+        const float crosswalkDistance = footCrosswalkSignedDistance(
+                    detection, width, height);
         if (!track.insideInitialized) {
             track.insideInitialized = true;
-            track.wasInsideCrosswalk = inside;
+            track.insideCrosswalk = crosswalkDistance >= 0.0f;
+        } else if (track.insideCrosswalk) {
+            track.insideCrosswalk = crosswalkDistance >=
+                    -m_config.crosswalkHysteresisPx;
+        } else {
+            track.insideCrosswalk = crosswalkDistance >=
+                    m_config.crosswalkHysteresisPx;
         }
 
         double accumulatedMs = 0.0;
-        NpuPedestrianState state = NpuPedestrianState::Normal;
+        NpuPedestrianState state = NpuPedestrianState::Uncertain;
+        NpuPedestrianViolationReason reason =
+                NpuPedestrianViolationReason::None;
 
-        if (redRuleActive && m_config.requireRedEntry) {
-            if (!track.wasInsideCrosswalk && inside) {
-                track.enteredDuringRed = true;
-                track.entryRedEpoch = m_redEpoch;
-                track.redInsideStartMs = steadyTimeMs;
+        const bool ruleReady = result->violationRegionsConfigured &&
+                pedestrianLightKnown(result->trafficLight);
+        if (!ruleReady) {
+            // 灯态未知期间不产生事件，也不延续违法计时；保留已产生事件的
+            // latch，避免短时灯态丢失后对同一连续行为重复计数。
+            clearIllegalRuntime(&track, false);
+        } else if (pedestrianMovementLegal(result->trafficLight,
+                                           track.insideCrosswalk)) {
+            state = NpuPedestrianState::Legal;
+            clearIllegalRuntime(&track, true);
+        } else {
+            reason = pedestrianViolationReason(result->trafficLight,
+                                               track.insideCrosswalk);
+            track.violationReason = reason;
+            if (!track.illegalTiming) {
+                track.illegalTiming = true;
+                track.illegalStartMs = steadyTimeMs;
                 track.activeViolation = false;
             }
-
-            if (track.enteredDuringRed &&
-                track.entryRedEpoch == m_redEpoch && inside) {
-                accumulatedMs = static_cast<double>(
-                            steadyTimeMs - track.redInsideStartMs);
-                if (accumulatedMs >= m_config.violationHoldMs) {
-                    track.activeViolation = true;
-                } else {
-                    state = NpuPedestrianState::RedAccumulating;
-                }
-            } else if (!inside) {
-                clearRedRuntime(&track, true);
-            }
-        } else if (redRuleActive && inside) {
-            if (track.redInsideStartMs == 0 ||
-                track.entryRedEpoch != m_redEpoch) {
-                track.redInsideStartMs = steadyTimeMs;
-                track.entryRedEpoch = m_redEpoch;
-            }
             accumulatedMs = static_cast<double>(
-                        steadyTimeMs - track.redInsideStartMs);
+                        steadyTimeMs - track.illegalStartMs);
             if (accumulatedMs >= m_config.violationHoldMs) {
                 track.activeViolation = true;
+                state = NpuPedestrianState::Illegal;
             } else {
-                state = NpuPedestrianState::RedAccumulating;
+                state = NpuPedestrianState::IllegalAccumulating;
             }
-        } else if (redRuleActive) {
-            clearRedRuntime(&track, true);
-        }
 
-        if (track.activeViolation && redRuleActive && inside &&
-            track.entryRedEpoch == m_redEpoch) {
-            state = NpuPedestrianState::RedViolation;
-            if (track.latchedRedEpoch != m_redEpoch) {
-                track.latchedRedEpoch = m_redEpoch;
+            if (track.activeViolation && !track.eventLatched) {
+                track.eventLatched = true;
                 m_recentEvent.eventId = m_nextEventId++;
                 m_recentEvent.frameId = frameId;
                 m_recentEvent.wallClockMs = wallClockMs;
                 m_recentEvent.trackId = track.id;
                 m_recentEvent.accumulatedMs = accumulatedMs;
+                m_recentEvent.reason = reason;
                 m_hasRecentEvent = true;
             }
-        } else if (!redRuleActive || !inside ||
-                   track.entryRedEpoch != m_redEpoch) {
-            track.activeViolation = false;
-            state = NpuPedestrianState::Normal;
-            accumulatedMs = 0.0;
         }
 
         detection.trackId = track.id;
         detection.pedestrianState = state;
+        detection.pedestrianViolationReason = reason;
         detection.stateDurationMs = accumulatedMs;
         track.box = detection;
-        track.wasInsideCrosswalk = inside;
+        confirmedPedestrians.push_back(detection);
     }
 
-    result->activeTrackCount = static_cast<int>(m_tracks.size());
+    result->activeTrackCount = static_cast<int>(std::count_if(
+                m_tracks.begin(), m_tracks.end(),
+                [](const Track& track) { return track.confirmed; }));
     result->activeViolationCount = 0;
-    if (redRuleActive) {
-        for (const Track& track : m_tracks) {
-            if (track.activeViolation &&
-                track.entryRedEpoch == m_redEpoch &&
-                track.lastSeenMs == steadyTimeMs) {
-                ++result->activeViolationCount;
-            }
+    for (const Track& track : m_tracks) {
+        if (track.confirmed && track.activeViolation &&
+            track.lastSeenMs == steadyTimeMs) {
+            ++result->activeViolationCount;
         }
     }
+    *pedestrians = std::move(confirmedPedestrians);
     result->violationEventCount = m_nextEventId - 1;
     result->hasRecentViolation = m_hasRecentEvent;
     if (m_hasRecentEvent) {
         result->recentViolation = m_recentEvent;
     }
 }
-

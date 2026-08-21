@@ -40,13 +40,16 @@ private:
         int id = -1;
         NpuBox box;
         std::uint64_t lastSeenMs = 0;
-        std::uint64_t redInsideStartMs = 0;
-        std::uint64_t entryRedEpoch = 0;
-        std::uint64_t latchedRedEpoch = 0;
+        std::uint64_t illegalStartMs = 0;
+        int hitStreak = 0;
+        bool confirmed = false;
         bool insideInitialized = false;
-        bool wasInsideCrosswalk = false;
-        bool enteredDuringRed = false;
+        bool insideCrosswalk = false;
+        bool illegalTiming = false;
         bool activeViolation = false;
+        bool eventLatched = false;
+        NpuPedestrianViolationReason violationReason =
+                NpuPedestrianViolationReason::None;
     };
 
     LightObservation detectLight(const std::uint8_t* rgb565,
@@ -55,13 +58,14 @@ private:
                                  int height) const;
     NpuTrafficLightState stabilizeLight(NpuTrafficLightState raw,
                                         std::uint64_t nowMs);
-    bool footInsideCrosswalk(const NpuBox& box, int width, int height) const;
+    float footCrosswalkSignedDistance(const NpuBox& box,
+                                      int width,
+                                      int height) const;
     float trackIou(const NpuBox& a, const NpuBox& b) const;
     float trackCenterDistanceNormalized(const NpuBox& a, const NpuBox& b) const;
     float trackFootDistanceNormalized(const NpuBox& a, const NpuBox& b) const;
     void expireTracks(std::uint64_t nowMs);
-    void clearRedRuntime(Track* track, bool clearActive);
-    void clearAllCurrentViolations();
+    void clearIllegalRuntime(Track* track, bool clearEventLatch);
 
 private:
     ViolationRuleConfig m_config;
@@ -69,8 +73,6 @@ private:
     std::deque<NpuTrafficLightState> m_lightVotes;
     NpuTrafficLightState m_stableLight = NpuTrafficLightState::Unknown;
     std::uint64_t m_lastKnownLightMs = 0;
-    std::uint64_t m_redEpoch = 0;
-    bool m_redRuleWasActive = false;
     std::vector<Track> m_tracks;
     int m_nextTrackId = 1;
     std::uint64_t m_nextEventId = 1;
