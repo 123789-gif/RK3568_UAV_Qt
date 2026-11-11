@@ -12,22 +12,12 @@ SOURCES += \
     src/ui/control_panel_window_video.cpp \
     src/ui/control_panel_window_fpga.cpp \
     src/ui/control_panel_window_ai.cpp \
-    src/ui/control_panel_window_violation.cpp \
-    src/ui/control_panel_window_wrong_way.cpp \
     src/ui/control_panel_window_ptz.cpp \
     src/ui/control_panel_window_system.cpp \
     src/ui/control_panel_window_style.cpp \
-    src/ui/violation_preview_widget.cpp \
-    src/ui/wrong_way_preview_widget.cpp \
     src/video/drm_rga_display.cpp \
     src/pcie/pcie_frame_receiver.cpp \
     src/npu/npu_inference_worker.cpp \
-    src/npu/pedestrian_violation_engine.cpp \
-    src/npu/violation_rule_config.cpp \
-    src/npu/vehicle_direction_config.cpp \
-    src/npu/vehicle_wrong_way_engine.cpp \
-    src/npu/plate_v291.cpp \
-    src/npu/vision.cpp \
     src/ptz/ptz_camera_profile.cpp \
     src/ptz/v4l2_device_detector.cpp \
     src/ptz/ptz_capture_worker.cpp \
@@ -41,25 +31,13 @@ SOURCES += \
 HEADERS += \
     src/ui/control_panel_window.h \
     src/ui/control_panel_window_internal.h \
-    src/ui/violation_preview_widget.h \
-    src/ui/wrong_way_preview_widget.h \
     src/video/drm_rga_display.h \
     src/video/video_route_config.h \
     src/pcie/pcie_frame_receiver.h \
     src/pcie/pango_pci_uapi.h \
     src/npu/npu_inference_worker.h \
-    src/npu/plate_temporal_policy.h \
-    src/npu/pedestrian_violation_engine.h \
-    src/npu/pedestrian_rule_logic.h \
-    src/npu/violation_rule_config.h \
-    src/npu/vehicle_direction_config.h \
-    src/npu/vehicle_wrong_way_engine.h \
     src/npu/npu_task_config.h \
     src/npu/npu_result_types.h \
-    src/npu/demo_types.h \
-    src/npu/plate_type_ids.h \
-    src/npu/plate_v291.h \
-    src/npu/vision.h \
     src/ptz/ptz_camera_profile.h \
     src/ptz/v4l2_device_detector.h \
     src/ptz/ptz_capture_worker.h \
@@ -119,43 +97,8 @@ QMAKE_POST_LINK += bash $$PWD/deploy/copy_runtime_assets.sh $$OUT_PWD
 
 DISTFILES += \
     README.md \
-    assets/models/ped_det.rknn \
-    assets/models/plate_det.rknn \
-    assets/models/plate_reco.rknn \
-    assets/models/yolov8_car_640x320_mmse.rknn \
-    assets/models/car_classes.txt \
+    assets/models/drone.json \
+    assets/models/drone.rknn \
     assets/models/SHA256SUMS \
-    assets/models/v291_candidate/plate_det.rknn \
-    assets/models/v291_candidate/plate_reco.rknn \
-    assets/models/v291_candidate/SHA256SUMS \
     assets/config/runtime.env \
-    assets/config/pedestrian_violation.ini \
-    assets/driver/rk3568-kernel-6.1.99/pango_pci_driver.ko \
-    assets/driver/rk3568-kernel-6.1.99/SHA256SUMS \
-    assets/driver/rk3568-kernel-6.1.99/DRIVER_INFO.txt \
-    deploy/copy_runtime_assets.sh \
-    deploy/scripts/load_pcie_driver.sh \
-    deploy/scripts/setup_display.sh \
-    deploy/scripts/check_runtime.sh \
-    deploy/scripts/start.sh \
-    deploy/scripts/stop.sh \
-    deploy/systemd/rk3568-ptz-qt.service \
-    docs/BUILD.md \
-    docs/DEPLOY.md \
-    docs/ARCHITECTURE.md \
-    docs/CORE_RULE_UI_V8.md \
-    docs/UI_REFACTOR.md \
-    docs/PLATE_ORIGINAL_ROI_EXPERIMENT.md \
-    docs/VEHICLE_WRONG_WAY_INTEGRATION.md \
-    docs/SOURCE_VALIDATION_20260725.txt
-
-OTHER_FILES += \
-    docs/PLATE_TRANSITION_V9.md \
-    tests/plate_mode_config_test.cpp \
-    tests/plate_temporal_policy_test.cpp \
-    tests/pedestrian_rule_logic_test.cpp \
-    tests/vehicle_wrong_way_engine_test.cpp \
-    tools/test_plate_modes_host.sh \
-    tools/test_plate_temporal_policy_host.sh \
-    tools/test_pedestrian_rule_host.sh \
-    tools/test_vehicle_wrong_way_host.sh
+    docs/UAV_DETECT_V2.md

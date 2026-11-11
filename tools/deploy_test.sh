@@ -16,7 +16,7 @@ BINARY="${BINARY:-$BUILD_ROOT/rk_dual_screen_video}"
 OUTPUT_DIR="${OUTPUT_DIR:-$PROJECT_ROOT/dist}"
 BOARD_TARGET="${BOARD_TARGET:-root@192.168.1.100}"
 REMOTE_APPS_ROOT="${REMOTE_APPS_ROOT:-/userdata/Apps}"
-EXPECTED_MARKER="${EXPECTED_MARKER:-}"
+EXPECTED_MARKER="${EXPECTED_MARKER:-UAV-DETECT-02}"
 KEEP_REMOTE_RELEASES="${KEEP_REMOTE_RELEASES:-3}"
 START_AFTER_DEPLOY=1
 SSH_OPTIONS=(
@@ -39,7 +39,7 @@ usage() {
   -h, --help          显示帮助
 
 可选环境变量：
-  EXPECTED_MARKER     要求 ELF 中必须存在的 UTF-16 字符串，例如 BUILD-CHECK-06
+  EXPECTED_MARKER     要求 ELF 中必须存在的 UTF-16 字符串，例如 UAV-DETECT-02
   BUILD_ROOT          Qt 构建目录
   OUTPUT_DIR          本地发布目录
   REMOTE_APPS_ROOT    板端应用根目录
@@ -51,7 +51,7 @@ usage() {
     ./tools/deploy_test.sh
 
 首次标题验证：
-    EXPECTED_MARKER=BUILD-CHECK-06 ./tools/deploy_test.sh
+    EXPECTED_MARKER=UAV-DETECT-02 ./tools/deploy_test.sh
 EOF
 }
 
@@ -163,7 +163,7 @@ echo "      $BINARY"
 mkdir -p "$OUTPUT_DIR"
 "$PROJECT_ROOT/deploy/make_bundle.sh" "$BINARY" "$OUTPUT_DIR"
 
-PACKAGE="$(ls -1t "$OUTPUT_DIR"/RK3568_PTZ_Qt_*.tar.gz 2>/dev/null |
+PACKAGE="$(ls -1t "$OUTPUT_DIR"/RK3568_UAV_Qt_*.tar.gz 2>/dev/null |
     head -n 1)"
 [[ -n "$PACKAGE" && -f "$PACKAGE" ]] || {
     echo "ERROR: 未找到新发布包。" >&2
@@ -176,7 +176,7 @@ PACKAGE="$(ls -1t "$OUTPUT_DIR"/RK3568_PTZ_Qt_*.tar.gz 2>/dev/null |
 
 gzip -t "$PACKAGE"
 (
-    cd "$OUTPUT_DIR/RK3568_PTZ_Qt"
+    cd "$OUTPUT_DIR/RK3568_UAV_Qt"
     sha256sum -c MANIFEST.sha256 >/dev/null
 )
 
@@ -218,9 +218,9 @@ cd "$(dirname "$package")"
 sha256sum -c "$(basename "${package}.sha256")"
 gzip -t "$package"
 
-version="${package_name#RK3568_PTZ_Qt_}"
+version="${package_name#RK3568_UAV_Qt_}"
 version="${version%.tar.gz}"
-new_root="$apps_root/RK3568_PTZ_Qt_test_$version"
+new_root="$apps_root/RK3568_UAV_Qt_test_$version"
 
 if [[ -e "$new_root" ]]; then
     echo "ERROR: 测试目录已存在，拒绝混合覆盖：$new_root" >&2
@@ -246,8 +246,8 @@ if [[ "$start_after_deploy" != "1" ]]; then
     exit 0
 fi
 
-current_state="$apps_root/RK3568_PTZ_Qt_test_current.path"
-official_root="$apps_root/RK3568_PTZ_Qt"
+current_state="$apps_root/RK3568_UAV_Qt_test_current.path"
+official_root="$apps_root/RK3568_UAV_Qt"
 
 find_app_processes() {
     local proc_exe=""
@@ -291,7 +291,7 @@ is_test_root() {
     candidate_parent="$(dirname "$candidate_root")"
     candidate_name="$(basename "$candidate_root")"
     [[ "$candidate_parent" == "$apps_root" &&
-       "$candidate_name" == RK3568_PTZ_Qt_test_20??????T??????Z ]]
+       "$candidate_name" == RK3568_UAV_Qt_test_20??????T??????Z ]]
 }
 
 mapfile -t active_records < <(find_app_processes)
@@ -305,7 +305,17 @@ rollback_root=""
 if ((${#active_records[@]} == 1)); then
     active_exe="${active_records[0]#*|}"
     rollback_root="$(dirname "$(dirname "$active_exe")")"
-    if [[ "$rollback_root" != "$official_root" ]] && ! is_test_root "$rollback_root"; then
+    legacy_name="$(basename "$rollback_root")"
+    legacy_parent="$(dirname "$rollback_root")"
+    legacy_managed=0
+    if [[ "$legacy_parent" == "$apps_root" &&
+          ( "$legacy_name" == RK3568_PTZ_Qt ||
+            "$legacy_name" == RK3568_PTZ_Qt_test_20??????T??????Z ) ]]; then
+        legacy_managed=1
+    fi
+    # 仅允许旧工程作为首次迁移的停止/回滚目标；清理仍只匹配UAV目录。
+    if [[ "$rollback_root" != "$official_root" ]] &&
+       ! is_test_root "$rollback_root" && ((legacy_managed == 0)); then
         echo "ERROR: 当前进程不属于受管正式/测试目录，拒绝自动停止：$active_exe" >&2
         exit 1
     fi
@@ -427,7 +437,7 @@ mapfile -t release_dirs < <(
         -mindepth 1 \
         -maxdepth 1 \
         -type d \
-        -name 'RK3568_PTZ_Qt_test_20*T*Z' \
+        -name 'RK3568_UAV_Qt_test_20*T*Z' \
         -print |
         sort -r
 )
@@ -460,7 +470,7 @@ for release_dir in "${release_dirs[@]}"; do
     fi
 
     case "$release_real" in
-    "$apps_root"/RK3568_PTZ_Qt_test_20??????T??????Z)
+    "$apps_root"/RK3568_UAV_Qt_test_20??????T??????Z)
         if rm -rf --one-file-system -- "$release_real"; then
             echo "      已清理：$release_real"
         else

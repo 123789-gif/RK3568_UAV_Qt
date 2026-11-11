@@ -1,6 +1,5 @@
 #include "video/drm_rga_display.h"
 #include "npu/npu_inference_worker.h"
-#include "npu/plate_type_ids.h"
 #include "pcie/pcie_frame_receiver.h"
 #include "system/perf_counters.h"
 #include "system/system_monitor.h"
@@ -118,29 +117,9 @@ static void prepare_and_submit_npu_frame(NpuInferenceWorker *worker,
                                          uint64_t frameId,
                                          const VideoTileRoi &sourceRoi,
                                          int sourceChannel,
-                                         uint64_t sourceRevision,
-                                         std::vector<uint8_t> &npuTileBuffer,
-                                         uint64_t &npuCropFailTotal)
+                                         uint64_t sourceRevision)
 {
     if (!worker || !frameData || !worker->wantsFrame()) {
-        return;
-    }
-
-    const int cropRet = rga_crop_scale_rgb565(frameData,
-                                              PCIE_FRAME_W,
-                                              PCIE_FRAME_H,
-                                              sourceRoi,
-                                              npuTileBuffer.data(),
-                                              640,
-                                              360,
-                                              640,
-                                              360);
-    if (cropRet != 0) {
-        ++npuCropFailTotal;
-        if (npuCropFailTotal <= 10) {
-            qDebug() << "RGA display-priority NPU input failed ret=" << cropRet
-                     << "channel=" << sourceChannel;
-        }
         return;
     }
 
@@ -157,10 +136,10 @@ static void prepare_and_submit_npu_frame(NpuInferenceWorker *worker,
     originalView.roiHeight = sourceRoi.height;
 
     worker->submitFrame(frameId,
-                        npuTileBuffer.data(),
-                        npuTileBuffer.size(),
-                        640,
-                        360,
+                        frameData,
+                        originalView.bytes,
+                        PCIE_FRAME_W,
+                        PCIE_FRAME_H,
                         sourceChannel,
                         sourceRevision,
                         &originalView);
@@ -572,377 +551,6 @@ static void hud_format_ms(char *buf, size_t size, double us)
 static int scale_capture_x(float x, int fbW, int sourceW);
 static int scale_capture_y(float y, int fbH, int sourceH);
 
-struct PlateOsdStyle {
-    uint16_t frameColor = 0;
-    QColor background;
-    QColor text;
-    uint16_t shadowColor = 0;
-};
-
-static PlateOsdStyle plate_osd_style(int classId)
-{
-    PlateOsdStyle st;
-    st.shadowColor = rgb565(0, 0, 0);
-    switch (classId) {
-    case plate_types::Blue:
-        st.frameColor = rgb565(0, 96, 255);
-        st.background = QColor(0, 84, 210, 232);
-        st.text = QColor(255, 255, 255);
-        break;
-    case plate_types::Green:
-        st.frameColor = rgb565(0, 210, 80);
-        st.background = QColor(0, 185, 80, 232);
-        st.text = QColor(0, 0, 0);
-        break;
-    case plate_types::Yellow:
-        st.frameColor = rgb565(255, 220, 0);
-        st.background = QColor(245, 210, 0, 232);
-        st.text = QColor(0, 0, 0);
-        break;
-    case plate_types::White:
-    case plate_types::Police:
-    case plate_types::Embassy:
-        st.frameColor = rgb565(255, 255, 255);
-        st.background = QColor(245, 245, 245, 235);
-        st.text = QColor(0, 0, 0);
-        break;
-    case plate_types::Black:
-    case plate_types::Consulate:
-        st.frameColor = rgb565(20, 20, 20);
-        st.background = QColor(10, 10, 10, 235);
-        st.text = QColor(255, 255, 255);
-        break;
-    case plate_types::HongKong:
-    case plate_types::Macau:
-        st.frameColor = rgb565(0, 96, 255);
-        st.background = QColor(235, 235, 235, 235);
-        st.text = QColor(0, 0, 0);
-        break;
-    case plate_types::Foreign:
-        st.frameColor = rgb565(180, 180, 180);
-        st.background = QColor(40, 40, 40, 232);
-        st.text = QColor(255, 255, 255);
-        break;
-    default:
-        st.frameColor = rgb565(255, 220, 0);
-        st.background = QColor(35, 35, 35, 220);
-        st.text = QColor(255, 255, 255);
-        break;
-    }
-    return st;
-}
-
-static QString strip_plate_separators(QString s)
-{
-    QString out;
-    out.reserve(s.size());
-    for (QChar c : s) {
-        if (c.isSpace() || c == '-' || c == '_' || c == ':' || c == '.') {
-            continue;
-        }
-        out.append(c.toUpper());
-    }
-    return out;
-}
-
-static bool is_chinese_plate_province(QChar c)
-{
-    static const QString provinces = QStringLiteral("京沪津渝冀晋蒙辽吉黑苏浙皖闽赣鲁豫鄂湘粤桂琼川贵云藏陕甘青宁新警领");
-    return provinces.contains(c);
-}
-
-static bool starts_with_ascii_token(const QString &s, const char *token)
-{
-    const QString t = QString::fromLatin1(token);
-    return s.left(t.size()).compare(t, Qt::CaseInsensitive) == 0;
-}
-
-static bool match_pinyin_province(const QString &compact, QString &province, int &tokenLen)
-{
-    struct Entry { const char *token; const char *province; };
-    // Keep ambiguous model tokens exactly aligned with demo::pinyin_chars().
-    static const Entry entries[] = {
-        {"LINGCON", "领"}, {"JINGPOL", "警"},
-        {"QIONG", "琼"}, {"CHUAN", "川"}, {"XIANG", "湘"}, {"ZANG", "藏"},
-        {"MENG", "蒙"}, {"LIAO", "辽"}, {"ZHE", "浙"}, {"WAN", "皖"},
-        {"MIN", "闽"}, {"GAN2", "甘"}, {"GAN", "赣"}, {"YUE", "粤"},
-        {"GUI2", "贵"}, {"GUI", "桂"}, {"YUN", "云"}, {"SHAN", "陕"},
-        {"QING", "青"}, {"NING", "宁"}, {"XIN", "新"}, {"JING", "京"},
-        {"HU", "沪"}, {"JIN2", "晋"}, {"JIN", "津"}, {"YU2", "豫"},
-        {"YU", "渝"}, {"JI2", "吉"}, {"JI", "冀"}, {"HEI", "黑"},
-        {"SU", "苏"}, {"LU", "鲁"}, {"E", "鄂"}
-    };
-    for (const Entry &e : entries) {
-        if (starts_with_ascii_token(compact, e.token)) {
-            province = QString::fromUtf8(e.province);
-            tokenLen = static_cast<int>(strlen(e.token));
-            return true;
-        }
-    }
-    return false;
-}
-
-static QString format_plate_text_for_osd(const NpuBox &box)
-{
-    // Prefer real Chinese OCR output. Use pinyin label only as fallback.
-    QString raw = QString::fromUtf8(box.text.c_str()).trimmed();
-    if (raw.isEmpty()) {
-        raw = QString::fromUtf8(box.label.c_str()).trimmed();
-    }
-    if (raw.isEmpty()) {
-        return QString();
-    }
-
-    QString province;
-    QString tail;
-    const QString compact = strip_plate_separators(raw);
-    if (compact.isEmpty()) {
-        return QString();
-    }
-
-    const QChar first = compact.at(0);
-    if (is_chinese_plate_province(first)) {
-        province = QString(first);
-        tail = compact.mid(1);
-    } else {
-        int tokenLen = 0;
-        if (match_pinyin_province(compact, province, tokenLen)) {
-            tail = compact.mid(tokenLen);
-        } else {
-            // Fall back to readable ASCII if the province token is unknown.
-            QString fallback = compact;
-            if (fallback.size() > 2) {
-                fallback.insert(2, QLatin1Char(' '));
-            }
-            return fallback.left(12);
-        }
-    }
-
-    tail = strip_plate_separators(tail);
-    if (tail.isEmpty()) {
-        return province;
-    }
-
-    const QString city = tail.left(1);
-    const QString number = tail.mid(1);
-    if (number.isEmpty()) {
-        return province + city;
-    }
-    return province + city + QStringLiteral(" ") + number;
-}
-
-struct CachedRgb565Label {
-    int width = 0;
-    int height = 0;
-    std::vector<uint16_t> pixels;
-
-    bool empty() const {
-        return width <= 0 || height <= 0 || pixels.empty();
-    }
-
-    void clear() {
-        width = 0;
-        height = 0;
-        pixels.clear();
-    }
-};
-
-static bool plate_label_needs_red_suffix(int classId, const QString &text)
-{
-    return (classId == plate_types::Police ||
-            classId == plate_types::Consulate ||
-            classId == plate_types::Embassy) && text.size() > 1;
-}
-
-static QColor plate_label_suffix_color(int classId)
-{
-    if (classId == plate_types::Police ||
-        classId == plate_types::Consulate ||
-        classId == plate_types::Embassy) {
-        return QColor(220, 0, 0);
-    }
-    return QColor();
-}
-
-static CachedRgb565Label render_plate_label_rgb565(int fbW, const QString &text, int classId)
-{
-    CachedRgb565Label out;
-    if (text.isEmpty()) {
-        return out;
-    }
-
-    const int pixelSize = (fbW >= 1600) ? 36 : 26;
-    QFont font(QStringLiteral("Sans Serif"));
-    font.setPixelSize(pixelSize);
-    font.setBold(true);
-    QFontMetrics fm(font);
-
-    const int padX = 10;
-    const int padY = 5;
-    const int textW = std::max(1, fm.horizontalAdvance(text));
-    const int textH = std::max(1, fm.height());
-    const int labelW = textW + padX * 2;
-    const int labelH = textH + padY * 2;
-    if (labelW <= 0 || labelH <= 0) {
-        return out;
-    }
-
-    const PlateOsdStyle st = plate_osd_style(classId);
-    QColor bg = st.background;
-    bg.setAlpha(255);  // 预渲染为不透明 RGB565 块，避免每帧 alpha 混合。
-    QColor textColor = st.text;
-    textColor.setAlpha(255);
-
-    QImage img(labelW, labelH, QImage::Format_RGB32);
-    img.fill(bg.rgb());
-    QPainter painter(&img);
-    painter.setRenderHint(QPainter::TextAntialiasing, true);
-    painter.setRenderHint(QPainter::Antialiasing, false);
-    painter.setPen(QColor(0, 0, 0));
-    painter.drawRect(0, 0, labelW - 1, labelH - 1);
-    painter.setFont(font);
-    const int textY = padY + fm.ascent();
-    if (plate_label_needs_red_suffix(classId, text)) {
-        const QString prefix = text.left(text.size() - 1);
-        const QString suffix = text.right(1);
-        painter.setPen(textColor);
-        painter.drawText(padX, textY, prefix);
-        painter.setPen(plate_label_suffix_color(classId));
-        painter.drawText(padX + fm.horizontalAdvance(prefix), textY, suffix);
-    } else {
-        painter.setPen(textColor);
-        painter.drawText(padX, textY, text);
-    }
-    painter.end();
-
-    out.width = labelW;
-    out.height = labelH;
-    out.pixels.resize(static_cast<std::size_t>(labelW) * static_cast<std::size_t>(labelH));
-    for (int yy = 0; yy < labelH; ++yy) {
-        const QRgb *srcRow = reinterpret_cast<const QRgb *>(img.constScanLine(yy));
-        uint16_t *dstRow = out.pixels.data() + static_cast<std::size_t>(yy) * static_cast<std::size_t>(labelW);
-        for (int xx = 0; xx < labelW; ++xx) {
-            const QRgb px = srcRow[xx];
-            dstRow[xx] = rgb565(static_cast<uint8_t>(qRed(px)),
-                                static_cast<uint8_t>(qGreen(px)),
-                                static_cast<uint8_t>(qBlue(px)));
-        }
-    }
-    return out;
-}
-
-static void blit_plate_label_rgb565(void *fb, int pitchBytes, int fbW, int fbH,
-                                    int anchorX, int anchorY,
-                                    const CachedRgb565Label &label)
-{
-    if (!fb || label.empty()) {
-        return;
-    }
-
-    int x = anchorX - label.width / 2;
-    int y = anchorY - label.height - 8;
-    if (x < 2) x = 2;
-    if (x + label.width > fbW - 2) x = fbW - label.width - 2;
-    if (y < 2) y = anchorY + 8;
-    if (y + label.height > fbH - 2) y = fbH - label.height - 2;
-    if (x < 0 || y < 0) {
-        return;
-    }
-
-    const int startX = std::max(0, -x);
-    const int startY = std::max(0, -y);
-    const int endX = std::min(label.width, fbW - x);
-    const int endY = std::min(label.height, fbH - y);
-    if (startX >= endX || startY >= endY) {
-        return;
-    }
-
-    uint8_t *base = static_cast<uint8_t *>(fb);
-    const int copyPixels = endX - startX;
-    const std::size_t copyBytes = static_cast<std::size_t>(copyPixels) * sizeof(uint16_t);
-    for (int yy = startY; yy < endY; ++yy) {
-        const uint16_t *srcRow = label.pixels.data() +
-                static_cast<std::size_t>(yy) * static_cast<std::size_t>(label.width) + startX;
-        uint16_t *dstRow = reinterpret_cast<uint16_t *>(base + (y + yy) * pitchBytes) + x + startX;
-        std::memcpy(dstRow, srcRow, copyBytes);
-    }
-}
-
-struct DirectPlateLabelCacheEntry {
-    QString text;
-    int classId = -1000;
-    int fbW = 0;
-    uint64_t useSerial = 0;
-    CachedRgb565Label label;
-};
-
-static const CachedRgb565Label* cached_plate_label(int fbW,
-                                                    const QString& text,
-                                                    int classId)
-{
-    static std::vector<DirectPlateLabelCacheEntry> cache;
-    static uint64_t serial = 0;
-    ++serial;
-
-    for (DirectPlateLabelCacheEntry& entry : cache) {
-        if (entry.fbW == fbW && entry.classId == classId && entry.text == text) {
-            entry.useSerial = serial;
-            return &entry.label;
-        }
-    }
-
-    DirectPlateLabelCacheEntry* target = nullptr;
-    constexpr std::size_t kMaxCacheEntries = 16;
-    if (cache.size() < kMaxCacheEntries) {
-        cache.push_back(DirectPlateLabelCacheEntry());
-        target = &cache.back();
-    } else {
-        target = &*std::min_element(
-                    cache.begin(), cache.end(),
-                    [](const DirectPlateLabelCacheEntry& a,
-                       const DirectPlateLabelCacheEntry& b) {
-            return a.useSerial < b.useSerial;
-        });
-    }
-
-    target->text = text;
-    target->classId = classId;
-    target->fbW = fbW;
-    target->useSerial = serial;
-    target->label = render_plate_label_rgb565(fbW, text, classId);
-    return &target->label;
-}
-
-static void draw_plate_labels_from_result(void *fb,
-                                          int pitchBytes,
-                                          int fbW,
-                                          int fbH,
-                                          int sourceW,
-                                          int sourceH,
-                                          const NpuFrameResult& result)
-{
-    // 位置、文字和颜色全部直接使用NPU线程输出的同一份稳定结果。DRM层只
-    // 缓存文字位图，不再进行第二次轨迹关联、EMA或文字投票。
-    for (const NpuBox& box : result.plates) {
-        const QString text = format_plate_text_for_osd(box);
-        if (text.isEmpty() || box.w <= 1.0f || box.h <= 1.0f) {
-            continue;
-        }
-
-        const CachedRgb565Label* label =
-                cached_plate_label(fbW, text, box.classId);
-        if (!label || label->empty()) {
-            continue;
-        }
-
-        const int x = scale_capture_x(box.x, fbW, sourceW);
-        const int y = scale_capture_y(box.y, fbH, sourceH);
-        const int w = std::max(2, scale_capture_x(box.w, fbW, sourceW));
-        blit_plate_label_rgb565(fb, pitchBytes, fbW, fbH,
-                                x + w / 2, y, *label);
-    }
-}
-
 struct OsdStats {
     double rxFps = 0.0;
     double rgaFps = 0.0;
@@ -951,9 +559,10 @@ struct OsdStats {
     int aiTargetFps = 0;
     double rgaAvgUs = 0.0;
     double osdAvgUs = 0.0;
-    double plateOsdAvgUs = 0.0;
+    double labelOsdAvgUs = 0.0;
     double npuPrepareAvgUs = 0.0;
     uint64_t failTotal = 0;
+        uint64_t validTotal = 0;
     int cpuLoad = -1;
     int npuLoad = -1;
     double tempC = -1.0;
@@ -1124,153 +733,6 @@ static int scale_capture_y(float y, int fbH, int sourceH)
     return static_cast<int>(y * static_cast<float>(fbH) / static_cast<float>(sourceH) + 0.5f);
 }
 
-static void draw_line_rgb565(void *fb,
-                             int pitchBytes,
-                             int fbW,
-                             int fbH,
-                             int x0,
-                             int y0,
-                             int x1,
-                             int y1,
-                             int thickness,
-                             uint16_t color)
-{
-    int dx = std::abs(x1 - x0);
-    int sx = x0 < x1 ? 1 : -1;
-    int dy = -std::abs(y1 - y0);
-    int sy = y0 < y1 ? 1 : -1;
-    int error = dx + dy;
-    const int radius = std::max(0, thickness / 2);
-
-    for (;;) {
-        for (int oy = -radius; oy <= radius; ++oy) {
-            for (int ox = -radius; ox <= radius; ++ox) {
-                const int x = x0 + ox;
-                const int y = y0 + oy;
-                if (x >= 0 && x < fbW && y >= 0 && y < fbH) {
-                    uint16_t *row = reinterpret_cast<uint16_t *>(
-                                static_cast<uint8_t *>(fb) + y * pitchBytes);
-                    row[x] = color;
-                }
-            }
-        }
-        if (x0 == x1 && y0 == y1) {
-            break;
-        }
-        const int twiceError = 2 * error;
-        if (twiceError >= dy) {
-            error += dy;
-            x0 += sx;
-        }
-        if (twiceError <= dx) {
-            error += dx;
-            y0 += sy;
-        }
-    }
-}
-
-static uint16_t violation_light_color(NpuTrafficLightState state)
-{
-    switch (state) {
-    case NpuTrafficLightState::Red:
-        return rgb565(255, 60, 60);
-    case NpuTrafficLightState::Green:
-        return rgb565(40, 230, 100);
-    case NpuTrafficLightState::Unknown:
-    default:
-        return rgb565(60, 180, 255);
-    }
-}
-
-static void draw_violation_regions(void *fb,
-                                   int pitchBytes,
-                                   int fbW,
-                                   int fbH,
-                                   const NpuFrameResult& result)
-{
-    if ((result.task != NpuTaskType::Pedestrian &&
-         result.task != NpuTaskType::TrafficViolation) ||
-        !result.pedestrianViolationRuleEnabled) {
-        return;
-    }
-
-    const ViolationRuleConfig& config = result.violationConfig;
-    const uint16_t lightColor = violation_light_color(result.trafficLight);
-    const uint16_t crosswalkColor = rgb565(255, 220, 30);
-
-    if (config.lightRoiValid) {
-        const int x = static_cast<int>(config.lightX * fbW + 0.5f);
-        const int y = static_cast<int>(config.lightY * fbH + 0.5f);
-        const int w = std::max(2, static_cast<int>(config.lightW * fbW + 0.5f));
-        const int h = std::max(2, static_cast<int>(config.lightH * fbH + 0.5f));
-        draw_rect_outline_rgb565(fb, pitchBytes, fbW, fbH, x, y, w, h, 3, lightColor);
-    }
-
-    if (config.crosswalkValid) {
-        int px[4] = {};
-        int py[4] = {};
-        for (int i = 0; i < 4; ++i) {
-            px[i] = static_cast<int>(config.crosswalk[static_cast<std::size_t>(i)].x * fbW + 0.5f);
-            py[i] = static_cast<int>(config.crosswalk[static_cast<std::size_t>(i)].y * fbH + 0.5f);
-        }
-        for (int i = 0; i < 4; ++i) {
-            const int next = (i + 1) % 4;
-            draw_line_rgb565(fb, pitchBytes, fbW, fbH,
-                             px[i], py[i], px[next], py[next], 3, crosswalkColor);
-        }
-    }
-}
-
-static void draw_wrong_way_regions(void *fb,
-                                   int pitchBytes,
-                                   int fbW,
-                                   int fbH,
-                                   const NpuFrameResult& result)
-{
-    if (result.task != NpuTaskType::VehicleWrongWay ||
-        !result.wrongWayRuleEnabled) return;
-    static const uint16_t colors[] = {
-        rgb565(0, 220, 255), rgb565(255, 70, 220),
-        rgb565(255, 190, 0), rgb565(80, 220, 100)
-    };
-    for (std::size_t laneIndex = 0;
-         laneIndex < result.wrongWayConfig.lanes.size(); ++laneIndex) {
-        const VehicleLaneDirectionConfig& lane = result.wrongWayConfig.lanes[laneIndex];
-        const uint16_t color = colors[laneIndex % 4];
-        int px[4] = {};
-        int py[4] = {};
-        float centerX = 0.0f;
-        float centerY = 0.0f;
-        for (int i = 0; i < 4; ++i) {
-            px[i] = static_cast<int>(lane.quad[static_cast<std::size_t>(i)].x * fbW + 0.5f);
-            py[i] = static_cast<int>(lane.quad[static_cast<std::size_t>(i)].y * fbH + 0.5f);
-            centerX += px[i];
-            centerY += py[i];
-        }
-        for (int i = 0; i < 4; ++i) {
-            const int next = (i + 1) % 4;
-            draw_line_rgb565(fb, pitchBytes, fbW, fbH,
-                             px[i], py[i], px[next], py[next], 3, color);
-        }
-        centerX *= 0.25f;
-        centerY *= 0.25f;
-        const float arrowLength = std::max(35.0f, std::min(fbW, fbH) * 0.10f);
-        const int endX = static_cast<int>(centerX + lane.direction.x * arrowLength);
-        const int endY = static_cast<int>(centerY + lane.direction.y * arrowLength);
-        draw_line_rgb565(fb, pitchBytes, fbW, fbH,
-                         static_cast<int>(centerX), static_cast<int>(centerY),
-                         endX, endY, 4, color);
-        const float angle = std::atan2(lane.direction.y, lane.direction.x);
-        const float head = 14.0f;
-        draw_line_rgb565(fb, pitchBytes, fbW, fbH, endX, endY,
-                         static_cast<int>(endX - head * std::cos(angle - 0.55f)),
-                         static_cast<int>(endY - head * std::sin(angle - 0.55f)), 4, color);
-        draw_line_rgb565(fb, pitchBytes, fbW, fbH, endX, endY,
-                         static_cast<int>(endX - head * std::cos(angle + 0.55f)),
-                         static_cast<int>(endY - head * std::sin(angle + 0.55f)), 4, color);
-    }
-}
-
 static const char* npu_status_text(const NpuFrameResult& result)
 {
     if (!result.enabled) return "AI OFF";
@@ -1294,149 +756,25 @@ static std::string osd_ascii_label(const std::string& label, const char* fallbac
     return out.empty() ? fallback : out;
 }
 
-static const char* vehicle_osd_label(int classId)
-{
-    switch (classId) {
-    case 0: return "CAR";
-    case 1: return "BUS";
-    case 2: return "VAN";
-    case 3: return "TRUCK";
-    default: return "VEH";
-    }
-}
-
-static uint16_t vehicle_osd_color(int classId)
-{
-    switch (classId) {
-    case 0: return rgb565(0, 210, 255);
-    case 1: return rgb565(255, 190, 0);
-    case 2: return rgb565(130, 230, 80);
-    case 3: return rgb565(255, 90, 0);
-    default: return rgb565(220, 220, 220);
-    }
-}
-
 static void draw_npu_boxes(void *fb, int pitchBytes, int fbW, int fbH,
-                           int sourceW, int sourceH,
-                           const NpuFrameResult &result,
-                           uint64_t *plateLabelNs)
+                           int sourceW, int sourceH, const NpuFrameResult &result,
+                           uint64_t *labelNs)
 {
-    if (!result.enabled || !result.ready) {
-        return;
-    }
-
-    const int scale = (fbW >= 1600) ? 2 : 1;
-    const int lineH = 9 * scale;
-    const uint16_t shadow = rgb565(0, 0, 0);
-    const uint16_t red = rgb565(255, 48, 48);
-    const uint16_t white = rgb565(255, 255, 255);
-
-    for (const NpuBox& box : result.plates) {
+    if (!result.enabled || !result.ready) return;
+    const uint64_t begin = now_ns();
+    const int scale = fbW >= 1600 ? 2 : 1;
+    for (const NpuBox &box : result.drones) {
         const int x = scale_capture_x(box.x, fbW, sourceW);
         const int y = scale_capture_y(box.y, fbH, sourceH);
         const int w = std::max(2, scale_capture_x(box.w, fbW, sourceW));
         const int h = std::max(2, scale_capture_y(box.h, fbH, sourceH));
-        const PlateOsdStyle st = plate_osd_style(box.classId);
-        draw_rect_outline_rgb565(fb, pitchBytes, fbW, fbH, x, y, w, h, 3, st.frameColor);
+        draw_rect_outline_rgb565(fb, pitchBytes, fbW, fbH, x, y, w, h, 2, rgb565(0,255,100));
+        char label[48];
+        snprintf(label, sizeof(label), "DRONE %.2f", box.score);
+        draw_text_shadow_rgb565(fb, pitchBytes, fbW, fbH, x, std::max(2,y-10*scale),
+                                label, scale, rgb565(255,255,255), rgb565(0,0,0));
     }
-    const uint64_t plateLabelBeginNs = now_ns();
-    draw_plate_labels_from_result(fb, pitchBytes, fbW, fbH,
-                                  sourceW, sourceH, result);
-    if (plateLabelNs) {
-        *plateLabelNs += now_ns() - plateLabelBeginNs;
-    }
-
-    draw_violation_regions(fb, pitchBytes, fbW, fbH, result);
-    draw_wrong_way_regions(fb, pitchBytes, fbW, fbH, result);
-
-    for (const NpuBox& box : result.pedestrians) {
-        const int x = scale_capture_x(box.x, fbW, sourceW);
-        const int y = scale_capture_y(box.y, fbH, sourceH);
-        const int w = std::max(2, scale_capture_x(box.w, fbW, sourceW));
-        const int h = std::max(2, scale_capture_y(box.h, fbH, sourceH));
-
-        uint16_t pedestrianColor = rgb565(40, 230, 100);
-        const char *stateLabel = "PED";
-        if (box.pedestrianState == NpuPedestrianState::Uncertain) {
-            pedestrianColor = rgb565(130, 165, 190);
-            stateLabel = "UNKNOWN";
-        } else if (box.pedestrianState == NpuPedestrianState::Legal) {
-            pedestrianColor = rgb565(40, 230, 100);
-            stateLabel = "LEGAL";
-        } else if (box.pedestrianState == NpuPedestrianState::IllegalAccumulating) {
-            pedestrianColor = rgb565(255, 215, 30);
-            stateLabel = "WAIT";
-        } else if (box.pedestrianState == NpuPedestrianState::Illegal) {
-            pedestrianColor = red;
-            if (box.pedestrianViolationReason ==
-                    NpuPedestrianViolationReason::RedLight) {
-                stateLabel = "RED";
-            } else if (box.pedestrianViolationReason ==
-                       NpuPedestrianViolationReason::OutsideCrosswalk) {
-                stateLabel = "OUTSIDE";
-            } else if (box.pedestrianViolationReason ==
-                       NpuPedestrianViolationReason::RedAndOutside) {
-                stateLabel = "RED+OUT";
-            } else {
-                stateLabel = "VIOL";
-            }
-        }
-        draw_rect_outline_rgb565(fb, pitchBytes, fbW, fbH, x, y, w, h, 3, pedestrianColor);
-
-        char label[64];
-        if (result.pedestrianViolationRuleEnabled && box.trackId >= 0) {
-            snprintf(label, sizeof(label), "%s ID%d %.2F", stateLabel, box.trackId, box.score);
-        } else {
-            snprintf(label, sizeof(label), "PED %.2F", box.score);
-        }
-        const int ty = std::max(2, y - lineH - 2);
-        draw_text_shadow_rgb565(fb, pitchBytes, fbW, fbH, x, ty, label, scale, white, shadow);
-    }
-
-
-    for (const NpuBox& box : result.vehicles) {
-        const int x = scale_capture_x(box.x, fbW, sourceW);
-        const int y = scale_capture_y(box.y, fbH, sourceH);
-        const int w = std::max(2, scale_capture_x(box.w, fbW, sourceW));
-        const int h = std::max(2, scale_capture_y(box.h, fbH, sourceH));
-        uint16_t color = vehicle_osd_color(box.classId);
-        const char *stateLabel = vehicle_osd_label(box.classId);
-        if (result.task == NpuTaskType::VehicleWrongWay &&
-            result.wrongWayRuleEnabled) {
-            switch (box.vehicleDirectionState) {
-            case NpuVehicleDirectionState::WrongWay:
-                color = red;
-                stateLabel = "WRONG";
-                break;
-            case NpuVehicleDirectionState::Normal:
-                color = rgb565(40, 230, 100);
-                stateLabel = "OK";
-                break;
-            case NpuVehicleDirectionState::Stopped:
-                color = rgb565(255, 190, 0);
-                stateLabel = "STOP";
-                break;
-            case NpuVehicleDirectionState::Unknown:
-            default:
-                // 时序模式不显示UNKNOWN文字，只保留普通车辆框。
-                stateLabel = "";
-                break;
-            }
-        }
-        draw_rect_outline_rgb565(fb, pitchBytes, fbW, fbH, x, y, w, h, 3, color);
-
-        char label[64];
-        if (result.task == NpuTaskType::VehicleWrongWay &&
-            result.wrongWayRuleEnabled) {
-            snprintf(label, sizeof(label), "%s", stateLabel);
-        } else {
-            snprintf(label, sizeof(label), "%s %.2F", vehicle_osd_label(box.classId), box.score);
-        }
-        const int ty = std::min(fbH - lineH - 2, std::max(2, y + h + 2));
-        if (label[0] != '\0') {
-            draw_text_shadow_rgb565(fb, pitchBytes, fbW, fbH, x, ty, label, scale, white, shadow);
-        }
-    }
+    if (labelNs) *labelNs += now_ns() - begin;
 }
 
 struct DrmFb {
@@ -2058,30 +1396,6 @@ void DrmRgaDisplay::setNpuTask(NpuTaskType task)
     }
 }
 
-void DrmRgaDisplay::setViolationConfig(const ViolationRuleConfig &config)
-{
-    if (m_npuWorker) {
-        m_npuWorker->setViolationConfig(config);
-    }
-}
-
-ViolationRuleConfig DrmRgaDisplay::violationConfig() const
-{
-    return m_npuWorker ? m_npuWorker->violationConfig() : ViolationRuleConfig();
-}
-
-void DrmRgaDisplay::setWrongWayConfig(const VehicleDirectionConfig &config)
-{
-    if (m_npuWorker) {
-        m_npuWorker->setWrongWayConfig(config);
-    }
-}
-
-VehicleDirectionConfig DrmRgaDisplay::wrongWayConfig() const
-{
-    return m_npuWorker ? m_npuWorker->wrongWayConfig() : VehicleDirectionConfig();
-}
-
 NpuFrameResult DrmRgaDisplay::latestNpuResult() const
 {
     return m_npuWorker ? m_npuWorker->latestResult() : NpuFrameResult();
@@ -2457,19 +1771,15 @@ void DrmRgaDisplay::workerMain()
         uint64_t lastSensorNs = 0;
         uint64_t readCnt = 0, validCnt = 0, rgaCnt = 0, flipCnt = 0, failCnt = 0, rgaNsSum = 0;
         uint64_t failTotal = 0;
+        uint64_t validTotal = 0;
         rkqt::perf::AverageCounter osdCounter;
-        rkqt::perf::AverageCounter plateOsdCounter;
+        rkqt::perf::AverageCounter labelOsdCounter;
         rkqt::perf::AverageCounter npuPrepareCounter;
-        uint64_t npuCropFailTotal = 0;
         OsdStats osdStats {};
-        std::vector<uint8_t> npuTileBuffer(640u * 360u * PCIE_BPP);
-        std::vector<uint8_t> previewBuffer(640u * 360u * PCIE_BPP);
-        uint64_t lastPreviewNs = 0;
         uint64_t lastAiFrameId = 0;
         uint64_t lastAiConfigRevision = 0;
         uint64_t lastAiSourceRevision = 0;
         uint64_t lastAiResultUpdateNs = 0;
-        constexpr uint64_t kAiOverlayFreshNs = 200000000ULL;
 
         while (!m_stopReq.load()) {
             PcieFrameReceiver::FrameView frame;
@@ -2485,6 +1795,7 @@ void DrmRgaDisplay::workerMain()
 
             const int index = frame.bufferIndex;
             validCnt++;
+            validTotal++;
 
             const uint64_t routeState = m_videoRouteState.load();
             const VideoRoute route = decodeVideoRoute(routeState);
@@ -2531,10 +1842,12 @@ void DrmRgaDisplay::workerMain()
                 lastAiSourceRevision = ai.sourceRevision;
                 lastAiResultUpdateNs = sensorNow;
             }
+            const double effectiveAiFps = ai.fps > 0.0 ? ai.fps : std::max(1, ai.targetFps);
+            const uint64_t aiFreshNs = static_cast<uint64_t>(std::clamp(2.0e9 / effectiveAiFps, 5.0e8, 2.0e9));
             const bool aiResultFresh = ai.frameId != 0 &&
                     lastAiResultUpdateNs != 0 &&
                     sensorNow >= lastAiResultUpdateNs &&
-                    sensorNow - lastAiResultUpdateNs <= kAiOverlayFreshNs;
+                    sensorNow - lastAiResultUpdateNs <= aiFreshNs;
             const bool hasMatchingAi = ai.sourceChannel == sourceChannel &&
                     ai.sourceRevision == routeRevision && aiResultFresh;
             if (ai.enabled) {
@@ -2549,7 +1862,7 @@ void DrmRgaDisplay::workerMain()
             const bool aiOverlayEnabled = m_osdEnabled.load();
             if (perfHudEnabled || aiOverlayEnabled || m_displayMode.load() == 1) {
                 const uint64_t osdBeginNs = now_ns();
-                uint64_t plateLabelNsThisFrame = 0;
+                uint64_t labelDrawNsThisFrame = 0;
 
                 if (perfHudEnabled) {
                     draw_perf_hud_with_ai_summary(drm.fb[back].map, drm.fb[back].pitch,
@@ -2571,13 +1884,12 @@ void DrmRgaDisplay::workerMain()
                 }
 
                 if (aiOverlayEnabled && hasMatchingAi) {
-                    // 总览模式提交给 NPU 的输入已经缩小到 640x360；
-                    // 绘制时将该坐标系直接拉伸映射回 1920x1080 HDMI。
+                    // Worker统一返回640x360选路坐标；输入直接来自选路原始ROI。
                     const int aiSourceW = 640;
                     const int aiSourceH = 360;
                     draw_npu_boxes(drm.fb[back].map, drm.fb[back].pitch,
                                    drm.modeW, drm.modeH, aiSourceW, aiSourceH, ai,
-                                   &plateLabelNsThisFrame);
+                                   &labelDrawNsThisFrame);
                 }
 
                 if (m_displayMode.load() == 1) {
@@ -2590,8 +1902,8 @@ void DrmRgaDisplay::workerMain()
                 }
 
                 osdCounter.addNs(now_ns() - osdBeginNs);
-                if (plateLabelNsThisFrame > 0) {
-                    plateOsdCounter.addNs(plateLabelNsThisFrame);
+                if (labelDrawNsThisFrame > 0) {
+                    labelOsdCounter.addNs(labelDrawNsThisFrame);
                 }
             }
 
@@ -2601,48 +1913,20 @@ void DrmRgaDisplay::workerMain()
                 flipCnt++;
 
                 // 显示链路优先：当前帧完成 RGA 和 DRM flip 之后，才准备 NPU 输入。
-                // 这样九宫格总览/单路高清输入的 RGA 缩小不会阻塞当前 HDMI 帧提交。
+                // 推理输入ROI复制放在HDMI提交之后，后续预处理由NPU线程执行。
                 // NPU worker 仍使用 latest-only 单槽机制，推理慢时覆盖旧待处理帧，
                 // 只影响后续 AI 结果刷新，不应直接反压当前显示输出。
                 if (m_npuWorker && m_npuWorker->wantsFrame()) {
                     const uint64_t npuPrepareBeginNs = now_ns();
                     prepare_and_submit_npu_frame(m_npuWorker.get(),
                                                  frame.data,
-                                                 validCnt,
+                                                 validTotal,
                                                  sourceRoi,
                                                  sourceChannel,
-                                                 routeRevision,
-                                                 npuTileBuffer,
-                                                 npuCropFailTotal);
+                                                 routeRevision);
                     npuPrepareCounter.addNs(now_ns() - npuPrepareBeginNs);
                 }
 
-                // DSI配置预览只以5 Hz生成，并且放在当前HDMI帧完成page flip之后，
-                // 保持主显示链路优先。预览使用当前视频选路的同一640x360坐标系。
-                const uint64_t previewNowNs = now_ns();
-                if (lastPreviewNs == 0 || previewNowNs - lastPreviewNs >= 200000000ULL) {
-                    const int previewRet = rga_crop_scale_rgb565(frame.data,
-                                                                 PCIE_FRAME_W,
-                                                                 PCIE_FRAME_H,
-                                                                 sourceRoi,
-                                                                 previewBuffer.data(),
-                                                                 640,
-                                                                 360,
-                                                                 640,
-                                                                 360);
-                    if (previewRet == 0) {
-                        const QImage view(previewBuffer.data(),
-                                          640,
-                                          360,
-                                          640 * PCIE_BPP,
-                                          QImage::Format_RGB16);
-                        emit previewFrameReady(view.copy(),
-                                               static_cast<quint64>(validCnt),
-                                               sourceChannel,
-                                               static_cast<quint64>(routeRevision));
-                        lastPreviewNs = previewNowNs;
-                    }
-                }
             } else {
                 failCnt++;
                 failTotal++;
@@ -2669,7 +1953,7 @@ void DrmRgaDisplay::workerMain()
                 osdStats.flipFps = flipFps;
                 osdStats.rgaAvgUs = rgaAvgUs;
                 osdStats.osdAvgUs = osdCounter.averageUs();
-                osdStats.plateOsdAvgUs = plateOsdCounter.averageUs();
+                osdStats.labelOsdAvgUs = labelOsdCounter.averageUs();
                 osdStats.npuPrepareAvgUs = npuPrepareCounter.averageUs();
                 osdStats.failTotal = failTotal;
 
@@ -2679,16 +1963,14 @@ void DrmRgaDisplay::workerMain()
                                   osdStats.npuLoad,
                                   osdStats.tempC,
                                   osdStats.osdAvgUs,
-                                  osdStats.plateOsdAvgUs,
+                                  osdStats.labelOsdAvgUs,
                                   osdStats.npuPrepareAvgUs);
                 {
                     const NpuFrameResult ai = latestNpuResult();
                     QString aiStatus;
                     bool aiReady = ai.ready;
                     double aiFps = ai.fps;
-                    int plateCount = static_cast<int>(ai.plates.size());
-                    int pedestrianCount = static_cast<int>(ai.pedestrians.size());
-                    int vehicleCount = static_cast<int>(ai.vehicles.size());
+                    int droneCount = static_cast<int>(ai.drones.size());
                     if (!ai.enabled) {
                         aiStatus = "off";
                     } else if (!ai.error.empty()) {
@@ -2706,15 +1988,13 @@ void DrmRgaDisplay::workerMain()
                     emit aiStatsUpdated(ai.enabled,
                                         aiReady,
                                         aiFps,
-                                        plateCount,
-                                        pedestrianCount,
-                                        vehicleCount,
+                                        droneCount,
                                         aiStatus);
                 }
 
                 readCnt = validCnt = rgaCnt = flipCnt = failCnt = rgaNsSum = 0;
                 osdCounter.reset();
-                plateOsdCounter.reset();
+                labelOsdCounter.reset();
                 npuPrepareCounter.reset();
                 lastNs = now;
             }

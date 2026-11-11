@@ -13,17 +13,6 @@ DRIVER_KO="$DRIVER_DIR/$DRIVER_FILE"
 MODULE_NAME="${PCIE_DRIVER_MODULE:-pango_pci_driver}"
 DEVICE_NODE="${PCIE_DRIVER_DEVICE:-/dev/pango_pci_driver}"
 FAIL=0
-MODEL_PROFILE="${NPU_MODEL_PROFILE:-legacy}"
-PLATE_CROP_SOURCE="${PLATE_CROP_SOURCE:-detector}"
-
-if [[ "$MODEL_PROFILE" != "legacy" && "$MODEL_PROFILE" != "v291_candidate" ]]; then
-    echo "[FAIL] NPU_MODEL_PROFILE must be legacy or v291_candidate." >&2
-    exit 2
-fi
-if [[ "$PLATE_CROP_SOURCE" != "detector" && "$PLATE_CROP_SOURCE" != "original" ]]; then
-    echo "[FAIL] PLATE_CROP_SOURCE must be detector or original." >&2
-    exit 2
-fi
 ok() {
     printf '[OK] %s\n' "$*"
 }
@@ -89,53 +78,15 @@ if [[ -x "$BIN" ]]; then
     fi
 fi
 
-check_plate_profile() {
-    local profile="$1"
-    local model_dir="$2"
-    local model
-
-    for model in plate_det.rknn plate_reco.rknn; do
-        if [[ -s "$model_dir/$model" ]]; then
-            ok "model[$profile]: $model"
-        else
-            err "missing model[$profile]: $model_dir/$model"
-        fi
-    done
-
-    if [[ -f "$model_dir/SHA256SUMS" ]] && (
-        cd "$model_dir"
-        sha256sum -c SHA256SUMS >/dev/null
-    ); then
-        ok "model[$profile] SHA256"
+if [[ -s "$APP_ROOT/models/drone.rknn" && -f "$APP_ROOT/models/drone.json" ]]; then
+    ok "UAV model assets present"
+    if ( cd "$APP_ROOT/models" && sha256sum -c SHA256SUMS >/dev/null ); then
+        ok "UAV model SHA256"
     else
-        err "model[$profile] SHA256 mismatch or missing SHA256SUMS"
+        err "UAV model checksum missing or invalid"
     fi
-}
-
-# Qt界面支持运行时A/B切换，因此启动前必须同时验证两套车牌模型，
-# 不能只验证runtime.env里默认选中的profile。
-check_plate_profile "legacy" "$APP_ROOT/models"
-check_plate_profile "v291_candidate" "$APP_ROOT/models/v291_candidate"
-ok "startup model profile: $MODEL_PROFILE"
-ok "startup plate crop source: $PLATE_CROP_SOURCE"
-
-# 行人任务仍使用已验证的 legacy 模型，候选 profile 只替换车牌链路。
-if [[ -s "$APP_ROOT/models/ped_det.rknn" ]]; then
-    ok "legacy pedestrian model: ped_det.rknn"
 else
-    err "missing legacy pedestrian model: $APP_ROOT/models/ped_det.rknn"
-fi
-
-if [[ -s "$APP_ROOT/models/yolov8_car_640x320_mmse.rknn" ]]; then
-    ok "vehicle model: yolov8_car_640x320_mmse.rknn"
-else
-    err "missing vehicle model: $APP_ROOT/models/yolov8_car_640x320_mmse.rknn"
-fi
-if [[ -f "$APP_ROOT/models/car_classes.txt" ]] &&
-   [[ "$(grep -Ec '^[0-3][[:space:]]+(car|bus|van|truck)$' "$APP_ROOT/models/car_classes.txt")" -eq 4 ]]; then
-    ok "vehicle classes: car/bus/van/truck"
-else
-    err "invalid vehicle class mapping: $APP_ROOT/models/car_classes.txt"
+    err "missing UAV model: models/drone.rknn or drone.json"
 fi
 
 if [[ -f "$DRIVER_KO" ]]; then

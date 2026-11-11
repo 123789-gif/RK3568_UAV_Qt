@@ -240,19 +240,11 @@ void ControlPanelWindow::updateStatusText()
     const QString aiShort = m_aiEnabled
             ? (m_aiReady ? "ON" : "WAIT")
             : "OFF";
-    const QString aiTaskShort = m_aiTask == NpuTaskType::PlateCascade
-            ? "PLATE"
-            : (m_aiTask == NpuTaskType::TrafficViolation
-               ? "RULE"
-               : (m_aiTask == NpuTaskType::VehicleWrongWay
-                  ? (m_wrongWayRuleEnabled ? "WRONG" : "VEH")
-                  : (m_pedestrianViolationRuleEnabled ? "PED-RULE" : "PED")));
-
     const QString ethernetShort = m_ethernetControlAvailable
             ? (m_ethernetActiveEnable ? QStringLiteral("ON") : QStringLiteral("OFF"))
             : QStringLiteral("NA");
 
-    QString bottom = QString("HDMI:%1 VIEW:%2  NET:%3  PTZ-V:%4  PTZ-C:%5  FAN:%6  RX:%7  FLIP:%8  PTZ:%9  AI:%10/%11 P:%12 D:%13 V:%14  TEMP:%15  FAIL:%16")
+    QString bottom = QString("HDMI:%1 VIEW:%2  NET:%3  PTZ-V:%4  PTZ-C:%5  FAN:%6  RX:%7  FLIP:%8  PTZ:%9  UAV:%10 COUNT:%11  TEMP:%12  FAIL:%13")
             .arg(m_displayRunning ? "ON" : "OFF")
             .arg(routeText)
             .arg(ethernetShort)
@@ -263,10 +255,7 @@ void ControlPanelWindow::updateStatusText()
             .arg(m_flipFps, 0, 'f', 1)
             .arg(m_ptzDecodeFps, 0, 'f', 1)
             .arg(aiShort)
-            .arg(aiTaskShort)
-            .arg(m_aiPlateCount)
-            .arg(m_aiPedestrianCount)
-            .arg(m_aiVehicleCount)
+            .arg(m_aiDroneCount)
             .arg(tempText)
             .arg(m_failCount + m_ptzDecodeFail);
 
@@ -318,7 +307,7 @@ void ControlPanelWindow::updateStatusText()
     detail += QString("HDMI flip_fps  : %1\n").arg(m_flipFps, 0, 'f', 1);
     detail += QString("HDMI rga_avg_us: %1\n").arg(m_rgaAvgUs, 0, 'f', 1);
     detail += QString("HDMI osd_avg_us: %1\n").arg(m_osdAvgUs, 0, 'f', 0);
-    detail += QString("HDMI plate_us  : %1\n").arg(m_plateOsdAvgUs, 0, 'f', 0);
+    detail += QString("HDMI label_us  : %1\n").arg(m_labelOsdAvgUs, 0, 'f', 0);
     detail += QString("NPU prepare_us : %1\n").arg(m_npuPrepareAvgUs, 0, 'f', 0);
     detail += QString("HDMI fail_cnt  : %1\n\n").arg(m_failCount);
 
@@ -352,9 +341,7 @@ void ControlPanelWindow::updateStatusText()
     detail += QString("ai_enable : %1\n").arg(m_aiEnabled ? "ON" : "OFF");
     detail += QString("ai_ready  : %1\n").arg(m_aiReady ? "YES" : "NO");
     detail += QString("ai_fps    : %1\n").arg(m_aiFps, 0, 'f', 1);
-    detail += QString("ai_plate  : %1\n").arg(m_aiPlateCount);
-    detail += QString("ai_ped    : %1\n").arg(m_aiPedestrianCount);
-    detail += QString("ai_vehicle: %1\n").arg(m_aiVehicleCount);
+    detail += QString("uav_count : %1\n").arg(m_aiDroneCount);
     detail += QString("ai_status : %1\n").arg(m_aiStatus);
 
     detail += QString("cpu_load  : %1\n").arg(cpuText);

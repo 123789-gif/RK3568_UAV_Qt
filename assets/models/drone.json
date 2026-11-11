@@ -1,0 +1,66 @@
+{
+  "repository": "https://github.com/mo7amedmengasu/Drone-Detection",
+  "commit": "c0a3639ebe9d5ad79aaf21635f1d46dac66122fa",
+  "path": "runs/drone_object_detection_yolov8n_img640_e50/weights/best.pt",
+  "download_url": "https://raw.githubusercontent.com/mo7amedmengasu/Drone-Detection/c0a3639ebe9d5ad79aaf21635f1d46dac66122fa/runs/drone_object_detection_yolov8n_img640_e50/weights/best.pt",
+  "sha256": "cb9ca0d8bd3e7a62043f751ef6ff2af3133b6282b0a3beb35a0295f5556d9b1d",
+  "status": "export, conversion and simulator smoke test passed; RK3568 board FPS and scene accuracy unverified",
+  "model": "YOLOv8n",
+  "task": "single-class drone bounding-box detection",
+  "classes": {
+    "0": "drone"
+  },
+  "rknn_target": "rk3568",
+  "toolkit": "2.3.2",
+  "export_ultralytics": "8.3.0",
+  "checkpoint_ultralytics": "8.4.41",
+  "torch": "2.4.0+cpu",
+  "onnx_opset": 12,
+  "precision": "FP16, do_quantization=False",
+  "input": {
+    "shape": [
+      1,
+      3,
+      640,
+      640
+    ],
+    "color": "RGB",
+    "letterbox": 114,
+    "mean": [
+      0,
+      0,
+      0
+    ],
+    "std": [
+      255,
+      255,
+      255
+    ]
+  },
+  "output": {
+    "shape": [
+      1,
+      5,
+      8400
+    ],
+    "format": "decoded xywh in network pixels + sigmoid drone score; not raw DFL and not NMS"
+  },
+  "rknn_sha256": "39adf35c409012cc384c274d9db6b046d9c27192352e9986894d9599366b7604",
+  "numerical_smoke_test": {
+    "test": "deterministic random RGB tensor; numerical smoke test only, not detection quality evaluation",
+    "rknn_shape": [
+      1,
+      5,
+      8400
+    ],
+    "onnx_shape": [
+      1,
+      5,
+      8400
+    ],
+    "finite": true,
+    "box_abs_max": 1.040069580078125,
+    "score_abs_max": 0.00044035911560058594,
+    "score_abs_mean": 5.638294169330038e-06
+  }
+}

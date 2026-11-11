@@ -4,8 +4,6 @@
 #include "video/drm_rga_display.h"
 #include "npu/npu_task_config.h"
 #include "ptz/v4l2_device_detector.h"
-#include "npu/violation_rule_config.h"
-#include "npu/vehicle_direction_config.h"
 
 #include <QImage>
 #include <QMainWindow>
@@ -23,8 +21,6 @@ class QButtonGroup;
 class FanController;
 class PtzCaptureWorker;
 class PtzControlWorker;
-class ViolationPreviewWidget;
-class WrongWayPreviewWidget;
 
 class ControlPanelWindow : public QMainWindow
 {
@@ -57,15 +53,9 @@ private slots:
                                int npuLoad,
                                double tempC,
                                double osdAvgUs,
-                               double plateOsdAvgUs,
+                               double labelOsdAvgUs,
                                double npuPrepareAvgUs);
-    void onDisplayAiStatsUpdated(bool enabled,
-                                 bool ready,
-                                 double fps,
-                                 int plateCount,
-                                 int pedestrianCount,
-                                 int vehicleCount,
-                                 QString status);
+    void onDisplayAiStatsUpdated(bool enabled, bool ready, double fps, int droneCount, QString status);
 
     void onFpgaControlInfoUpdated(bool available,
                                   quint32 ipVersion,
@@ -143,10 +133,8 @@ private:
         PtzPage = 1,
         FpgaPage = 2,
         CpuPage = 3,
-        PlatePage = 4,
-        PedestrianPage = 5,
-        WrongWayPage = 6,
-        StatusPage = 7
+        DronePage = 4,
+        StatusPage = 5
     };
 
     void setupControlUi();
@@ -156,8 +144,6 @@ private:
     QWidget *createFpgaPage();
     QWidget *createCpuPage();
     QWidget *createAiPage();
-    QWidget *createPedestrianPage();
-    QWidget *createWrongWayPage();
     QWidget *createStatusPage();
     void setCurrentPage(int index);
     void logCurrentPageGeometry() const;
@@ -172,25 +158,8 @@ private:
     void updateAiPanel(const NpuFrameResult &result);
     void updateAiCurrentResult(const NpuFrameResult &result);
     void clearAiCurrentResult();
-    void requestAiTask(NpuTaskType task);
-    void updateAiTaskButtons();
     void loadAiSettings();
     void saveAiSettings(const NpuTaskConfig &config);
-    bool applyPedestrianTask(bool enableRule);
-    void startPedestrianDetection();
-    void stopPedestrianDetection();
-    void loadPedestrianViolationSettings();
-    bool savePedestrianViolationSettings();
-    void updatePedestrianPanel(const NpuFrameResult &result);
-    void updatePedestrianButtons();
-    void loadWrongWaySettings(int sourceChannel);
-    bool saveWrongWaySettings();
-    bool applyWrongWayTask(bool enableRule);
-    void startWrongWayDetection();
-    void stopWrongWayDetection();
-    void updateWrongWayPanel(const NpuFrameResult &result);
-    void updateWrongWayButtons();
-    void updateWrongWayLaneSelector();
     void loadPtzSettings();
     void savePtzSettings(PtzProfileSelection selection);
     bool applyPtzProfileSelection(bool restartActiveServices);
@@ -253,9 +222,6 @@ private:
     QButtonGroup *m_ethernetOutputButtonGroup = nullptr;
     QLabel *m_ethernetInfoLabel = nullptr;
     QLabel *m_ethernetCurrentStateLabel = nullptr;
-    QButtonGroup *m_npuTaskButtonGroup = nullptr;
-    QButtonGroup *m_plateModeButtonGroup = nullptr;
-    QButtonGroup *m_platePostprocessButtonGroup = nullptr;
     QPushButton *m_btnAiApply = nullptr;
     QPushButton *m_btnAiStop = nullptr;
     QSpinBox *m_npuFpsSpin = nullptr;
@@ -264,38 +230,7 @@ private:
     QLabel *m_aiRuntimeLabel = nullptr;
     QLabel *m_aiCurrentResultLabel = nullptr;
 
-    ViolationPreviewWidget *m_pedestrianPreview = nullptr;
-    QPushButton *m_btnPedestrianStart = nullptr;
-    QPushButton *m_btnPedestrianStop = nullptr;
-    QPushButton *m_btnPedestrianViolationRule = nullptr;
-    QDoubleSpinBox *m_pedestrianConfSpin = nullptr;
-    QDoubleSpinBox *m_pedestrianNmsSpin = nullptr;
-    QLabel *m_pedestrianEditStatusLabel = nullptr;
-    QLabel *m_pedestrianRuntimeLabel = nullptr;
-    QLabel *m_pedestrianResultLabel = nullptr;
-
-    WrongWayPreviewWidget *m_wrongWayPreview = nullptr;
-    QButtonGroup *m_wrongWayPresetGroup = nullptr;
-    QPushButton *m_btnWrongWayStart = nullptr;
-    QPushButton *m_btnWrongWayStop = nullptr;
-    QPushButton *m_btnWrongWayRule = nullptr;
-    QLabel *m_wrongWayEditStatusLabel = nullptr;
-    QComboBox *m_wrongWayLaneCombo = nullptr;
-    QLabel *m_wrongWayRuntimeLabel = nullptr;
-    QLabel *m_wrongWayResultLabel = nullptr;
-
     bool m_displayRunning = false;
-    bool m_pedestrianRunning = false;
-    bool m_pedestrianViolationRuleEnabled = false;
-    bool m_pedestrianViolationConfigDirty = false;
-    ViolationRuleConfig m_pedestrianViolationConfig;
-    std::uint64_t m_pedestrianViolationLastEventId = 0;
-    bool m_wrongWayRunning = false;
-    bool m_wrongWayRuleEnabled = false;
-    bool m_wrongWayConfigDirty = false;
-    int m_wrongWaySourceChannel = -1;
-    VehicleDirectionConfig m_wrongWayConfig;
-    std::uint64_t m_wrongWayLastEventId = 0;
     bool m_osdEnabled = true;
     // “期望运行”与worker当前状态分离。DRM瞬态退出后只在用户仍期望
     // HDMI运行时做有限次数重建，手动停止不会被自动拉起。
@@ -364,25 +299,13 @@ private:
     int m_npuLoad = -1;
     double m_tempC = -1.0;
     double m_osdAvgUs = 0.0;
-    double m_plateOsdAvgUs = 0.0;
+    double m_labelOsdAvgUs = 0.0;
     double m_npuPrepareAvgUs = 0.0;
     bool m_aiEnabled = false;
     bool m_aiReady = false;
     double m_aiFps = 0.0;
-    int m_aiPlateCount = 0;
-    int m_aiPedestrianCount = 0;
-    int m_aiVehicleCount = 0;
+    int m_aiDroneCount = 0;
     QString m_aiStatus = "off";
-    NpuTaskType m_aiTask = NpuTaskType::PlateCascade;
-    NpuTaskType m_aiRequestedTask = NpuTaskType::PlateCascade;
-    NpuPlateModelProfile m_aiRequestedPlateProfile = NpuPlateModelProfile::Legacy;
-    NpuPlateModelProfile m_aiActivePlateProfile = NpuPlateModelProfile::Legacy;
-    NpuPlatePostprocess m_aiRequestedPlatePostprocess = NpuPlatePostprocess::Stable;
-    NpuPlateCropSource m_aiRequestedPlateCropSource = NpuPlateCropSource::DetectorInput;
-    bool m_aiActivePlateProfileValid = false;
-    bool m_aiPlateOptionsDirty = false;
-    std::uint64_t m_aiRequestedConfigRevision = 0;
-    bool m_aiTaskSwitchPending = false;
     double m_aiLastMs = 0.0;
     double m_aiPreMs = 0.0;
     int m_aiProcessed = 0;

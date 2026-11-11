@@ -4,7 +4,7 @@
 ControlPanelWindow::ControlPanelWindow(QWidget *parent)
     : QMainWindow(parent)
 {
-    setWindowTitle(QStringLiteral("智能交通感知控制台｜BUILD-CHECK-09"));
+    setWindowTitle(QStringLiteral("无人机感知控制台｜UAV-DETECT-02"));
 
     m_display = new DrmRgaDisplay(this);
     m_ptzCapture = new PtzCaptureWorker(this);
@@ -66,29 +66,8 @@ ControlPanelWindow::ControlPanelWindow(QWidget *parent)
     setupControlUi();
     applyStyle();
     loadAiSettings();
-    loadPedestrianViolationSettings();
-    loadWrongWaySettings(videoRouteChannel(m_display->videoRoute()));
     loadPtzSettings();
 
-    connect(m_display, &DrmRgaDisplay::previewFrameReady,
-            this,
-            [this](const QImage &image,
-                   quint64 frameId,
-                   int sourceChannel,
-                   quint64 sourceRevision) {
-        Q_UNUSED(frameId)
-        Q_UNUSED(sourceRevision)
-        if (m_currentPage == PedestrianPage && m_pedestrianPreview) {
-            m_pedestrianPreview->setFrame(image);
-        }
-        if (m_currentPage == WrongWayPage && m_wrongWayPreview) {
-            m_wrongWayPreview->setFrame(image);
-        }
-        if (sourceChannel != m_wrongWaySourceChannel) {
-            loadWrongWaySettings(sourceChannel);
-        }
-    },
-    Qt::QueuedConnection);
 
     m_statusTimer = new QTimer(this);
     connect(m_statusTimer, &QTimer::timeout,
@@ -233,7 +212,7 @@ void ControlPanelWindow::setupControlUi()
     root->setContentsMargins(10, 6, 10, 6);
     root->setSpacing(5);
 
-    QLabel *title = new QLabel(QStringLiteral("智能交通感知控制台"), central);
+    QLabel *title = new QLabel(QStringLiteral("无人机感知控制台 | UAV-DETECT-02"), central);
     title->setObjectName("titleLabel");
     title->setAlignment(Qt::AlignCenter);
     title->setFixedHeight(42);
@@ -264,11 +243,9 @@ void ControlPanelWindow::setupControlUi()
     addPageViewport(createPtzPage(), Qt::ScrollBarAsNeeded);
     addPageViewport(createFpgaPage(), Qt::ScrollBarAsNeeded);
     addPageViewport(createCpuPage(), Qt::ScrollBarAsNeeded);
-    // 车牌页仍使用viewport隔离sizeHint，但明确关闭竖向滚动条。
+    // 无人机页面使用独立viewport。
     // 页面内部按1280x720有效高度固定布局，不允许滚动掩盖布局错误。
     addPageViewport(createAiPage(), Qt::ScrollBarAlwaysOff);
-    addPageViewport(createPedestrianPage(), Qt::ScrollBarAsNeeded);
-    addPageViewport(createWrongWayPage(), Qt::ScrollBarAsNeeded);
     addPageViewport(createStatusPage(), Qt::ScrollBarAsNeeded);
     body->addWidget(m_stack, 1);
 
@@ -292,7 +269,7 @@ QWidget *ControlPanelWindow::createNavPanel()
 
     QStringList names;
     names << "视频显示" << "PTZ控制" << "FPGA配置" << "CPU配置"
-          << "车牌识别" << "行人检测" << "逆行检测" << "系统状态";
+          << "无人机检测" << "系统状态";
 
     QButtonGroup *group = new QButtonGroup(nav);
     group->setExclusive(true);

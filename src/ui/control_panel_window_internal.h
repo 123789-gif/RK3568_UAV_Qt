@@ -4,9 +4,6 @@
 #include "ptz/ptz_capture_worker.h"
 #include "ptz/ptz_control_worker.h"
 #include "system/fan_controller.h"
-#include "ui/violation_preview_widget.h"
-#include "ui/wrong_way_preview_widget.h"
-#include "npu/violation_rule_config.h"
 
 #include <QApplication>
 #include <QVBoxLayout>
@@ -470,104 +467,12 @@ QFileInfoList collectManualSnapshotFiles(const QString &manualDirectory,
     return result;
 }
 
-QString aiTaskDisplayName(NpuTaskType task)
-{
-    switch (task) {
-    case NpuTaskType::PlateCascade:
-        return QStringLiteral("车牌识别");
-    case NpuTaskType::TrafficViolation:
-        return QStringLiteral("行人违法检测");
-    case NpuTaskType::VehicleWrongWay:
-        return QStringLiteral("逆行检测");
-    case NpuTaskType::Pedestrian:
-    default:
-        return QStringLiteral("行人检测");
-    }
-}
-
-QString aiTaskButtonText(NpuTaskType task, bool active, bool pending)
-{
-    const QString name = aiTaskDisplayName(task);
-    if (pending) {
-        return QStringLiteral("● %1").arg(name);
-    }
-    if (active) {
-        return QStringLiteral("✓ %1").arg(name);
-    }
-    return name;
-}
-
-
 QString aiSettingsPath()
 {
     QDir binDir(QCoreApplication::applicationDirPath());
     const QString configDir = QDir::cleanPath(binDir.filePath(QStringLiteral("../config")));
     QDir().mkpath(configDir);
-    return QDir(configDir).filePath(QStringLiteral("ai_panel.ini"));
-}
-
-QString violationSettingsPath()
-{
-    QDir binDir(QCoreApplication::applicationDirPath());
-    const QString configDir = QDir::cleanPath(binDir.filePath(QStringLiteral("../config")));
-    QDir().mkpath(configDir);
-    return QDir(configDir).filePath(QStringLiteral("pedestrian_violation.ini"));
-}
-
-QString wrongWaySettingsPath(int sourceChannel)
-{
-    QDir binDir(QCoreApplication::applicationDirPath());
-    const QString configDir = QDir::cleanPath(binDir.filePath(QStringLiteral("../config")));
-    QDir().mkpath(configDir);
-    if (sourceChannel == 0) {
-        return QDir(configDir).filePath(
-                    QStringLiteral("vehicle_wrong_way_overview.ini"));
-    }
-    return QDir(configDir).filePath(
-                QStringLiteral("vehicle_wrong_way_ch%1.ini").arg(sourceChannel));
-}
-
-QString violationLightText(NpuTrafficLightState state)
-{
-    switch (state) {
-    case NpuTrafficLightState::Red:
-        return QStringLiteral("红灯");
-    case NpuTrafficLightState::Green:
-        return QStringLiteral("绿灯");
-    case NpuTrafficLightState::Unknown:
-    default:
-        return QStringLiteral("未知");
-    }
-}
-
-QString violationPedestrianStateText(NpuPedestrianState state)
-{
-    switch (state) {
-    case NpuPedestrianState::Legal:
-        return QStringLiteral("合法");
-    case NpuPedestrianState::IllegalAccumulating:
-        return QStringLiteral("违法累计中");
-    case NpuPedestrianState::Illegal:
-        return QStringLiteral("违法");
-    case NpuPedestrianState::Uncertain:
-    default:
-        return QStringLiteral("状态未知");
-    }
-}
-
-QString violationReasonText(NpuPedestrianViolationReason reason)
-{
-    switch (reason) {
-    case NpuPedestrianViolationReason::RedLight:
-        return QStringLiteral("红灯通行");
-    case NpuPedestrianViolationReason::OutsideCrosswalk:
-        return QStringLiteral("未走斑马线");
-    case NpuPedestrianViolationReason::RedAndOutside:
-        return QStringLiteral("红灯且未走斑马线");
-    case NpuPedestrianViolationReason::None:
-    default:
-        return QStringLiteral("无");
-    }
+    return QDir(configDir).filePath(QStringLiteral("uav_detection.ini"));
 }
 
 QString ptzSettingsPath()

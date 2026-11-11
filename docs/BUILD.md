@@ -4,7 +4,7 @@
 
 ```text
 Host: Ubuntu 20.04.6 LTS x86_64
-Project: /home/simba/Projects/RK3568_PTZ_Qt
+Project: /home/simba/Projects/RK3568_UAV_Qt
 qmake: /home/simba/Qt-5.12.9-arm64/bin/qmake
 CC: /usr/bin/aarch64-linux-gnu-gcc
 CXX: /usr/bin/aarch64-linux-gnu-g++
@@ -34,7 +34,7 @@ QMAKE_BIN
 选择RK3568 ARM64 Kit，启用Shadow Build，构建目录固定为：
 
 ```text
-/home/simba/Projects/RK3568_PTZ_Qt/out/arm64-release
+/home/simba/Projects/RK3568_UAV_Qt/out/arm64-release
 ```
 
 修改源码后执行：
@@ -52,7 +52,7 @@ QMAKE_BIN
 ## 3. 命令行构建
 
 ```bash
-cd /home/simba/Projects/RK3568_PTZ_Qt
+cd /home/simba/Projects/RK3568_UAV_Qt
 ./tools/build_arm64.sh
 ```
 
@@ -78,14 +78,14 @@ JOBS=4 ./tools/build_arm64.sh
 ## 4. 必做检查
 
 ```bash
-BIN=/home/simba/Projects/RK3568_PTZ_Qt/out/arm64-release/rk_dual_screen_video
+BIN=/home/simba/Projects/RK3568_UAV_Qt/out/arm64-release/rk_dual_screen_video
 
 file "$BIN"
 readelf -d "$BIN" |
   grep -E 'libdrm|librga|librknnrt|libopencv_core|libopencv_imgproc|libjpeg|libQt5'
 
 (
-  cd /home/simba/Projects/RK3568_PTZ_Qt/out/arm64-release/models
+  cd /home/simba/Projects/RK3568_UAV_Qt/out/arm64-release/models
   sha256sum -c SHA256SUMS
 )
 ```

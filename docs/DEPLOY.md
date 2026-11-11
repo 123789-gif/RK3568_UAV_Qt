@@ -4,9 +4,9 @@
 
 ```text
 板端地址：root@192.168.1.100
-正式目录：/userdata/Apps/RK3568_PTZ_Qt
-测试目录：/userdata/Apps/RK3568_PTZ_Qt_test_<UTC时间戳>
-当前状态：/userdata/Apps/RK3568_PTZ_Qt_test_current.path
+正式目录：/userdata/Apps/RK3568_UAV_Qt
+测试目录：/userdata/Apps/RK3568_UAV_Qt_test_<UTC时间戳>
+当前状态：/userdata/Apps/RK3568_UAV_Qt_test_current.path
 ```
 
 测试部署不会覆盖正式目录。默认保留最新3个时间戳测试版本，并保护当前版本和正在运行的版本。
@@ -40,7 +40,7 @@ ssh -o BatchMode=yes root@192.168.1.100 'echo SSH_KEY_OK'
 在Qt Creator完成重新构建后：
 
 ```bash
-cd /home/simba/Projects/RK3568_PTZ_Qt
+cd /home/simba/Projects/RK3568_UAV_Qt
 ./tools/deploy_test.sh
 ```
 
@@ -92,7 +92,7 @@ EXPECTED_MARKER=BUILD-CHECK-01 ./tools/deploy_test.sh
 ## 6. 板端检查
 
 ```bash
-CURRENT="$(head -n 1 /userdata/Apps/RK3568_PTZ_Qt_test_current.path)"
+CURRENT="$(head -n 1 /userdata/Apps/RK3568_UAV_Qt_test_current.path)"
 
 echo "$CURRENT"
 cat "$CURRENT/run/rk_dual_screen_video.pid"
@@ -119,7 +119,7 @@ tail -n 100 "$CURRENT/logs/rk_dual_screen_video.log"
 1. 精确停止新目录中的ELF；
 2. 重新启动切换前实际运行的正式版或测试版；
 3. 校验恢复进程的ELF路径；
-4. 恢复`RK3568_PTZ_Qt_test_current.path`，部署命令仍返回失败，便于CI/人工识别本次新版本未通过。
+4. 恢复`RK3568_UAV_Qt_test_current.path`，部署命令仍返回失败，便于CI/人工识别本次新版本未通过。
 
 若切换前没有运行中的受管版本，脚本不会猜测一个版本启动，而是保留失败现场和日志。
 
@@ -128,13 +128,13 @@ tail -n 100 "$CURRENT/logs/rk_dual_screen_video.log"
 默认保留最近3个测试版本。选择需要回滚的目录后：
 
 ```bash
-OLD=/userdata/Apps/RK3568_PTZ_Qt_test_<目标版本>
-CURRENT="$(head -n 1 /userdata/Apps/RK3568_PTZ_Qt_test_current.path)"
+OLD=/userdata/Apps/RK3568_UAV_Qt_test_<目标版本>
+CURRENT="$(head -n 1 /userdata/Apps/RK3568_UAV_Qt_test_current.path)"
 
 "$CURRENT/scripts/stop.sh" 2>/dev/null || true
 "$OLD/scripts/check_runtime.sh"
 "$OLD/scripts/start.sh"
-printf '%s\n' "$OLD" > /userdata/Apps/RK3568_PTZ_Qt_test_current.path
+printf '%s\n' "$OLD" > /userdata/Apps/RK3568_UAV_Qt_test_current.path
 ```
 
 回滚前必须确认`OLD`是完整时间戳测试目录，不允许将变量设置为`/userdata/Apps`或其他上级路径。
@@ -144,7 +144,7 @@ printf '%s\n' "$OLD" > /userdata/Apps/RK3568_PTZ_Qt_test_current.path
 当前脚本只部署版本化测试目录，不自动覆盖：
 
 ```text
-/userdata/Apps/RK3568_PTZ_Qt
+/userdata/Apps/RK3568_UAV_Qt
 ```
 
 正式版本切换应在完成DSI、HDMI、PCIe、NPU、PTZ、FPGA控制、网口输出、启停和冷启动回归后单独执行。

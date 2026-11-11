@@ -2,8 +2,6 @@
 
 #include "npu/npu_result_types.h"
 #include "npu/npu_task_config.h"
-#include "npu/violation_rule_config.h"
-#include "npu/vehicle_direction_config.h"
 
 #include <cstddef>
 #include <cstdint>
@@ -11,7 +9,7 @@
 #include <vector>
 
 // 捕获线程在submitFrame()调用期间有效的只读原始帧视图。
-// worker只在任一车牌原图ROI模式下同步复制选路区域，不跨线程保存data裸指针。
+// worker同步复制选路ROI，不跨线程保存采集缓冲裸指针。
 struct NpuOriginalFrameView
 {
     const uint8_t *data = nullptr;
@@ -51,12 +49,6 @@ public:
     float confidence() const;
     void setNmsThreshold(float threshold);
     float nmsThreshold() const;
-
-    void setViolationConfig(const ViolationRuleConfig& config);
-    ViolationRuleConfig violationConfig() const;
-
-    void setWrongWayConfig(const VehicleDirectionConfig& config);
-    VehicleDirectionConfig wrongWayConfig() const;
 
     void setInputSource(int sourceChannel, uint64_t sourceRevision);
     bool wantsFrame() const;

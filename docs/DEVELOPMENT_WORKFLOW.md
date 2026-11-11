@@ -15,7 +15,7 @@
 ## 2. 修改前
 
 ```bash
-cd /home/simba/Projects/RK3568_PTZ_Qt
+cd /home/simba/Projects/RK3568_UAV_Qt
 git status --short --branch
 git branch --show-current
 ```

@@ -42,8 +42,8 @@ if [[ "$CURRENT_DRIVER_SHA256" == "$LEGACY_PREPROC_ONLY_DRIVER_SHA256" ]]; then
 fi
 
 VERSION="$(date -u +%Y%m%dT%H%M%SZ)"
-APP_DIR="$OUTPUT_DIR/RK3568_PTZ_Qt"
-ARCHIVE_NAME="RK3568_PTZ_Qt_${VERSION}.tar.gz"
+APP_DIR="$OUTPUT_DIR/RK3568_UAV_Qt"
+ARCHIVE_NAME="RK3568_UAV_Qt_${VERSION}.tar.gz"
 ARCHIVE="$OUTPUT_DIR/$ARCHIVE_NAME"
 
 rm -rf "$APP_DIR"
@@ -84,7 +84,6 @@ printf '%s\n' "$VERSION" > "$APP_DIR/VERSION"
 
     find bin models config driver scripts \
         -type f \
-        ! -path 'config/pedestrian_violation.ini' \
         -print0 |
         sort -z |
         xargs -0 sha256sum > MANIFEST.sha256
@@ -92,12 +91,12 @@ printf '%s\n' "$VERSION" > "$APP_DIR/VERSION"
     sha256sum VERSION >> MANIFEST.sha256
 )
 
-rm -f "$OUTPUT_DIR"/RK3568_PTZ_Qt_*.tar.gz
-rm -f "$OUTPUT_DIR"/RK3568_PTZ_Qt_*.tar.gz.sha256
+rm -f "$OUTPUT_DIR"/RK3568_UAV_Qt_*.tar.gz
+rm -f "$OUTPUT_DIR"/RK3568_UAV_Qt_*.tar.gz.sha256
 
 tar -C "$OUTPUT_DIR" \
     -czf "$ARCHIVE" \
-    RK3568_PTZ_Qt
+    RK3568_UAV_Qt
 
 (
     cd "$OUTPUT_DIR"

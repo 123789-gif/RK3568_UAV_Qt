@@ -40,4 +40,9 @@ cd "$BUILD_DIR"
 "$QMAKE_BIN" "$PROJECT_ROOT/rk_dual_screen_video.pro" CONFIG+=release
 make -j"$JOBS"
 
-echo "Build output: $BUILD_DIR/rk_dual_screen_video"
+BINARY="$BUILD_DIR/rk_dual_screen_video"
+if [[ ! -s "$BINARY" ]] || ! file "$BINARY" | grep -Fq 'ARM aarch64'; then
+    echo "ERROR: build did not produce a valid nonempty ARM64 ELF: $BINARY" >&2
+    exit 1
+fi
+echo "Build output: $BINARY"

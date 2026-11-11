@@ -31,7 +31,7 @@ public:
     void stopDisplay();
     bool isRunning() const;
 
-    // AI 结果叠加层：检测框、车牌大字标签等。性能 HUD 独立显示。
+    // AI 结果叠加层：无人机检测框。性能 HUD 独立显示。
     void setOsdEnabled(bool enable);
     bool osdEnabled() const;
 
@@ -63,10 +63,6 @@ public:
     void setNpuConfidence(float confidence);
     void setNpuNmsThreshold(float threshold);
     void setNpuTask(NpuTaskType task);
-    void setViolationConfig(const ViolationRuleConfig &config);
-    ViolationRuleConfig violationConfig() const;
-    void setWrongWayConfig(const VehicleDirectionConfig &config);
-    VehicleDirectionConfig wrongWayConfig() const;
     NpuFrameResult latestNpuResult() const;
     std::vector<NpuFrameResult> npuResultsAfter(uint64_t frameId, std::size_t maxResults = 64) const;
 
@@ -86,20 +82,9 @@ signals:
                       int npuLoad,
                       double tempC,
                       double osdAvgUs,
-                      double plateOsdAvgUs,
+                      double labelOsdAvgUs,
                       double npuPrepareAvgUs);
-    void previewFrameReady(QImage image,
-                           quint64 frameId,
-                           int sourceChannel,
-                           quint64 sourceRevision);
-
-    void aiStatsUpdated(bool enabled,
-                        bool ready,
-                        double fps,
-                        int plateCount,
-                        int pedestrianCount,
-                        int vehicleCount,
-                        QString status);
+    void aiStatsUpdated(bool enabled, bool ready, double fps, int droneCount, QString status);
 
     void fpgaControlInfoUpdated(bool available,
                                 quint32 ipVersion,

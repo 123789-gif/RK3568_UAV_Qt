@@ -205,9 +205,6 @@ void ControlPanelWindow::onApplyVideoConfigClicked()
     m_display->setOsdEnabled(m_osdEnabled);
 
     const VideoRoute oldRoute = m_display->videoRoute();
-    if (route != VideoRoute::Overview && m_pedestrianRunning) {
-        stopPedestrianDetection();
-    }
     m_display->setVideoRoute(route);
     if (oldRoute != route) {
         clearAiCurrentResult();
@@ -224,7 +221,6 @@ void ControlPanelWindow::onApplyVideoConfigClicked()
             .arg(size.width()).arg(size.height()).arg(mode)
             .arg(QString::fromLatin1(videoRouteKey(route)));
     updateStatusText();
-    updatePedestrianButtons();
 }
 void ControlPanelWindow::onDisplayStateChanged(QString state)
 {
@@ -259,7 +255,7 @@ void ControlPanelWindow::onDisplayStatsUpdated(double readFps,
                                                int npuLoad,
                                                double tempC,
                                                double osdAvgUs,
-                                               double plateOsdAvgUs,
+                                               double labelOsdAvgUs,
                                                double npuPrepareAvgUs)
 {
     m_readFps = readFps;
@@ -272,7 +268,7 @@ void ControlPanelWindow::onDisplayStatsUpdated(double readFps,
     m_npuLoad = npuLoad;
     m_tempC = tempC;
     m_osdAvgUs = osdAvgUs;
-    m_plateOsdAvgUs = plateOsdAvgUs;
+    m_labelOsdAvgUs = labelOsdAvgUs;
     m_npuPrepareAvgUs = npuPrepareAvgUs;
 
     // 连续三个统计周期有有效page flip，才视为恢复成功并重新开放
